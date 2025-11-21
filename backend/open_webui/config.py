@@ -436,6 +436,48 @@ GITHUB_CLIENT_REDIRECT_URI = PersistentConfig(
     os.environ.get("GITHUB_CLIENT_REDIRECT_URI", ""),
 )
 
+BLUENEXUS_CLIENT_ID = PersistentConfig(
+    "BLUENEXUS_CLIENT_ID",
+    "oauth.bluenexus.client_id",
+    os.environ.get("BLUENEXUS_CLIENT_ID", ""),
+)
+
+BLUENEXUS_CLIENT_SECRET = PersistentConfig(
+    "BLUENEXUS_CLIENT_SECRET",
+    "oauth.bluenexus.client_secret",
+    os.environ.get("BLUENEXUS_CLIENT_SECRET", ""),
+)
+
+BLUENEXUS_OAUTH_SCOPE = PersistentConfig(
+    "BLUENEXUS_OAUTH_SCOPE",
+    "oauth.bluenexus.scope",
+    os.environ.get("BLUENEXUS_OAUTH_SCOPE", "account auth-sessions llm-all mcp-proxy user-data connections providers"),
+)
+
+BLUENEXUS_REDIRECT_URI = PersistentConfig(
+    "BLUENEXUS_REDIRECT_URI",
+    "oauth.bluenexus.redirect_uri",
+    os.environ.get("BLUENEXUS_REDIRECT_URI", ""),
+)
+
+BLUENEXUS_API_BASE_URL = PersistentConfig(
+    "BLUENEXUS_API_BASE_URL",
+    "oauth.bluenexus.api_base_url",
+    os.environ.get("BLUENEXUS_API_BASE_URL", "https://localhost:3000"),
+)
+
+BLUENEXUS_AUTHORIZATION_URL = PersistentConfig(
+    "BLUENEXUS_AUTHORIZATION_URL",
+    "oauth.bluenexus.authorization_url",
+    os.environ.get("BLUENEXUS_AUTHORIZATION_URL", "http://localhost:3001/oauth/authorize"),
+)
+
+BLUENEXUS_TOKEN_URL = PersistentConfig(
+    "BLUENEXUS_TOKEN_URL",
+    "oauth.bluenexus.token_url",
+    os.environ.get("BLUENEXUS_TOKEN_URL", "https://localhost:3000/api/v1/auth/token"),
+)
+
 OAUTH_CLIENT_ID = PersistentConfig(
     "OAUTH_CLIENT_ID",
     "oauth.oidc.client_id",
@@ -702,6 +744,53 @@ def load_oauth_providers():
             "sub_claim": "id",
         }
 
+    if BLUENEXUS_CLIENT_ID.value and BLUENEXUS_CLIENT_SECRET.value:
+        import httpx
+        import urllib3
+
+        # Disable SSL warnings
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+        def bluenexus_oauth_register(oauth: OAuth):
+            # Create httpx client with SSL verification completely disabled
+            httpx_client = httpx.AsyncClient(
+                verify=False,  # Disable SSL verification
+                trust_env=False  # Don't use proxy environment variables
+            )
+
+            client = oauth.register(
+                name="bluenexus",
+                client_id=BLUENEXUS_CLIENT_ID.value,
+                client_secret=BLUENEXUS_CLIENT_SECRET.value,
+                access_token_url=BLUENEXUS_TOKEN_URL.value,
+                authorize_url=BLUENEXUS_AUTHORIZATION_URL.value,
+                api_base_url=BLUENEXUS_API_BASE_URL.value,
+                userinfo_endpoint=f"{BLUENEXUS_API_BASE_URL.value}/api/v1/accounts/me",
+                client_kwargs={
+                    "scope": BLUENEXUS_OAUTH_SCOPE.value,
+                    "code_challenge_method": "S256",
+                    "token_endpoint_auth_method": "client_secret_post",  # Send credentials in POST body
+                    "verify": False,  # Disable SSL verification in authlib client_kwargs
+                    **(
+                        {"timeout": int(OAUTH_TIMEOUT.value)}
+                        if OAUTH_TIMEOUT.value
+                        else {}
+                    ),
+                },
+                redirect_uri=BLUENEXUS_REDIRECT_URI.value,
+                client=httpx_client,
+            )
+            return client
+
+        OAUTH_PROVIDERS["bluenexus"] = {
+            "redirect_uri": BLUENEXUS_REDIRECT_URI.value,
+            "register": bluenexus_oauth_register,
+            "sub_claim": "id",
+            "email_claim": "email", 
+            "username_claim": "name", 
+            "picture_claim": "avatar",
+        }
+
     if (
         OAUTH_CLIENT_ID.value
         and (OAUTH_CLIENT_SECRET.value or OAUTH_CODE_CHALLENGE_METHOD.value)
@@ -785,6 +874,8 @@ def load_oauth_providers():
         configured_providers.append("Microsoft")
     if GITHUB_CLIENT_ID.value:
         configured_providers.append("GitHub")
+    if BLUENEXUS_CLIENT_ID.value:
+        configured_providers.append("BlueNexus")
     if FEISHU_CLIENT_ID.value:
         configured_providers.append("Feishu")
 

@@ -494,6 +494,21 @@
 											<span>{$i18n.t('Continue with {{provider}}', { provider: 'GitHub' })}</span>
 										</button>
 									{/if}
+									{#if $config?.oauth?.providers?.bluenexus}
+										<button
+											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
+											on:click={() => {
+												window.location.href = `${WEBUI_BASE_URL}/oauth/bluenexus/login`;
+											}}
+										>
+											<img
+												src="https://bluenexus.ai/images/bluenexus-logo.png"
+												alt="BlueNexus"
+												class="size-6 mr-3"
+											/>
+											<span>{$i18n.t('Continue with {{provider}}', { provider: 'BlueNexus' })}</span>
+										</button>
+									{/if}
 									{#if $config?.oauth?.providers?.oidc}
 										<button
 											class="flex justify-center items-center bg-gray-700/5 hover:bg-gray-700/10 dark:bg-gray-100/5 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition w-full rounded-full font-medium text-sm py-2.5"
