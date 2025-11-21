@@ -119,6 +119,9 @@ from open_webui.config import (
     OPENAI_API_BASE_URLS,
     OPENAI_API_KEYS,
     OPENAI_API_CONFIGS,
+    # BluNexus LLM
+    BLUENEXUS_LLM_API_BASE_URL,
+    BLUENEXUS_LLM_AUTO_ENABLE,
     # Direct Connections
     ENABLE_DIRECT_CONNECTIONS,
     # Model list
@@ -691,6 +694,15 @@ app.state.config.OPENAI_API_KEYS = OPENAI_API_KEYS
 app.state.config.OPENAI_API_CONFIGS = OPENAI_API_CONFIGS
 
 app.state.OPENAI_MODELS = {}
+
+########################################
+#
+# BLUENEXUS
+#
+########################################
+
+app.state.config.BLUENEXUS_LLM_API_BASE_URL = BLUENEXUS_LLM_API_BASE_URL
+app.state.config.BLUENEXUS_LLM_AUTO_ENABLE = BLUENEXUS_LLM_AUTO_ENABLE
 
 ########################################
 #

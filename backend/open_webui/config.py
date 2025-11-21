@@ -478,6 +478,21 @@ BLUENEXUS_TOKEN_URL = PersistentConfig(
     os.environ.get("BLUENEXUS_TOKEN_URL", "https://localhost:3000/api/v1/auth/token"),
 )
 
+BLUENEXUS_LLM_API_BASE_URL = PersistentConfig(
+    "BLUENEXUS_LLM_API_BASE_URL",
+    "oauth.bluenexus.llm_api_base_url",
+    os.environ.get(
+        "BLUENEXUS_LLM_API_BASE_URL",
+        f"{BLUENEXUS_API_BASE_URL.value.rstrip('/')}/api/v1",
+    ),
+)
+
+BLUENEXUS_LLM_AUTO_ENABLE = PersistentConfig(
+    "BLUENEXUS_LLM_AUTO_ENABLE",
+    "oauth.bluenexus.llm_auto_enable",
+    os.environ.get("BLUENEXUS_LLM_AUTO_ENABLE", "True").lower() == "true",
+)
+
 OAUTH_CLIENT_ID = PersistentConfig(
     "OAUTH_CLIENT_ID",
     "oauth.oidc.client_id",

@@ -2,12 +2,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import ssl
 from typing import Optional
 
 import aiohttp
 from aiocache import cached
 import requests
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
@@ -34,6 +35,7 @@ from open_webui.env import (
     BYPASS_MODEL_ACCESS_CONTROL,
 )
 from open_webui.models.users import UserModel
+from open_webui.models.oauth_sessions import OAuthSessions
 
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import SRC_LOG_LEVELS
@@ -62,26 +64,65 @@ log.setLevel(SRC_LOG_LEVELS["OPENAI"])
 ##########################################
 
 
-async def send_get_request(url, key=None, user: UserModel = None):
+def get_ssl_context(url: str):
+    """
+    Get SSL context for a URL. Disables SSL verification for localhost.
+    """
+    parsed_url = urlparse(url)
+    hostname = parsed_url.hostname or ""
+
+    # Disable SSL verification for localhost
+    if hostname in ["localhost", "127.0.0.1", "::1"]:
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        return ssl_context
+
+    # Use default SSL settings for non-localhost
+    return AIOHTTP_CLIENT_SESSION_SSL
+
+
+async def send_get_request(
+    url,
+    key=None,
+    user: UserModel = None,
+    request: Request | None = None,
+    config: Optional[dict] = None,
+):
     timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
+    headers = {}
+    cookies = {}
+
+    if request is not None:
+        headers, cookies = await get_headers_and_cookies(
+            request,
+            url,
+            key,
+            config or {},
+            user=user,
+        )
+    else:
+        headers = {
+            **({"Authorization": f"Bearer {key}"} if key else {}),
+            **(
+                {
+                    "X-OpenWebUI-User-Name": quote(user.name, safe=" "),
+                    "X-OpenWebUI-User-Id": user.id,
+                    "X-OpenWebUI-User-Email": user.email,
+                    "X-OpenWebUI-User-Role": user.role,
+                }
+                if ENABLE_FORWARD_USER_INFO_HEADERS and user
+                else {}
+            ),
+        }
+
     try:
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.get(
                 url,
-                headers={
-                    **({"Authorization": f"Bearer {key}"} if key else {}),
-                    **(
-                        {
-                            "X-OpenWebUI-User-Name": quote(user.name, safe=" "),
-                            "X-OpenWebUI-User-Id": user.id,
-                            "X-OpenWebUI-User-Email": user.email,
-                            "X-OpenWebUI-User-Role": user.role,
-                        }
-                        if ENABLE_FORWARD_USER_INFO_HEADERS and user
-                        else {}
-                    ),
-                },
-                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                headers=headers,
+                cookies=cookies,
+                ssl=get_ssl_context(url),
             ) as response:
                 return await response.json()
     except Exception as e:
@@ -173,7 +214,20 @@ async def get_headers_and_cookies(
 
         oauth_token = None
         try:
-            if request.cookies.get("oauth_session_id", None):
+            # Check if this is a BlueNexus OAuth provider
+            oauth_provider = config.get("oauth_provider")
+            if oauth_provider == "bluenexus":
+                # Get BlueNexus OAuth session token
+                from open_webui.models.oauth_sessions import OAuthSessions
+                session = OAuthSessions.get_session_by_provider_and_user_id(
+                    provider="bluenexus",
+                    user_id=user.id
+                )
+                if session:
+                    oauth_token = session.token
+                else:
+                    log.warning(f"No BlueNexus OAuth session found for user {user.id}")
+            elif request.cookies.get("oauth_session_id", None):
                 oauth_token = await request.app.state.oauth_manager.get_oauth_token(
                     user.id,
                     request.cookies.get("oauth_session_id", None),
@@ -209,6 +263,56 @@ def get_microsoft_entra_id_access_token():
     except Exception as e:
         log.error(f"Error getting Microsoft Entra ID access token: {e}")
         return None
+
+
+def ensure_bluenexus_provider(request: Request, user: UserModel):
+    """
+    Dynamically register BluNexus as an OpenAI-compatible provider when the user
+    authenticates via BluNexus OAuth. Uses per-user OAuth tokens via `system_oauth`.
+    """
+    try:
+        if not getattr(request.app.state.config, "BLUENEXUS_LLM_AUTO_ENABLE", False):
+            return
+
+        session_id = request.cookies.get("oauth_session_id")
+        if not session_id or not user:
+            return
+
+        session = OAuthSessions.get_session_by_id_and_user_id(session_id, user.id)
+        if not session or session.provider != "bluenexus":
+            return
+
+        base_url = getattr(request.app.state.config, "BLUENEXUS_LLM_API_BASE_URL", "")
+        if not base_url:
+            return
+
+        base_url = base_url.rstrip("/")
+
+        base_urls = request.app.state.config.OPENAI_API_BASE_URLS
+        if base_url not in base_urls:
+            request.app.state.config.OPENAI_API_BASE_URLS = [*base_urls, base_url]
+            request.app.state.config.OPENAI_API_KEYS = [
+                *request.app.state.config.OPENAI_API_KEYS,
+                "",
+            ]
+            request.app.state.BASE_MODELS = None
+            request.app.state.MODELS = None
+
+        idx = request.app.state.config.OPENAI_API_BASE_URLS.index(base_url)
+        api_configs = request.app.state.config.OPENAI_API_CONFIGS
+
+        if (str(idx) not in api_configs) and (base_url not in api_configs):
+            updated_configs = {**api_configs}
+            updated_configs[str(idx)] = {
+                "name": "BluNexus",
+                "auth_type": "system_oauth",
+                "enable": True,
+                "connection_type": "external",
+                "tags": ["bluenexus"],
+            }
+            request.app.state.config.OPENAI_API_CONFIGS = updated_configs
+    except Exception as e:
+        log.error(f"Error enabling BluNexus LLM provider: {e}")
 
 
 ##########################################
@@ -360,6 +464,8 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
     if not request.app.state.config.ENABLE_OPENAI_API:
         return []
 
+    ensure_bluenexus_provider(request, user)
+
     # Check if API KEYS length is same than API URLS length
     num_urls = len(request.app.state.config.OPENAI_API_BASE_URLS)
     num_keys = len(request.app.state.config.OPENAI_API_KEYS)
@@ -375,56 +481,55 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
 
     request_tasks = []
     for idx, url in enumerate(request.app.state.config.OPENAI_API_BASE_URLS):
-        if (str(idx) not in request.app.state.config.OPENAI_API_CONFIGS) and (
-            url not in request.app.state.config.OPENAI_API_CONFIGS  # Legacy support
-        ):
+        api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+            str(idx),
+            request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
+        )
+
+        enable = api_config.get("enable", True)
+        model_ids = api_config.get("model_ids", [])
+
+        if "bluenexus" in api_config.get("tags", []):
+            session_id = request.cookies.get("oauth_session_id")
+            session = (
+                OAuthSessions.get_session_by_id_and_user_id(session_id, user.id)
+                if session_id
+                else None
+            )
+            if not session or session.provider != "bluenexus":
+                request_tasks.append(asyncio.ensure_future(asyncio.sleep(0, None)))
+                continue
+
+        if not enable:
+            request_tasks.append(asyncio.ensure_future(asyncio.sleep(0, None)))
+            continue
+
+        if len(model_ids) == 0:
             request_tasks.append(
                 send_get_request(
                     f"{url}/models",
                     request.app.state.config.OPENAI_API_KEYS[idx],
                     user=user,
+                    request=request,
+                    config=api_config,
                 )
             )
         else:
-            api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-                str(idx),
-                request.app.state.config.OPENAI_API_CONFIGS.get(
-                    url, {}
-                ),  # Legacy support
-            )
-
-            enable = api_config.get("enable", True)
-            model_ids = api_config.get("model_ids", [])
-
-            if enable:
-                if len(model_ids) == 0:
-                    request_tasks.append(
-                        send_get_request(
-                            f"{url}/models",
-                            request.app.state.config.OPENAI_API_KEYS[idx],
-                            user=user,
-                        )
-                    )
-                else:
-                    model_list = {
-                        "object": "list",
-                        "data": [
-                            {
-                                "id": model_id,
-                                "name": model_id,
-                                "owned_by": "openai",
-                                "openai": {"id": model_id},
-                                "urlIdx": idx,
-                            }
-                            for model_id in model_ids
-                        ],
+            model_list = {
+                "object": "list",
+                "data": [
+                    {
+                        "id": model_id,
+                        "name": model_id,
+                        "owned_by": "openai",
+                        "openai": {"id": model_id},
+                        "urlIdx": idx,
                     }
+                    for model_id in model_ids
+                ],
+            }
 
-                    request_tasks.append(
-                        asyncio.ensure_future(asyncio.sleep(0, model_list))
-                    )
-            else:
-                request_tasks.append(asyncio.ensure_future(asyncio.sleep(0, None)))
+            request_tasks.append(asyncio.ensure_future(asyncio.sleep(0, model_list)))
 
     responses = await asyncio.gather(*request_tasks)
 
@@ -592,7 +697,7 @@ async def get_models(
                         f"{url}/models",
                         headers=headers,
                         cookies=cookies,
-                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                        ssl=get_ssl_context(url),
                     ) as r:
                         if r.status != 200:
                             # Extract response error details if available
@@ -679,7 +784,7 @@ async def verify_connection(
                     url=f"{url}/openai/models?api-version={api_version}",
                     headers=headers,
                     cookies=cookies,
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ssl=get_ssl_context(url),
                 ) as r:
                     try:
                         response_data = await r.json()
@@ -702,7 +807,7 @@ async def verify_connection(
                     f"{url}/models",
                     headers=headers,
                     cookies=cookies,
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ssl=get_ssl_context(url),
                 ) as r:
                     try:
                         response_data = await r.json()
@@ -945,7 +1050,7 @@ async def generate_chat_completion(
             data=payload,
             headers=headers,
             cookies=cookies,
-            ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ssl=get_ssl_context(request_url),
         )
 
         # Check if response is SSE
@@ -1119,7 +1224,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             data=body,
             headers=headers,
             cookies=cookies,
-            ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ssl=get_ssl_context(request_url),
         )
 
         # Check if response is SSE

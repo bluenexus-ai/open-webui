@@ -1160,6 +1160,67 @@ class OAuthManager:
                     id=group_model.id, form_data=update_form, overwrite=False
                 )
 
+    def _configure_bluenexus_llm_api(
+        self, request, user_id: str, access_token: str
+    ) -> None:
+        """Automatically configure BlueNexus LLM API for a user after OAuth login.
+
+        Args:
+            request: FastAPI request object
+            user_id: User ID
+            access_token: OAuth access token for BlueNexus API
+        """
+        from open_webui.config import BLUENEXUS_API_BASE_URL
+
+        if not BLUENEXUS_API_BASE_URL.value:
+            log.warning("BLUENEXUS_API_BASE_URL not configured, skipping LLM API setup")
+            return
+
+        bluenexus_llm_url = f"{BLUENEXUS_API_BASE_URL.value}/api/v1"
+
+        # Get current OpenAI configurations
+        current_urls = request.app.state.config.OPENAI_API_BASE_URLS
+        current_keys = request.app.state.config.OPENAI_API_KEYS
+        current_configs = request.app.state.config.OPENAI_API_CONFIGS
+
+        # Check if BlueNexus LLM API is already configured
+        bluenexus_idx = None
+        for idx, url in enumerate(current_urls):
+            if url == bluenexus_llm_url:
+                bluenexus_idx = idx
+                break
+
+        # Use empty key with system_oauth auth type
+        bluenexus_key = ""
+
+        if bluenexus_idx is not None:
+            # Update existing BlueNexus configuration
+            current_keys[bluenexus_idx] = bluenexus_key
+            current_configs[str(bluenexus_idx)] = {
+                "name": "BlueNexus",
+                "enable": True,
+                "auth_type": "system_oauth",
+                "oauth_provider": "bluenexus",
+            }
+            log.info(f"Updated existing BlueNexus LLM API configuration at index {bluenexus_idx}")
+        else:
+            # Add new BlueNexus configuration
+            current_urls.append(bluenexus_llm_url)
+            current_keys.append(bluenexus_key)
+            new_idx = len(current_urls) - 1
+            current_configs[str(new_idx)] = {
+                "name": "BlueNexus",
+                "enable": True,
+                "auth_type": "system_oauth",
+                "oauth_provider": "bluenexus",
+            }
+            log.info(f"Added new BlueNexus LLM API configuration at index {new_idx}")
+
+        # Save updated configurations
+        request.app.state.config.OPENAI_API_BASE_URLS = current_urls
+        request.app.state.config.OPENAI_API_KEYS = current_keys
+        request.app.state.config.OPENAI_API_CONFIGS = current_configs
+
     async def _process_picture_url(
         self, picture_url: str, access_token: str = None
     ) -> str:
@@ -1345,7 +1406,12 @@ class OAuthManager:
                     Users.update_user_role_by_id(user.id, determined_role)
                 # Update profile picture if enabled and different from current
                 if auth_manager_config.OAUTH_UPDATE_PICTURE_ON_LOGIN:
-                    picture_claim = auth_manager_config.OAUTH_PICTURE_CLAIM
+                    # Use global picture claim if configured, otherwise use provider-specific claim
+                    if auth_manager_config.OAUTH_PICTURE_CLAIM:
+                        picture_claim = auth_manager_config.OAUTH_PICTURE_CLAIM
+                    else:
+                        picture_claim = OAUTH_PROVIDERS[provider].get("picture_claim", "picture")
+
                     if picture_claim:
                         new_picture_url = user_data.get(
                             picture_claim,
@@ -1367,7 +1433,12 @@ class OAuthManager:
                     if existing_user:
                         raise HTTPException(400, detail=ERROR_MESSAGES.EMAIL_TAKEN)
 
-                    picture_claim = auth_manager_config.OAUTH_PICTURE_CLAIM
+                    # Use global picture claim if configured, otherwise use provider-specific claim
+                    if auth_manager_config.OAUTH_PICTURE_CLAIM:
+                        picture_claim = auth_manager_config.OAUTH_PICTURE_CLAIM
+                    else:
+                        picture_claim = OAUTH_PROVIDERS[provider].get("picture_claim", "picture")
+
                     if picture_claim:
                         picture_url = user_data.get(
                             picture_claim,
@@ -1497,6 +1568,15 @@ class OAuthManager:
             log.info(
                 f"Stored OAuth session server-side for user {user.id}, provider {provider}"
             )
+
+            # Auto-configure BlueNexus LLM API if logging in via BlueNexus
+            if provider == "bluenexus":
+                try:
+                    self._configure_bluenexus_llm_api(request, user.id, token.get("access_token"))
+                    log.info(f"Configured BlueNexus LLM API for user {user.id}")
+                except Exception as e:
+                    log.error(f"Failed to configure BlueNexus LLM API: {e}")
+
         except Exception as e:
             log.error(f"Failed to store OAuth session server-side: {e}")
 
