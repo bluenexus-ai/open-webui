@@ -696,3 +696,39 @@ export const deleteAPIKey = async (token: string) => {
 	}
 	return res;
 };
+
+export interface OAuthTokenStatus {
+	has_session: boolean;
+	provider?: string;
+	expires_at?: number;
+	expires_in?: number;
+	refreshed: boolean;
+}
+
+export const refreshOAuthToken = async (token: string): Promise<OAuthTokenStatus | null> => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/auths/oauth/refresh`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		},
+		credentials: 'include' // Important: include cookies for oauth_session_id
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			console.error('OAuth refresh error:', err);
+			error = err.detail;
+			return null;
+		});
+
+	if (error) {
+		console.error('OAuth refresh failed:', error);
+		return null;
+	}
+	return res;
+};

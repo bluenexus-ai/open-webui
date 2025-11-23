@@ -1079,3 +1079,68 @@ async def get_api_key(user=Depends(get_current_user)):
         }
     else:
         raise HTTPException(404, detail=ERROR_MESSAGES.API_KEY_NOT_FOUND)
+
+
+############################
+# OAuth Token Refresh
+############################
+
+
+class OAuthTokenStatusResponse(BaseModel):
+    has_session: bool
+    provider: Optional[str] = None
+    expires_at: Optional[int] = None
+    expires_in: Optional[int] = None
+    refreshed: bool = False
+
+
+@router.post("/oauth/refresh", response_model=OAuthTokenStatusResponse)
+async def refresh_oauth_token(request: Request, user=Depends(get_current_user)):
+    """
+    Refresh the OAuth token if it's close to expiring.
+    This endpoint is designed to be called periodically by the frontend
+    to keep the OAuth session alive for active users.
+    """
+    log.info(f"OAuth refresh requested for user {user.id}")
+
+    oauth_session_id = request.cookies.get("oauth_session_id")
+    if not oauth_session_id:
+        log.info(f"No oauth_session_id cookie found for user {user.id}")
+        return OAuthTokenStatusResponse(has_session=False)
+
+    log.info(f"Found oauth_session_id: {oauth_session_id[:8]}... for user {user.id}")
+
+    try:
+        # Get token with force_refresh=False - this will auto-refresh if needed
+        token = await request.app.state.oauth_manager.get_oauth_token(
+            user.id,
+            oauth_session_id,
+            force_refresh=False,  # Will refresh if within 5 min of expiry
+        )
+
+        if token:
+            expires_at = token.get("expires_at")
+            expires_in = None
+            if expires_at:
+                expires_in = max(0, int(expires_at - time.time()))
+
+            # Get session to check provider
+            session = OAuthSessions.get_session_by_id(oauth_session_id)
+            provider = session.provider if session else None
+
+            log.info(f"OAuth token valid for user {user.id}, provider: {provider}, expires_in: {expires_in}s")
+
+            return OAuthTokenStatusResponse(
+                has_session=True,
+                provider=provider,
+                expires_at=expires_at,
+                expires_in=expires_in,
+                refreshed=False,  # We don't know if it was refreshed, but token is valid
+            )
+        else:
+            log.warning(f"OAuth token not found or expired for user {user.id}, session {oauth_session_id[:8]}...")
+            return OAuthTokenStatusResponse(has_session=False)
+
+    except Exception as e:
+        log.error(f"Error refreshing OAuth token for user {user.id}: {e}")
+        return OAuthTokenStatusResponse(has_session=False)
