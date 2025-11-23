@@ -148,6 +148,7 @@ def process_tool_result(
     metadata=None,
     user=None,
 ):
+    log.info(f"[MCP] Step 7: Processing tool result for '{tool_function_name}', tool_type={tool_type}, result_type={type(tool_result).__name__}")
     tool_result_embeds = []
 
     if isinstance(tool_result, HTMLResponse):
@@ -231,18 +232,23 @@ def process_tool_result(
 
     if isinstance(tool_result, list):
         if tool_type == "mcp":  # MCP
+            log.info(f"[MCP] Step 7: Processing MCP result list with {len(tool_result)} items")
             tool_response = []
-            for item in tool_result:
+            for idx, item in enumerate(tool_result):
                 if isinstance(item, dict):
-                    if item.get("type") == "text":
+                    item_type = item.get("type", "unknown")
+                    log.debug(f"[MCP] Step 7: Processing item {idx}, type={item_type}")
+                    if item_type == "text":
                         text = item.get("text", "")
                         if isinstance(text, str):
                             try:
                                 text = json.loads(text)
+                                log.debug(f"[MCP] Step 7: Parsed text as JSON")
                             except json.JSONDecodeError:
                                 pass
                         tool_response.append(text)
-                    elif item.get("type") in ["image", "audio"]:
+                    elif item_type in ["image", "audio"]:
+                        log.info(f"[MCP] Step 7: Processing {item_type} file, mimeType={item.get('mimeType')}")
                         file_url = get_file_url_from_base64(
                             request,
                             f"data:{item.get('mimeType')};base64,{item.get('data', item.get('blob', ''))}",
@@ -261,7 +267,9 @@ def process_tool_result(
                                 "url": file_url,
                             }
                         )
+                        log.info(f"[MCP] Step 7: Created file URL for {item_type}")
             tool_result = tool_response[0] if len(tool_response) == 1 else tool_response
+            log.info(f"[MCP] Step 7: Final MCP result - text_items={len(tool_response)}, files={len(tool_result_files)}")
         else:  # OpenAPI
             for item in tool_result:
                 if isinstance(item, str) and item.startswith("data:"):
@@ -278,6 +286,9 @@ def process_tool_result(
 
     if isinstance(tool_result, dict) or isinstance(tool_result, list):
         tool_result = json.dumps(tool_result, indent=2, ensure_ascii=False)
+
+    result_preview = str(tool_result)[:200] + "..." if len(str(tool_result)) > 200 else str(tool_result)
+    log.info(f"[MCP] Step 7: Finished processing '{tool_function_name}' - result_preview={result_preview}, files={len(tool_result_files)}, embeds={len(tool_result_embeds)}")
 
     return tool_result, tool_result_files, tool_result_embeds
 
@@ -1293,6 +1304,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Client side tools
     direct_tool_servers = metadata.get("tool_servers", None)
 
+    log.info(f"[MCP] Chat payload received - tool_ids={tool_ids}, direct_tool_servers={direct_tool_servers is not None}")
     log.debug(f"{tool_ids=}")
     log.debug(f"{direct_tool_servers=}")
 
@@ -1302,15 +1314,20 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     mcp_tools_dict = {}
 
     if tool_ids:
+        log.info(f"[MCP] Processing {len(tool_ids)} tool_ids: {tool_ids}")
         for tool_id in tool_ids:
             if tool_id.startswith("server:mcp:"):
                 try:
                     server_id = tool_id[len("server:mcp:") :]
+                    log.info(f"[MCP] Step 1: Finding MCP server config for server_id: {server_id}")
 
                     mcp_server_connection = None
+                    available_mcp_servers = []
                     for (
                         server_connection
                     ) in request.app.state.config.TOOL_SERVER_CONNECTIONS:
+                        if server_connection.get("type", "") == "mcp":
+                            available_mcp_servers.append(server_connection.get("info", {}).get("id"))
                         if (
                             server_connection.get("type", "") == "mcp"
                             and server_connection.get("info", {}).get("id") == server_id
@@ -1319,107 +1336,147 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             break
 
                     if not mcp_server_connection:
-                        log.error(f"MCP server with id {server_id} not found")
+                        log.error(f"[MCP] Server config NOT FOUND for server_id: {server_id}. Available MCP servers: {available_mcp_servers}")
                         continue
+
+                    log.info(f"[MCP] Server config FOUND: url={mcp_server_connection.get('url')}, auth_type={mcp_server_connection.get('auth_type')}, config={mcp_server_connection.get('config', {})}")
 
                     auth_type = mcp_server_connection.get("auth_type", "")
 
+                    log.info(f"[MCP] Step 2: Preparing auth headers for auth_type: {auth_type}")
                     headers = {}
                     if auth_type == "bearer":
                         headers["Authorization"] = (
                             f"Bearer {mcp_server_connection.get('key', '')}"
                         )
+                        log.info(f"[MCP] Auth: Using bearer token (key length: {len(mcp_server_connection.get('key', ''))})")
                     elif auth_type == "none":
                         # No authentication
+                        log.info("[MCP] Auth: No authentication required")
                         pass
                     elif auth_type == "session":
                         headers["Authorization"] = (
                             f"Bearer {request.state.token.credentials}"
                         )
+                        log.info("[MCP] Auth: Using session token")
                     elif auth_type == "system_oauth":
                         # Check if this is a BlueNexus MCP server (URL contains bluenexus)
                         oauth_provider = mcp_server_connection.get("config", {}).get(
                             "oauth_provider"
                         )
 
-                        log.info(f"[MCP AUTH DEBUG] server_id: {server_id}, oauth_provider: {oauth_provider}, config: {mcp_server_connection.get('config', {})}")
+                        log.info(f"[MCP] Auth: system_oauth - oauth_provider={oauth_provider}, server_id={server_id}")
 
                         if oauth_provider == "bluenexus" or "bluenexus" in server_id:
                             # Get BlueNexus OAuth session token directly
                             from open_webui.models.oauth_sessions import OAuthSessions
 
+                            log.info(f"[MCP] Auth: Looking up BlueNexus OAuth session for user_id={user.id}")
                             session = OAuthSessions.get_session_by_provider_and_user_id(
                                 provider="bluenexus", user_id=user.id
                             )
-                            log.info(f"[MCP AUTH DEBUG] Found BlueNexus OAuth session: {session is not None}")
                             if session:
                                 oauth_token = session.token
+                                token_preview = oauth_token.get('access_token', '')[:20] + '...' if oauth_token.get('access_token') else 'N/A'
+                                log.info(f"[MCP] Auth: BlueNexus OAuth session FOUND, token_preview={token_preview}, expires_at={oauth_token.get('expires_at')}")
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
-                                log.info(f"[MCP AUTH DEBUG] Added Authorization header with token")
                             else:
                                 log.warning(
-                                    f"No BlueNexus OAuth session found for user {user.id}"
+                                    f"[MCP] Auth: BlueNexus OAuth session NOT FOUND for user {user.id}"
                                 )
                         else:
                             # Use the OAuth token from extra_params (standard system_oauth)
                             oauth_token = extra_params.get("__oauth_token__", None)
                             if oauth_token:
+                                token_preview = oauth_token.get('access_token', '')[:20] + '...' if oauth_token.get('access_token') else 'N/A'
+                                log.info(f"[MCP] Auth: Using system_oauth token from extra_params, token_preview={token_preview}")
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
+                            else:
+                                log.warning("[MCP] Auth: No OAuth token found in extra_params")
                     elif auth_type == "oauth_2.1":
                         try:
                             splits = server_id.split(":")
                             server_id = splits[-1] if len(splits) > 1 else server_id
 
+                            log.info(f"[MCP] Auth: oauth_2.1 - getting token for mcp:{server_id}")
                             oauth_token = await request.app.state.oauth_client_manager.get_oauth_token(
                                 user.id, f"mcp:{server_id}"
                             )
 
                             if oauth_token:
+                                token_preview = oauth_token.get('access_token', '')[:20] + '...' if oauth_token.get('access_token') else 'N/A'
+                                log.info(f"[MCP] Auth: oauth_2.1 token obtained, token_preview={token_preview}")
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
+                            else:
+                                log.warning(f"[MCP] Auth: oauth_2.1 - no token returned for mcp:{server_id}")
                         except Exception as e:
-                            log.error(f"Error getting OAuth token: {e}")
+                            log.error(f"[MCP] Auth: oauth_2.1 - error getting OAuth token: {e}")
                             oauth_token = None
+
+                    mcp_url = mcp_server_connection.get("url", "")
+                    log.info(f"[MCP] Step 3: Connecting to MCP server at {mcp_url}")
+                    log.info(f"[MCP] Connection headers: {list(headers.keys()) if headers else 'None'}")
 
                     mcp_clients[server_id] = MCPClient()
                     await mcp_clients[server_id].connect(
-                        url=mcp_server_connection.get("url", ""),
+                        url=mcp_url,
                         headers=headers if headers else None,
                     )
+                    log.info(f"[MCP] Step 3: Connection SUCCESSFUL to {mcp_url}")
 
+                    log.info(f"[MCP] Step 4: Listing tool specs from server {server_id}")
                     tool_specs = await mcp_clients[server_id].list_tool_specs()
+                    log.info(f"[MCP] Step 4: Retrieved {len(tool_specs) if tool_specs else 0} tool specs")
                     for tool_spec in tool_specs:
+                        tool_name = tool_spec.get("name", "unknown")
+                        full_tool_name = f"{server_id}_{tool_name}"
+                        log.debug(f"[MCP] Registering tool: {full_tool_name}, description: {tool_spec.get('description', 'N/A')[:100]}")
 
-                        def make_tool_function(client, function_name):
+                        def make_tool_function(client, function_name, srv_id):
                             async def tool_function(**kwargs):
-                                return await client.call_tool(
-                                    function_name,
-                                    function_args=kwargs,
-                                )
+                                log.info(f"[MCP] Step 6: Calling tool '{function_name}' on server '{srv_id}' with args: {list(kwargs.keys())}")
+                                try:
+                                    result = await client.call_tool(
+                                        function_name,
+                                        function_args=kwargs,
+                                    )
+                                    log.info(f"[MCP] Step 6: Tool '{function_name}' returned result type: {type(result).__name__}, length: {len(result) if isinstance(result, (list, dict, str)) else 'N/A'}")
+                                    return result
+                                except Exception as e:
+                                    log.error(f"[MCP] Step 6: Tool '{function_name}' FAILED with error: {e}")
+                                    raise
 
                             return tool_function
 
                         tool_function = make_tool_function(
-                            mcp_clients[server_id], tool_spec["name"]
+                            mcp_clients[server_id], tool_spec["name"], server_id
                         )
 
-                        mcp_tools_dict[f"{server_id}_{tool_spec['name']}"] = {
+                        mcp_tools_dict[full_tool_name] = {
                             "spec": {
                                 **tool_spec,
-                                "name": f"{server_id}_{tool_spec['name']}",
+                                "name": full_tool_name,
                             },
                             "callable": tool_function,
                             "type": "mcp",
                             "client": mcp_clients[server_id],
                             "direct": False,
                         }
+
+                    tool_names = [f"{server_id}_{t.get('name')}" for t in (tool_specs or [])]
+                    log.info(f"[MCP] Registered {len(tool_specs) if tool_specs else 0} tools from server {server_id}: {tool_names}")
+
                 except Exception as e:
-                    log.debug(e)
+                    log.error(f"[MCP] Connection FAILED for server {server_id}: {type(e).__name__}: {e}")
+                    # Log the full traceback for debugging
+                    import traceback
+                    log.error(f"[MCP] Full traceback:\n{traceback.format_exc()}")
                     if event_emitter:
                         await event_emitter(
                             {
@@ -1445,6 +1502,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             },
         )
         if mcp_tools_dict:
+            log.info(f"[MCP] Merging {len(mcp_tools_dict)} MCP tools into tools_dict (existing: {len(tools_dict)})")
             tools_dict = {**tools_dict, **mcp_tools_dict}
 
     if direct_tool_servers:
@@ -1460,10 +1518,16 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if mcp_clients:
         metadata["mcp_clients"] = mcp_clients
+        log.info(f"[MCP] Stored {len(mcp_clients)} MCP clients in metadata")
 
     if tools_dict:
+        mcp_tool_count = sum(1 for t in tools_dict.values() if t.get("type") == "mcp")
+        log.info(f"[MCP] Step 5: Passing {len(tools_dict)} tools to LLM ({mcp_tool_count} MCP tools)")
+        log.debug(f"[MCP] All tool names: {list(tools_dict.keys())}")
+
         if metadata.get("params", {}).get("function_calling") == "native":
             # If the function calling is native, then call the tools function calling handler
+            log.info("[MCP] Step 5: Using NATIVE function calling mode")
             metadata["tools"] = tools_dict
             form_data["tools"] = [
                 {"type": "function", "function": tool.get("spec", {})}

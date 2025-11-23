@@ -628,6 +628,15 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
 
         for idx, model_list in enumerate(model_lists):
             if model_list is not None and "error" not in model_list:
+                # Check if this provider is BlueNexus
+                api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+                    str(idx),
+                    request.app.state.config.OPENAI_API_CONFIGS.get(
+                        request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
+                    ),
+                )
+                is_bluenexus = "bluenexus" in api_config.get("tags", [])
+
                 for model in model_list:
                     model_id = model.get("id") or model.get("name")
 
@@ -640,9 +649,14 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
                         continue
 
                     if model_id and model_id not in models:
+                        # Add BlueNexus prefix to model name if from BlueNexus provider
+                        model_name = model.get("name", model_id)
+                        if is_bluenexus and not model_name.startswith("BlueNexus:"):
+                            model_name = f"BlueNexus: {model_name}"
+
                         models[model_id] = {
                             **model,
-                            "name": model.get("name", model_id),
+                            "name": model_name,
                             "owned_by": "openai",
                             "openai": model,
                             "connection_type": model.get("connection_type", "external"),
