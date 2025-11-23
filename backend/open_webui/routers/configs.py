@@ -270,17 +270,40 @@ async def verify_tool_servers_config(
                     elif form_data.auth_type == "session":
                         token = request.state.token.credentials
                     elif form_data.auth_type == "system_oauth":
-                        try:
-                            if request.cookies.get("oauth_session_id", None):
-                                token = await request.app.state.oauth_manager.get_oauth_token(
-                                    user.id,
-                                    request.cookies.get("oauth_session_id", None),
+                        # Check if this is a BlueNexus MCP server
+                        oauth_provider = form_data.config.get("oauth_provider")
+
+                        if oauth_provider == "bluenexus" or (
+                            form_data.info and "bluenexus" in form_data.info.get("id", "")
+                        ):
+                            # Get BlueNexus OAuth session token
+                            session = OAuthSessions.get_session_by_provider_and_user_id(
+                                provider="bluenexus", user_id=user.id
+                            )
+                            if session:
+                                token = session.token
+                            else:
+                                log.warning(
+                                    f"No BlueNexus OAuth session found for user {user.id}"
                                 )
-                        except Exception as e:
-                            pass
+                        else:
+                            # Use standard system_oauth
+                            try:
+                                if request.cookies.get("oauth_session_id", None):
+                                    token = await request.app.state.oauth_manager.get_oauth_token(
+                                        user.id,
+                                        request.cookies.get("oauth_session_id", None),
+                                    )
+                            except Exception as e:
+                                pass
 
                     if token:
-                        headers = {"Authorization": f"Bearer {token}"}
+                        if isinstance(token, dict):
+                            # OAuth token object
+                            headers = {"Authorization": f"Bearer {token.get('access_token', '')}"}
+                        else:
+                            # String token
+                            headers = {"Authorization": f"Bearer {token}"}
 
                     await client.connect(form_data.url, headers=headers)
                     specs = await client.list_tool_specs()
@@ -323,6 +346,89 @@ async def verify_tool_servers_config(
             status_code=400,
             detail=f"Failed to connect to the tool server",
         )
+
+
+############################
+# BlueNexus MCP Servers
+############################
+
+
+class BlueNexusMCPServer(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    slug: str
+    label: str
+    description: Optional[str] = None
+    isActive: Optional[bool] = None
+    url: str
+
+
+class BlueNexusMCPServersResponse(BaseModel):
+    data: list[BlueNexusMCPServer]
+
+
+@router.get("/bluenexus/mcp_servers", response_model=BlueNexusMCPServersResponse)
+async def get_bluenexus_mcp_servers(
+    request: Request, user=Depends(get_verified_user)
+):
+    """
+    Get available BlueNexus MCP servers for the authenticated user.
+    Requires BlueNexus OAuth connection with mcp-proxy scope.
+    """
+    try:
+        from open_webui.config import BLUENEXUS_API_BASE_URL
+
+        if not BLUENEXUS_API_BASE_URL.value:
+            log.warning("BLUENEXUS_API_BASE_URL not configured")
+            return {"data": []}
+
+        # Get BlueNexus OAuth session token
+        session = OAuthSessions.get_session_by_provider_and_user_id(
+            provider="bluenexus", user_id=user.id
+        )
+
+        if not session:
+            log.warning(f"No BlueNexus OAuth session found for user {user.id}")
+            return {"data": []}
+
+        access_token = session.token.get("access_token")
+        if not access_token:
+            log.warning(f"No access token found in BlueNexus session for user {user.id}")
+            return {"data": []}
+
+        # Fetch available MCP servers from BlueNexus API
+        mcp_servers_url = f"{BLUENEXUS_API_BASE_URL.value}/api/v1/mcps"
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        async with aiohttp.ClientSession(trust_env=True) as session:
+            from open_webui.routers.openai import get_ssl_context
+
+            async with session.get(
+                mcp_servers_url, headers=headers, ssl=get_ssl_context(mcp_servers_url)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    mcp_servers = result.get("data", [])
+
+                    # Transform to include full proxy URL
+                    for server in mcp_servers:
+                        # The URL should point to the BlueNexus MCP proxy
+                        server["url"] = (
+                            f"{BLUENEXUS_API_BASE_URL.value}/api/v1/mcps/{server['slug']}"
+                        )
+
+                    log.info(
+                        f"Fetched {len(mcp_servers)} BlueNexus MCP servers for user {user.id}"
+                    )
+                    return {"data": mcp_servers}
+                else:
+                    log.error(
+                        f"Failed to fetch BlueNexus MCP servers: HTTP {response.status}"
+                    )
+                    return {"data": []}
+
+    except Exception as e:
+        log.error(f"Error fetching BlueNexus MCP servers: {e}")
+        return {"data": []}
 
 
 ############################

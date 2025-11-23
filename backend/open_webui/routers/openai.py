@@ -306,6 +306,7 @@ def ensure_bluenexus_provider(request: Request, user: UserModel):
             updated_configs[str(idx)] = {
                 "name": "BluNexus",
                 "auth_type": "system_oauth",
+                "oauth_provider": "bluenexus",
                 "enable": True,
                 "connection_type": "external",
                 "tags": ["bluenexus"],
@@ -1007,6 +1008,19 @@ async def generate_chat_completion(
 
     if "max_tokens" in payload and "max_completion_tokens" in payload:
         del payload["max_tokens"]
+
+    # Add default max_tokens for Anthropic models (they require it)
+    model_name = payload.get("model", "")
+    model_name_lower = model_name.lower()
+    is_anthropic_model = "anthropic/" in model_name_lower or "claude" in model_name_lower
+    log.info(f"Chat completion model: {model_name}, is_anthropic: {is_anthropic_model}, max_tokens in payload: {'max_tokens' in payload}")
+    if (
+        is_anthropic_model
+        and "max_tokens" not in payload
+        and "max_completion_tokens" not in payload
+    ):
+        payload["max_tokens"] = 4096
+        log.info(f"Added default max_tokens=4096 for Anthropic model: {model_name}")
 
     # Convert the modified body back to JSON
     if "logit_bias" in payload:

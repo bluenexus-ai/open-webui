@@ -1337,11 +1337,38 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             f"Bearer {request.state.token.credentials}"
                         )
                     elif auth_type == "system_oauth":
-                        oauth_token = extra_params.get("__oauth_token__", None)
-                        if oauth_token:
-                            headers["Authorization"] = (
-                                f"Bearer {oauth_token.get('access_token', '')}"
+                        # Check if this is a BlueNexus MCP server (URL contains bluenexus)
+                        oauth_provider = mcp_server_connection.get("config", {}).get(
+                            "oauth_provider"
+                        )
+
+                        log.info(f"[MCP AUTH DEBUG] server_id: {server_id}, oauth_provider: {oauth_provider}, config: {mcp_server_connection.get('config', {})}")
+
+                        if oauth_provider == "bluenexus" or "bluenexus" in server_id:
+                            # Get BlueNexus OAuth session token directly
+                            from open_webui.models.oauth_sessions import OAuthSessions
+
+                            session = OAuthSessions.get_session_by_provider_and_user_id(
+                                provider="bluenexus", user_id=user.id
                             )
+                            log.info(f"[MCP AUTH DEBUG] Found BlueNexus OAuth session: {session is not None}")
+                            if session:
+                                oauth_token = session.token
+                                headers["Authorization"] = (
+                                    f"Bearer {oauth_token.get('access_token', '')}"
+                                )
+                                log.info(f"[MCP AUTH DEBUG] Added Authorization header with token")
+                            else:
+                                log.warning(
+                                    f"No BlueNexus OAuth session found for user {user.id}"
+                                )
+                        else:
+                            # Use the OAuth token from extra_params (standard system_oauth)
+                            oauth_token = extra_params.get("__oauth_token__", None)
+                            if oauth_token:
+                                headers["Authorization"] = (
+                                    f"Bearer {oauth_token.get('access_token', '')}"
+                                )
                     elif auth_type == "oauth_2.1":
                         try:
                             splits = server_id.split(":")

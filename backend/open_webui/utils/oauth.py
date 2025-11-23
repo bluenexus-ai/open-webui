@@ -643,7 +643,7 @@ class OAuthClientManager:
                             ]
 
                         # Add timestamp for tracking
-                        new_token_data["issued_at"] = datetime.now().timestamp()
+                        new_token_data["issued_at"] = int(datetime.now().timestamp())
 
                         # Calculate expires_at if we have expires_in
                         if (
@@ -703,11 +703,11 @@ class OAuthClientManager:
             if token:
                 try:
                     # Add timestamp for tracking
-                    token["issued_at"] = datetime.now().timestamp()
+                    token["issued_at"] = int(datetime.now().timestamp())
 
                     # Calculate expires_at if we have expires_in
                     if "expires_in" in token and "expires_at" not in token:
-                        token["expires_at"] = (
+                        token["expires_at"] = int(
                             datetime.now().timestamp() + token["expires_in"]
                         )
 
@@ -809,12 +809,25 @@ class OAuthManager:
                 )
                 return None
 
+            # Check if token needs refresh (expires within 5 minutes)
+            token_expires_at = datetime.fromtimestamp(session.expires_at)
+            time_until_expiry = token_expires_at - datetime.now()
+
+            if session.provider == "bluenexus":
+                log.info(f"BlueNexus token check for user {user_id}:")
+                log.info(f"  Token expires at: {token_expires_at.isoformat()}")
+                log.info(f"  Time until expiry: {time_until_expiry}")
+                log.info(f"  Force refresh: {force_refresh}")
+
             if force_refresh or datetime.now() + timedelta(
                 minutes=5
-            ) >= datetime.fromtimestamp(session.expires_at):
-                log.debug(
-                    f"Token refresh needed for user {user_id}, provider {session.provider}"
-                )
+            ) >= token_expires_at:
+                if session.provider == "bluenexus":
+                    log.info(f"BlueNexus token refresh triggered for user {user_id} (force={force_refresh}, expires_soon={time_until_expiry < timedelta(minutes=5)})")
+                else:
+                    log.debug(
+                        f"Token refresh needed for user {user_id}, provider {session.provider}"
+                    )
                 refreshed_token = await self._refresh_token(session)
                 if refreshed_token:
                     return refreshed_token
@@ -883,17 +896,26 @@ class OAuthManager:
                 log.error(f"No OAuth client found for provider {provider}")
                 return None
 
+            # Try to get token endpoint from server metadata URL, or fall back to client's access_token_url
             server_metadata_url = self.get_server_metadata_url(provider)
             token_endpoint = None
-            async with aiohttp.ClientSession(trust_env=True) as session_http:
-                async with session_http.get(server_metadata_url) as r:
-                    if r.status == 200:
-                        openid_data = await r.json()
-                        token_endpoint = openid_data.get("token_endpoint")
-                    else:
-                        log.error(
-                            f"Failed to fetch OpenID configuration for provider {provider}"
-                        )
+
+            if server_metadata_url:
+                async with aiohttp.ClientSession(trust_env=True) as session_http:
+                    async with session_http.get(server_metadata_url, ssl=AIOHTTP_CLIENT_SESSION_SSL) as r:
+                        if r.status == 200:
+                            openid_data = await r.json()
+                            token_endpoint = openid_data.get("token_endpoint")
+                        else:
+                            log.warning(
+                                f"Failed to fetch OpenID configuration for provider {provider}, will try access_token_url"
+                            )
+
+            # Fall back to client's access_token_url if no token endpoint from metadata
+            if not token_endpoint and hasattr(client, "access_token_url") and client.access_token_url:
+                token_endpoint = client.access_token_url
+                log.debug(f"Using client access_token_url for provider {provider}: {token_endpoint}")
+
             if not token_endpoint:
                 log.error(f"No token endpoint found for provider {provider}")
                 return None
@@ -908,13 +930,16 @@ class OAuthManager:
             if hasattr(client, "client_secret") and client.client_secret:
                 refresh_data["client_secret"] = client.client_secret
 
+            # Determine SSL setting - disable for bluenexus (self-signed cert)
+            ssl_setting = False if provider == "bluenexus" else AIOHTTP_CLIENT_SESSION_SSL
+
             # Make refresh request
             async with aiohttp.ClientSession(trust_env=True) as session_http:
                 async with session_http.post(
                     token_endpoint,
                     data=refresh_data,
                     headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ssl=ssl_setting,
                 ) as r:
                     if r.status == 200:
                         new_token_data = await r.json()
@@ -926,17 +951,22 @@ class OAuthManager:
                             ]
 
                         # Add timestamp for tracking
-                        new_token_data["issued_at"] = datetime.now().timestamp()
+                        new_token_data["issued_at"] = int(datetime.now().timestamp())
 
-                        # Calculate expires_at if we have expires_in
-                        if (
-                            "expires_in" in new_token_data
-                            and "expires_at" not in new_token_data
-                        ):
+                        # Always calculate expires_at from expires_in to ensure correct timestamp
+                        if "expires_in" in new_token_data:
                             new_token_data["expires_at"] = int(
                                 datetime.now().timestamp()
                                 + new_token_data["expires_in"]
                             )
+
+                        # Log refresh details for BlueNexus
+                        if provider == "bluenexus":
+                            log.info(f"BlueNexus token refresh successful:")
+                            log.info(f"  New expires_at: {new_token_data.get('expires_at')}")
+                            log.info(f"  New expires_in: {new_token_data.get('expires_in')} seconds")
+                            access_token = new_token_data.get("access_token", "N/A")
+                            log.info(f"  New Access Token: {access_token[:50]}..." if len(access_token) > 50 else f"  New Access Token: {access_token}")
 
                         log.debug(f"Token refresh successful for provider {provider}")
                         return new_token_data
@@ -1538,12 +1568,19 @@ class OAuthManager:
             )
 
         try:
+            # Log raw token from BlueNexus for debugging
+            if provider == "bluenexus":
+                log.info(f"BlueNexus raw token keys: {list(token.keys())}")
+                log.info(f"BlueNexus raw expires_at: {token.get('expires_at')}")
+                log.info(f"BlueNexus raw expires_in: {token.get('expires_in')}")
+
             # Add timestamp for tracking
-            token["issued_at"] = datetime.now().timestamp()
+            token["issued_at"] = int(datetime.now().timestamp())
 
             # Calculate expires_at if we have expires_in
-            if "expires_in" in token and "expires_at" not in token:
-                token["expires_at"] = datetime.now().timestamp() + token["expires_in"]
+            # Always recalculate for bluenexus to ensure correct timestamp
+            if "expires_in" in token:
+                token["expires_at"] = int(datetime.now().timestamp() + token["expires_in"])
 
             # Clean up any existing sessions for this user/provider first
             sessions = OAuthSessions.get_sessions_by_user_id(user.id)
@@ -1568,6 +1605,27 @@ class OAuthManager:
             log.info(
                 f"Stored OAuth session server-side for user {user.id}, provider {provider}"
             )
+
+            # Log token details for debugging (BlueNexus)
+            if provider == "bluenexus":
+                access_token = token.get("access_token", "N/A")
+                refresh_token = token.get("refresh_token", "N/A")
+                expires_at = token.get("expires_at")
+                expires_in = token.get("expires_in")
+                issued_at = token.get("issued_at")
+
+                # Format expires_at as readable datetime if available
+                expires_at_str = "N/A"
+                if expires_at:
+                    from datetime import datetime as dt
+                    expires_at_str = dt.fromtimestamp(expires_at).isoformat()
+
+                log.info(f"BlueNexus OAuth Token Details for user {user.id}:")
+                log.info(f"  Access Token: {access_token[:50]}..." if len(access_token) > 50 else f"  Access Token: {access_token}")
+                log.info(f"  Refresh Token: {refresh_token[:50]}..." if refresh_token and len(refresh_token) > 50 else f"  Refresh Token: {refresh_token}")
+                log.info(f"  Expires At: {expires_at_str} (timestamp: {expires_at})")
+                log.info(f"  Expires In: {expires_in} seconds")
+                log.info(f"  Issued At: {issued_at}")
 
             # Auto-configure BlueNexus LLM API if logging in via BlueNexus
             if provider == "bluenexus":
