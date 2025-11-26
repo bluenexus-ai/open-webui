@@ -16,6 +16,7 @@ import logging
 import asyncio
 
 from open_webui.env import SRC_LOG_LEVELS
+from open_webui.config import ENABLE_BLUENEXUS, ENABLE_BLUENEXUS_SYNC
 from open_webui.utils.bluenexus.chat_storage import BlueNexusChatStorage
 from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
 from open_webui.models.chats import Chats
@@ -59,6 +60,16 @@ class BlueNexusSyncService:
                 "conflicts": 0,   # Conflicts resolved
             }
         """
+        # Check if BlueNexus is enabled
+        if not ENABLE_BLUENEXUS.value:
+            log.debug(f"[BlueNexus Sync] BlueNexus disabled via ENABLE_BLUENEXUS, skipping login sync for user={user_id}")
+            return {"pulled": 0, "updated": 0, "created": 0, "conflicts": 0}
+
+        # Check if BlueNexus sync is enabled
+        if not ENABLE_BLUENEXUS_SYNC.value:
+            log.debug(f"[BlueNexus Sync] Sync disabled via ENABLE_BLUENEXUS_SYNC, skipping login sync for user={user_id}")
+            return {"pulled": 0, "updated": 0, "created": 0, "conflicts": 0}
+
         log.info(f"[BlueNexus Sync] Starting login sync for user={user_id}")
 
         client = get_bluenexus_client_for_user(user_id)
@@ -194,6 +205,16 @@ class BlueNexusSyncService:
         Returns:
             True if sync was successful, False otherwise
         """
+        # Check if BlueNexus is enabled
+        if not ENABLE_BLUENEXUS.value:
+            log.debug(f"[BlueNexus Sync] BlueNexus disabled via ENABLE_BLUENEXUS, skipping sync for chat {chat_id}")
+            return False
+
+        # Check if BlueNexus sync is enabled
+        if not ENABLE_BLUENEXUS_SYNC.value:
+            log.debug(f"[BlueNexus Sync] Sync disabled via ENABLE_BLUENEXUS_SYNC, skipping sync for chat {chat_id}")
+            return False
+
         log.debug(f"[BlueNexus Sync] Syncing chat {chat_id} to BlueNexus (operation={operation})")
 
         client = get_bluenexus_client_for_user(user_id)
@@ -302,6 +323,16 @@ class BlueNexusSyncService:
         Returns:
             Dictionary with sync statistics
         """
+        # Check if BlueNexus is enabled
+        if not ENABLE_BLUENEXUS.value:
+            log.debug(f"[BlueNexus Sync] BlueNexus disabled via ENABLE_BLUENEXUS, skipping bulk sync for user={user_id}")
+            return {"synced": 0, "failed": 0}
+
+        # Check if BlueNexus sync is enabled
+        if not ENABLE_BLUENEXUS_SYNC.value:
+            log.debug(f"[BlueNexus Sync] Sync disabled via ENABLE_BLUENEXUS_SYNC, skipping bulk sync for user={user_id}")
+            return {"synced": 0, "failed": 0}
+
         log.info(f"[BlueNexus Sync] Starting bulk sync for user={user_id}")
 
         client = get_bluenexus_client_for_user(user_id)

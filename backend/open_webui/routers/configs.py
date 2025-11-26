@@ -375,7 +375,12 @@ async def get_bluenexus_mcp_servers(
     Requires BlueNexus OAuth connection with mcp-proxy scope.
     """
     try:
-        from open_webui.config import BLUENEXUS_API_BASE_URL
+        from open_webui.config import BLUENEXUS_API_BASE_URL, ENABLE_BLUENEXUS
+
+        # Check if BlueNexus is enabled
+        if not ENABLE_BLUENEXUS.value:
+            log.debug(f"BlueNexus MCP servers request skipped - BlueNexus disabled for user {user.id}")
+            return {"data": []}
 
         if not BLUENEXUS_API_BASE_URL.value:
             log.warning("BLUENEXUS_API_BASE_URL not configured")

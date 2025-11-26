@@ -271,6 +271,12 @@ def ensure_bluenexus_provider(request: Request, user: UserModel):
     authenticates via BluNexus OAuth. Uses per-user OAuth tokens via `system_oauth`.
     """
     try:
+        from open_webui.config import ENABLE_BLUENEXUS
+
+        # Check if BlueNexus is enabled (master flag)
+        if not ENABLE_BLUENEXUS.value:
+            return
+
         if not getattr(request.app.state.config, "BLUENEXUS_LLM_AUTO_ENABLE", False):
             return
 

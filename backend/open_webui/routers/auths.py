@@ -1101,6 +1101,13 @@ async def refresh_oauth_token(request: Request, user=Depends(get_current_user)):
     This endpoint is designed to be called periodically by the frontend
     to keep the OAuth session alive for active users.
     """
+    from open_webui.config import ENABLE_BLUENEXUS
+
+    # Check if BlueNexus (or any OAuth) is enabled
+    if not ENABLE_BLUENEXUS.value:
+        log.debug(f"OAuth refresh skipped - BlueNexus disabled for user {user.id}")
+        return OAuthTokenStatusResponse(has_session=False)
+
     log.info(f"OAuth refresh requested for user {user.id}")
 
     oauth_session_id = request.cookies.get("oauth_session_id")

@@ -1778,6 +1778,14 @@ async def get_app_config(request: Request):
     if user is None:
         onboarding = user_count == 0
 
+    # Filter OAuth providers based on ENABLE_BLUENEXUS flag
+    from open_webui.config import ENABLE_BLUENEXUS
+    oauth_providers = {
+        name: config.get("name", name)
+        for name, config in OAUTH_PROVIDERS.items()
+        if name != "bluenexus" or ENABLE_BLUENEXUS.value
+    }
+
     return {
         **({"onboarding": True} if onboarding else {}),
         "status": True,
@@ -1785,10 +1793,7 @@ async def get_app_config(request: Request):
         "version": VERSION,
         "default_locale": str(DEFAULT_LOCALE),
         "oauth": {
-            "providers": {
-                name: config.get("name", name)
-                for name, config in OAUTH_PROVIDERS.items()
-            }
+            "providers": oauth_providers
         },
         "features": {
             "auth": WEBUI_AUTH,
@@ -1800,6 +1805,7 @@ async def get_app_config(request: Request):
             "enable_login_form": app.state.config.ENABLE_LOGIN_FORM,
             "enable_websocket": ENABLE_WEBSOCKET_SUPPORT,
             "enable_version_update_check": ENABLE_VERSION_UPDATE_CHECK,
+            "enable_bluenexus": ENABLE_BLUENEXUS.value,
             **(
                 {
                     "enable_direct_connections": app.state.config.ENABLE_DIRECT_CONNECTIONS,

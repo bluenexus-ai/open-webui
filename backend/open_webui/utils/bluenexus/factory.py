@@ -8,6 +8,7 @@ import logging
 from typing import Optional
 
 from open_webui.env import SRC_LOG_LEVELS
+from open_webui.config import ENABLE_BLUENEXUS
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.utils.bluenexus.client import BlueNexusDataClient
 from open_webui.utils.bluenexus.types import BlueNexusAuthError
@@ -39,6 +40,11 @@ def get_bluenexus_client_for_user(
         if client:
             chats = await client.query("owui-chats")
     """
+    # Check if BlueNexus is enabled
+    if not ENABLE_BLUENEXUS.value:
+        log.debug(f"[BlueNexus Factory] BlueNexus disabled via ENABLE_BLUENEXUS, returning None for user {user_id}")
+        return None
+
     # Get BlueNexus OAuth session for user
     log.info(f"[BlueNexus Factory] Looking up BlueNexus OAuth session for user {user_id}")
     session = OAuthSessions.get_session_by_provider_and_user_id(
@@ -90,6 +96,10 @@ def has_bluenexus_session(user_id: str) -> bool:
     Returns:
         True if user has a BlueNexus session with access token
     """
+    # Check if BlueNexus is enabled
+    if not ENABLE_BLUENEXUS.value:
+        return False
+
     log.debug(f"[BlueNexus Factory] Checking if user {user_id} has BlueNexus session")
     session = OAuthSessions.get_session_by_provider_and_user_id(
         provider="bluenexus",

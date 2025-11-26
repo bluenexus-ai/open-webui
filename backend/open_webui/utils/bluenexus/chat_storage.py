@@ -209,13 +209,14 @@ class BlueNexusChatStorage:
 
         Args:
             user_id: Owner user ID
-            chat_data: Chat content (messages, history)
+            chat_data: Chat content (messages, history). If chat_data["id"] exists, it will be used as owui_id.
             folder_id: Optional folder ID
 
         Returns:
             Created chat as dictionary (ChatModel compatible)
         """
-        owui_id = str(uuid.uuid4())
+        # Use provided ID if available, otherwise generate new one
+        owui_id = chat_data.get("id", str(uuid.uuid4()))
         now = int(time.time())
 
         chat_model = {
@@ -308,7 +309,7 @@ class BlueNexusChatStorage:
         """
         log.info(f"[BlueNexus Chat Storage] Getting chat by id={chat_id} from collection='{self.collection}'")
         try:
-            # First try to find by owui_id
+            # Find by owui_id (query by field)
             bn_id = await self._get_bluenexus_id_by_owui_id(chat_id)
             if bn_id:
                 log.debug(f"[BlueNexus Chat Storage] Found by owui_id, fetching bn_id={bn_id}")
@@ -316,11 +317,9 @@ class BlueNexusChatStorage:
                 log.info(f"[BlueNexus Chat Storage] Retrieved chat bn_id={bn_id} from collection='{self.collection}'")
                 return ChatData.from_bluenexus(record)
 
-            # Try direct BlueNexus ID lookup
-            log.debug(f"[BlueNexus Chat Storage] Trying direct BlueNexus ID lookup for {chat_id}")
-            record = await self.client.get(self.collection, chat_id)
-            log.info(f"[BlueNexus Chat Storage] Retrieved chat by direct ID={chat_id} from collection='{self.collection}'")
-            return ChatData.from_bluenexus(record)
+            # Not found by owui_id
+            log.info(f"[BlueNexus Chat Storage] Chat not found: {chat_id} in collection='{self.collection}'")
+            return None
 
         except BlueNexusNotFoundError:
             log.info(f"[BlueNexus Chat Storage] Chat not found: {chat_id} in collection='{self.collection}'")

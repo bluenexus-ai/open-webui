@@ -493,6 +493,30 @@ BLUENEXUS_LLM_AUTO_ENABLE = PersistentConfig(
     os.environ.get("BLUENEXUS_LLM_AUTO_ENABLE", "True").lower() == "true",
 )
 
+####################################
+# BlueNexus Master Enable Flag
+####################################
+
+ENABLE_BLUENEXUS = PersistentConfig(
+    "ENABLE_BLUENEXUS",
+    "bluenexus.enable",
+    os.environ.get("ENABLE_BLUENEXUS", "True").lower() == "true",
+)
+
+####################################
+# BlueNexus Data Sync
+####################################
+
+ENABLE_BLUENEXUS_SYNC = PersistentConfig(
+    "ENABLE_BLUENEXUS_SYNC",
+    "bluenexus.sync.enable",
+    os.environ.get("ENABLE_BLUENEXUS_SYNC", "True").lower() == "true",
+)
+
+####################################
+# Generic OAuth/OIDC
+####################################
+
 OAUTH_CLIENT_ID = PersistentConfig(
     "OAUTH_CLIENT_ID",
     "oauth.oidc.client_id",
@@ -527,6 +551,12 @@ OAUTH_TIMEOUT = PersistentConfig(
     "OAUTH_TIMEOUT",
     "oauth.oidc.oauth_timeout",
     os.environ.get("OAUTH_TIMEOUT", ""),
+)
+
+OAUTH_SSL_VERIFY = PersistentConfig(
+    "OAUTH_SSL_VERIFY",
+    "oauth.oidc.ssl_verify",
+    os.environ.get("OAUTH_SSL_VERIFY", "True").lower() == "true",
 )
 
 OAUTH_TOKEN_ENDPOINT_AUTH_METHOD = PersistentConfig(
@@ -762,11 +792,17 @@ def load_oauth_providers():
     if BLUENEXUS_CLIENT_ID.value and BLUENEXUS_CLIENT_SECRET.value:
         import httpx
         import urllib3
+        import ssl
 
         # Disable SSL warnings
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         def bluenexus_oauth_register(oauth: OAuth):
+            # Create SSL context that doesn't verify certificates
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
             # Create httpx client with SSL verification completely disabled
             httpx_client = httpx.AsyncClient(
                 verify=False,  # Disable SSL verification
@@ -781,6 +817,7 @@ def load_oauth_providers():
                 authorize_url=BLUENEXUS_AUTHORIZATION_URL.value,
                 api_base_url=BLUENEXUS_API_BASE_URL.value,
                 userinfo_endpoint=f"{BLUENEXUS_API_BASE_URL.value}/api/v1/accounts/me",
+                server_metadata_url=None,  # Disable automatic metadata discovery to avoid SSL issues
                 client_kwargs={
                     "scope": BLUENEXUS_OAUTH_SCOPE.value,
                     "code_challenge_method": "S256",

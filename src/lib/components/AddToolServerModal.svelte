@@ -8,7 +8,7 @@
 	import { getContext, onMount } from 'svelte';
 	const i18n = getContext('i18n');
 
-	import { settings } from '$lib/stores';
+	import { settings, config } from '$lib/stores';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
 	import Minus from '$lib/components/icons/Minus.svelte';
@@ -67,6 +67,13 @@
 	let loadingBlueNexusMCP = false;
 
 	const fetchBlueNexusMCPServers = async () => {
+		// Check if BlueNexus is enabled before fetching
+		if (!$config?.features?.enable_bluenexus) {
+			console.debug('BlueNexus is disabled, skipping MCP servers fetch');
+			blueNexusMCPServers = [];
+			return;
+		}
+
 		loadingBlueNexusMCP = true;
 		try {
 			blueNexusMCPServers = await getBlueNexusMCPServers(localStorage.token);

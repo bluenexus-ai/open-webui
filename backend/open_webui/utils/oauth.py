@@ -53,6 +53,7 @@ from open_webui.config import (
     OAUTH_ADMIN_ROLES,
     OAUTH_ALLOWED_DOMAINS,
     OAUTH_UPDATE_PICTURE_ON_LOGIN,
+    OAUTH_SSL_VERIFY,
     WEBHOOK_URL,
     JWT_EXPIRES_IN,
     AppConfig,
@@ -116,6 +117,7 @@ auth_manager_config.OAUTH_ALLOWED_DOMAINS = OAUTH_ALLOWED_DOMAINS
 auth_manager_config.WEBHOOK_URL = WEBHOOK_URL
 auth_manager_config.JWT_EXPIRES_IN = JWT_EXPIRES_IN
 auth_manager_config.OAUTH_UPDATE_PICTURE_ON_LOGIN = OAUTH_UPDATE_PICTURE_ON_LOGIN
+auth_manager_config.OAUTH_SSL_VERIFY = OAUTH_SSL_VERIFY
 
 
 FERNET = None
@@ -183,6 +185,14 @@ def _build_oauth_callback_error_message(e: Exception) -> str:
 
     message = f"OAuth callback failed: {detail}"
     return message[:197] + "..." if len(message) > 200 else message
+
+
+def _oauth_ssl_setting(provider: Optional[str] = None) -> bool:
+    """Return ssl setting for aiohttp calls honoring OAuth SSL verification flag."""
+    if provider == "bluenexus":
+        return False
+
+    return AIOHTTP_CLIENT_SESSION_SSL if OAUTH_SSL_VERIFY.value else False
 
 
 def is_in_blocked_groups(group_name: str, groups: list) -> bool:
@@ -288,7 +298,7 @@ async def get_oauth_client_info_with_dynamic_client_registration(
         for url in discovery_urls:
             async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(
-                    url, ssl=AIOHTTP_CLIENT_SESSION_SSL
+                    url, ssl=_oauth_ssl_setting()
                 ) as oauth_server_metadata_response:
                     if oauth_server_metadata_response.status == 200:
                         try:
@@ -324,7 +334,7 @@ async def get_oauth_client_info_with_dynamic_client_registration(
         # Perform dynamic client registration and return client info
         async with aiohttp.ClientSession(trust_env=True) as session:
             async with session.post(
-                registration_url, json=registration_data, ssl=AIOHTTP_CLIENT_SESSION_SSL
+                registration_url, json=registration_data, ssl=_oauth_ssl_setting()
             ) as oauth_client_registration_response:
                 try:
                     registration_response_json = (
@@ -446,7 +456,7 @@ class OAuthClientManager:
                 async with session.get(
                     authorization_url,
                     allow_redirects=False,
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ssl=_oauth_ssl_setting(),
                 ) as resp:
                     if resp.status < 400:
                         return True
@@ -603,7 +613,8 @@ class OAuthClientManager:
             token_endpoint = None
             async with aiohttp.ClientSession(trust_env=True) as session_http:
                 async with session_http.get(
-                    self.get_server_metadata_url(client_id)
+                    self.get_server_metadata_url(client_id),
+                    ssl=_oauth_ssl_setting(client_id),
                 ) as r:
                     if r.status == 200:
                         openid_data = await r.json()
@@ -631,7 +642,7 @@ class OAuthClientManager:
                     token_endpoint,
                     data=refresh_data,
                     headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ssl=_oauth_ssl_setting(client_id),
                 ) as r:
                     if r.status == 200:
                         new_token_data = await r.json()
@@ -902,7 +913,9 @@ class OAuthManager:
 
             if server_metadata_url:
                 async with aiohttp.ClientSession(trust_env=True) as session_http:
-                    async with session_http.get(server_metadata_url, ssl=AIOHTTP_CLIENT_SESSION_SSL) as r:
+                    async with session_http.get(
+                        server_metadata_url, ssl=_oauth_ssl_setting(provider)
+                    ) as r:
                         if r.status == 200:
                             openid_data = await r.json()
                             token_endpoint = openid_data.get("token_endpoint")
@@ -931,7 +944,7 @@ class OAuthManager:
                 refresh_data["client_secret"] = client.client_secret
 
             # Determine SSL setting - disable for bluenexus (self-signed cert)
-            ssl_setting = False if provider == "bluenexus" else AIOHTTP_CLIENT_SESSION_SSL
+            ssl_setting = _oauth_ssl_setting(provider)
 
             # Make refresh request
             async with aiohttp.ClientSession(trust_env=True) as session_http:
@@ -1274,7 +1287,7 @@ class OAuthManager:
                 }
             async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.get(
-                    picture_url, **get_kwargs, ssl=AIOHTTP_CLIENT_SESSION_SSL
+                    picture_url, **get_kwargs, ssl=_oauth_ssl_setting()
                 ) as resp:
                     if resp.ok:
                         picture = await resp.read()
@@ -1371,7 +1384,7 @@ class OAuthManager:
                             async with session.get(
                                 "https://api.github.com/user/emails",
                                 headers=headers,
-                                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                                ssl=_oauth_ssl_setting(provider),
                             ) as resp:
                                 if resp.ok:
                                     emails = await resp.json()
