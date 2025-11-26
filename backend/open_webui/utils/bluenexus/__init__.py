@@ -50,6 +50,7 @@ from open_webui.utils.bluenexus.factory import (
 )
 from open_webui.utils.bluenexus.chat_storage import BlueNexusChatStorage, ChatData
 from open_webui.utils.bluenexus.hybrid_chat_storage import HybridChatStorage, HybridChats
+from open_webui.utils.bluenexus.sync_service import BlueNexusSyncService, BlueNexusSync
 
 __all__ = [
     # Client
@@ -81,4 +82,7 @@ __all__ = [
     "ChatData",
     "HybridChatStorage",
     "HybridChats",
+    # Sync Service
+    "BlueNexusSyncService",
+    "BlueNexusSync",
 ]

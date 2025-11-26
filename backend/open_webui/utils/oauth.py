@@ -1635,6 +1635,22 @@ class OAuthManager:
                 except Exception as e:
                     log.error(f"Failed to configure BlueNexus LLM API: {e}")
 
+                # Sync user data from BlueNexus on login
+                try:
+                    from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                    import asyncio
+
+                    # Schedule sync in background (non-blocking)
+                    try:
+                        loop = asyncio.get_event_loop()
+                        loop.create_task(BlueNexusSync.sync_on_login(user.id))
+                        log.info(f"Scheduled BlueNexus login sync for user {user.id}")
+                    except RuntimeError:
+                        # No event loop, will sync on next request
+                        log.debug(f"No event loop, skipping login sync for user {user.id}")
+                except Exception as e:
+                    log.error(f"Failed to sync BlueNexus data on login: {e}")
+
         except Exception as e:
             log.error(f"Failed to store OAuth session server-side: {e}")
 

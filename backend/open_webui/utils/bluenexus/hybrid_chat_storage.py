@@ -1,12 +1,23 @@
 """
-Hybrid Chat Storage
+Hybrid Chat Storage (DEPRECATED)
 
-This module provides a hybrid storage facade that automatically switches
-between local database storage and BlueNexus cloud storage based on user
-authentication status.
+This module is now DEPRECATED in favor of the sync-based approach.
 
-For users logged in via BlueNexus OAuth, chats are stored in BlueNexus.
-For all other users, chats are stored in the local database.
+The sync-based approach keeps the local database as the primary storage
+and syncs data to BlueNexus for backup and cross-device sync purposes.
+
+This preserves compatibility with Open WebUI database migrations and
+reduces maintenance burden.
+
+For new implementations, use:
+- open_webui.utils.bluenexus.sync_service.BlueNexusSync
+
+The sync service provides:
+1. On login: Pull latest data from BlueNexus (sync_on_login)
+2. On data change: Push changes to BlueNexus (sync_chat_to_bluenexus_background)
+3. Conflict resolution based on timestamps
+
+This module is kept for backward compatibility only.
 """
 
 import logging

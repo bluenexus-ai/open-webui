@@ -23,11 +23,7 @@ from pydantic import BaseModel
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
-from open_webui.utils.bluenexus import (
-    get_bluenexus_client_for_user,
-    has_bluenexus_session,
-)
-from open_webui.utils.bluenexus.chat_storage import BlueNexusChatStorage
+from open_webui.utils.bluenexus.sync_service import BlueNexusSync
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
@@ -48,36 +44,6 @@ async def get_session_user_chat_list(
     include_folders: Optional[bool] = False,
 ):
     try:
-        log.info(f"[Chats Router] get_session_user_chat_list for user={user.id}, page={page}")
-
-        # Check if user has BlueNexus session
-        bn_client = get_bluenexus_client_for_user(user.id)
-        if bn_client:
-            log.info(f"[Chats Router] User {user.id} has BlueNexus session, using BlueNexus storage")
-            bn_storage = BlueNexusChatStorage(bn_client)
-
-            limit = 60
-            skip = (page - 1) * limit if page else 0
-
-            chats = await bn_storage.get_chats_by_user_id(
-                user_id=user.id,
-                include_archived=False,
-                skip=skip,
-                limit=limit,
-            )
-
-            # Convert to ChatTitleIdResponse format
-            return [
-                ChatTitleIdResponse(
-                    id=chat.get("id", ""),
-                    title=chat.get("title", "New Chat"),
-                    updated_at=chat.get("updated_at", 0),
-                    created_at=chat.get("created_at", 0),
-                )
-                for chat in chats
-            ]
-
-        log.info(f"[Chats Router] User {user.id} has no BlueNexus session, using local storage")
         if page is not None:
             limit = 60
             skip = (page - 1) * limit
@@ -167,26 +133,12 @@ async def get_user_chat_list_by_user_id(
 @router.post("/new", response_model=Optional[ChatResponse])
 async def create_new_chat(form_data: ChatForm, user=Depends(get_verified_user)):
     try:
-        # Check if user has BlueNexus session
-        log.info(f"[Chats Router] create_new_chat for user={user.id}, checking BlueNexus session")
-        bn_client = get_bluenexus_client_for_user(user.id)
-
-        if bn_client:
-            log.info(f"[Chats Router] User {user.id} has BlueNexus session, using BlueNexus storage")
-            bn_storage = BlueNexusChatStorage(bn_client)
-            chat_dict = await bn_storage.insert_new_chat(
-                user_id=user.id,
-                chat_data=form_data.chat,
-                folder_id=form_data.folder_id,
-            )
-            if chat_dict:
-                return ChatResponse(**chat_dict)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Failed to create chat in BlueNexus"
-            )
-
-        log.info(f"[Chats Router] User {user.id} has no BlueNexus session, using local storage")
+        # Create chat in local database
         chat = Chats.insert_new_chat(user.id, form_data)
+
+        # Sync to BlueNexus in background (non-blocking)
+        BlueNexusSync.sync_chat_to_bluenexus_background(chat.id, user.id, operation="create")
+
         return ChatResponse(**chat.model_dump())
     except Exception as e:
         log.exception(e)
@@ -490,26 +442,10 @@ async def get_user_chat_list_by_tag_name(
 
 @router.get("/{id}", response_model=Optional[ChatResponse])
 async def get_chat_by_id(id: str, user=Depends(get_verified_user)):
-    log.info(f"[Chats Router] get_chat_by_id id={id} for user={user.id}")
-
-    # Check if user has BlueNexus session
-    bn_client = get_bluenexus_client_for_user(user.id)
-    if bn_client:
-        log.info(f"[Chats Router] User {user.id} has BlueNexus session, using BlueNexus storage")
-        bn_storage = BlueNexusChatStorage(bn_client)
-        chat_dict = await bn_storage.get_chat_by_id_and_user_id(id, user.id)
-        if chat_dict:
-            return ChatResponse(**chat_dict)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.NOT_FOUND
-        )
-
-    log.info(f"[Chats Router] User {user.id} has no BlueNexus session, using local storage")
     chat = Chats.get_chat_by_id_and_user_id(id, user.id)
 
     if chat:
         return ChatResponse(**chat.model_dump())
-
     else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.NOT_FOUND
@@ -525,33 +461,14 @@ async def get_chat_by_id(id: str, user=Depends(get_verified_user)):
 async def update_chat_by_id(
     id: str, form_data: ChatForm, user=Depends(get_verified_user)
 ):
-    log.info(f"[Chats Router] update_chat_by_id id={id} for user={user.id}")
-
-    # Check if user has BlueNexus session
-    bn_client = get_bluenexus_client_for_user(user.id)
-    if bn_client:
-        log.info(f"[Chats Router] User {user.id} has BlueNexus session, using BlueNexus storage")
-        bn_storage = BlueNexusChatStorage(bn_client)
-
-        # Get existing chat
-        existing_chat = await bn_storage.get_chat_by_id_and_user_id(id, user.id)
-        if existing_chat:
-            # Merge chat data
-            updated_chat = {**existing_chat.get("chat", {}), **form_data.chat}
-            result = await bn_storage.update_chat_by_id(id, updated_chat)
-            if result:
-                return ChatResponse(**result)
-
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
-        )
-
-    log.info(f"[Chats Router] User {user.id} has no BlueNexus session, using local storage")
     chat = Chats.get_chat_by_id_and_user_id(id, user.id)
     if chat:
         updated_chat = {**chat.chat, **form_data.chat}
         chat = Chats.update_chat_by_id(id, updated_chat)
+
+        # Sync to BlueNexus in background (non-blocking)
+        BlueNexusSync.sync_chat_to_bluenexus_background(id, user.id, operation="update")
+
         return ChatResponse(**chat.model_dump())
     else:
         raise HTTPException(
@@ -676,6 +593,9 @@ async def delete_chat_by_id(request: Request, id: str, user=Depends(get_verified
 
         result = Chats.delete_chat_by_id(id)
 
+        # Sync deletion to BlueNexus in background
+        BlueNexusSync.sync_chat_to_bluenexus_background(id, user.id, operation="delete")
+
         return result
     else:
         if not has_permission(
@@ -692,6 +612,10 @@ async def delete_chat_by_id(request: Request, id: str, user=Depends(get_verified
                 Tags.delete_tag_by_name_and_user_id(tag, user.id)
 
         result = Chats.delete_chat_by_id_and_user_id(id, user.id)
+
+        # Sync deletion to BlueNexus in background
+        BlueNexusSync.sync_chat_to_bluenexus_background(id, user.id, operation="delete")
+
         return result
 
 
