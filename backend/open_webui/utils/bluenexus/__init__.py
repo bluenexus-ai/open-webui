@@ -1,30 +1,71 @@
 """
-BlueNexus API Client for Open WebUI
+BlueNexus Integration for Open WebUI
 
-This module provides a client for interacting with the BlueNexus User-Data API,
-enabling Open WebUI to store and retrieve user data in BlueNexus.
+This module provides a complete BlueNexus integration as an extension plugin.
+All functionality is gated by the ENABLE_BLUENEXUS flag.
+
+Core Features:
+- OAuth authentication with BlueNexus
+- LLM provider integration (OpenAI-compatible)
+- MCP (Model Context Protocol) server integration
+- Data synchronization service
+- User data storage API client
 
 Usage:
     from open_webui.utils.bluenexus import (
+        # Data Client
         BlueNexusDataClient,
         get_bluenexus_client_for_user,
         Collections,
         QueryOptions,
+        # OAuth & Auth
+        ensure_bluenexus_provider,
+        refresh_oauth_token,
+        # MCP
+        get_bluenexus_mcp_servers,
+        # Sync
+        BlueNexusSync,
     )
-
-    # Get client for a user
-    client = get_bluenexus_client_for_user(user_id)
-
-    # Create a chat record
-    chat = await client.create(Collections.CHATS, {
-        "title": "My Chat",
-        "messages": []
-    })
-
-    # Query chats
-    response = await client.query(Collections.CHATS, QueryOptions(limit=10))
 """
 
+# Configuration
+from open_webui.utils.bluenexus.config import (
+    ENABLE_BLUENEXUS,
+    ENABLE_BLUENEXUS_SYNC,
+    is_bluenexus_enabled,
+    is_bluenexus_sync_enabled,
+    is_bluenexus_configured,
+)
+
+# OAuth Integration
+from open_webui.utils.bluenexus.oauth import (
+    register_bluenexus_oauth,
+    get_bluenexus_oauth_provider_config,
+    should_disable_ssl_for_provider,
+)
+
+# LLM Provider Integration
+from open_webui.utils.bluenexus.llm import (
+    ensure_bluenexus_provider,
+    get_ssl_context_for_url,
+    get_bluenexus_oauth_token_for_headers,
+)
+
+# MCP Integration
+from open_webui.utils.bluenexus.mcp import (
+    get_bluenexus_mcp_servers,
+    get_bluenexus_mcp_oauth_token,
+    BlueNexusMCPServer,
+    BlueNexusMCPServersResponse,
+)
+
+# Auth Management
+from open_webui.utils.bluenexus.auth import (
+    refresh_oauth_token,
+    OAuthTokenStatusResponse,
+)
+
+# Data Client
 from open_webui.utils.bluenexus.client import BlueNexusDataClient
 from open_webui.utils.bluenexus.types import (
     BlueNexusRecord,
@@ -53,7 +94,29 @@ from open_webui.utils.bluenexus.hybrid_chat_storage import HybridChatStorage, Hy
 from open_webui.utils.bluenexus.sync_service import BlueNexusSyncService, BlueNexusSync
 
 __all__ = [
-    # Client
+    # Configuration
+    "ENABLE_BLUENEXUS",
+    "ENABLE_BLUENEXUS_SYNC",
+    "is_bluenexus_enabled",
+    "is_bluenexus_sync_enabled",
+    "is_bluenexus_configured",
+    # OAuth Integration
+    "register_bluenexus_oauth",
+    "get_bluenexus_oauth_provider_config",
+    "should_disable_ssl_for_provider",
+    # LLM Provider Integration
+    "ensure_bluenexus_provider",
+    "get_ssl_context_for_url",
+    "get_bluenexus_oauth_token_for_headers",
+    # MCP Integration
+    "get_bluenexus_mcp_servers",
+    "get_bluenexus_mcp_oauth_token",
+    "BlueNexusMCPServer",
+    "BlueNexusMCPServersResponse",
+    # Auth Management
+    "refresh_oauth_token",
+    "OAuthTokenStatusResponse",
+    # Data Client
     "BlueNexusDataClient",
     # Types
     "BlueNexusRecord",

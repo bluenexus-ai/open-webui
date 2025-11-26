@@ -436,82 +436,38 @@ GITHUB_CLIENT_REDIRECT_URI = PersistentConfig(
     os.environ.get("GITHUB_CLIENT_REDIRECT_URI", ""),
 )
 
-BLUENEXUS_CLIENT_ID = PersistentConfig(
-    "BLUENEXUS_CLIENT_ID",
-    "oauth.bluenexus.client_id",
-    os.environ.get("BLUENEXUS_CLIENT_ID", ""),
-)
-
-BLUENEXUS_CLIENT_SECRET = PersistentConfig(
-    "BLUENEXUS_CLIENT_SECRET",
-    "oauth.bluenexus.client_secret",
-    os.environ.get("BLUENEXUS_CLIENT_SECRET", ""),
-)
-
-BLUENEXUS_OAUTH_SCOPE = PersistentConfig(
-    "BLUENEXUS_OAUTH_SCOPE",
-    "oauth.bluenexus.scope",
-    os.environ.get("BLUENEXUS_OAUTH_SCOPE", "account auth-sessions llm-all mcp-proxy user-data connections providers"),
-)
-
-BLUENEXUS_REDIRECT_URI = PersistentConfig(
-    "BLUENEXUS_REDIRECT_URI",
-    "oauth.bluenexus.redirect_uri",
-    os.environ.get("BLUENEXUS_REDIRECT_URI", ""),
-)
-
-BLUENEXUS_API_BASE_URL = PersistentConfig(
-    "BLUENEXUS_API_BASE_URL",
-    "oauth.bluenexus.api_base_url",
-    os.environ.get("BLUENEXUS_API_BASE_URL", "https://localhost:3000"),
-)
-
-BLUENEXUS_AUTHORIZATION_URL = PersistentConfig(
-    "BLUENEXUS_AUTHORIZATION_URL",
-    "oauth.bluenexus.authorization_url",
-    os.environ.get("BLUENEXUS_AUTHORIZATION_URL", "http://localhost:3001/oauth/authorize"),
-)
-
-BLUENEXUS_TOKEN_URL = PersistentConfig(
-    "BLUENEXUS_TOKEN_URL",
-    "oauth.bluenexus.token_url",
-    os.environ.get("BLUENEXUS_TOKEN_URL", "https://localhost:3000/api/v1/auth/token"),
-)
-
-BLUENEXUS_LLM_API_BASE_URL = PersistentConfig(
-    "BLUENEXUS_LLM_API_BASE_URL",
-    "oauth.bluenexus.llm_api_base_url",
-    os.environ.get(
-        "BLUENEXUS_LLM_API_BASE_URL",
-        f"{BLUENEXUS_API_BASE_URL.value.rstrip('/')}/api/v1",
-    ),
-)
-
-BLUENEXUS_LLM_AUTO_ENABLE = PersistentConfig(
-    "BLUENEXUS_LLM_AUTO_ENABLE",
-    "oauth.bluenexus.llm_auto_enable",
-    os.environ.get("BLUENEXUS_LLM_AUTO_ENABLE", "True").lower() == "true",
-)
-
 ####################################
-# BlueNexus Master Enable Flag
+# BlueNexus Configuration
 ####################################
+# Import BlueNexus configuration from dedicated module
+# All BlueNexus functionality is gated by ENABLE_BLUENEXUS flag
 
-ENABLE_BLUENEXUS = PersistentConfig(
-    "ENABLE_BLUENEXUS",
-    "bluenexus.enable",
-    os.environ.get("ENABLE_BLUENEXUS", "True").lower() == "true",
-)
-
-####################################
-# BlueNexus Data Sync
-####################################
-
-ENABLE_BLUENEXUS_SYNC = PersistentConfig(
-    "ENABLE_BLUENEXUS_SYNC",
-    "bluenexus.sync.enable",
-    os.environ.get("ENABLE_BLUENEXUS_SYNC", "True").lower() == "true",
-)
+try:
+    from open_webui.utils.bluenexus.config import (
+        BLUENEXUS_CLIENT_ID,
+        BLUENEXUS_CLIENT_SECRET,
+        BLUENEXUS_OAUTH_SCOPE,
+        BLUENEXUS_REDIRECT_URI,
+        BLUENEXUS_API_BASE_URL,
+        BLUENEXUS_AUTHORIZATION_URL,
+        BLUENEXUS_TOKEN_URL,
+        BLUENEXUS_LLM_API_BASE_URL,
+        BLUENEXUS_LLM_AUTO_ENABLE,
+        ENABLE_BLUENEXUS,
+        ENABLE_BLUENEXUS_SYNC,
+    )
+except ImportError:
+    # Fallback if bluenexus module is not available
+    ENABLE_BLUENEXUS = PersistentConfig(
+        "ENABLE_BLUENEXUS",
+        "bluenexus.enable",
+        False,
+    )
+    ENABLE_BLUENEXUS_SYNC = PersistentConfig(
+        "ENABLE_BLUENEXUS_SYNC",
+        "bluenexus.sync.enable",
+        False,
+    )
 
 ####################################
 # Generic OAuth/OIDC
@@ -789,59 +745,17 @@ def load_oauth_providers():
             "sub_claim": "id",
         }
 
-    if BLUENEXUS_CLIENT_ID.value and BLUENEXUS_CLIENT_SECRET.value:
-        import httpx
-        import urllib3
-        import ssl
+    # BlueNexus OAuth Provider (imported from bluenexus module)
+    try:
+        from open_webui.utils.bluenexus.oauth import get_bluenexus_oauth_provider_config
 
-        # Disable SSL warnings
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-        def bluenexus_oauth_register(oauth: OAuth):
-            # Create SSL context that doesn't verify certificates
-            ssl_context = ssl.create_default_context()
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-
-            # Create httpx client with SSL verification completely disabled
-            httpx_client = httpx.AsyncClient(
-                verify=False,  # Disable SSL verification
-                trust_env=False  # Don't use proxy environment variables
-            )
-
-            client = oauth.register(
-                name="bluenexus",
-                client_id=BLUENEXUS_CLIENT_ID.value,
-                client_secret=BLUENEXUS_CLIENT_SECRET.value,
-                access_token_url=BLUENEXUS_TOKEN_URL.value,
-                authorize_url=BLUENEXUS_AUTHORIZATION_URL.value,
-                api_base_url=BLUENEXUS_API_BASE_URL.value,
-                userinfo_endpoint=f"{BLUENEXUS_API_BASE_URL.value}/api/v1/accounts/me",
-                server_metadata_url=None,  # Disable automatic metadata discovery to avoid SSL issues
-                client_kwargs={
-                    "scope": BLUENEXUS_OAUTH_SCOPE.value,
-                    "code_challenge_method": "S256",
-                    "token_endpoint_auth_method": "client_secret_post",  # Send credentials in POST body
-                    "verify": False,  # Disable SSL verification in authlib client_kwargs
-                    **(
-                        {"timeout": int(OAUTH_TIMEOUT.value)}
-                        if OAUTH_TIMEOUT.value
-                        else {}
-                    ),
-                },
-                redirect_uri=BLUENEXUS_REDIRECT_URI.value,
-                client=httpx_client,
-            )
-            return client
-
-        OAUTH_PROVIDERS["bluenexus"] = {
-            "redirect_uri": BLUENEXUS_REDIRECT_URI.value,
-            "register": bluenexus_oauth_register,
-            "sub_claim": "id",
-            "email_claim": "email", 
-            "username_claim": "name", 
-            "picture_claim": "avatar",
-        }
+        bluenexus_config = get_bluenexus_oauth_provider_config(
+            oauth_timeout=OAUTH_TIMEOUT.value
+        )
+        if bluenexus_config:
+            OAUTH_PROVIDERS["bluenexus"] = bluenexus_config
+    except ImportError:
+        pass
 
     if (
         OAUTH_CLIENT_ID.value
@@ -926,8 +840,12 @@ def load_oauth_providers():
         configured_providers.append("Microsoft")
     if GITHUB_CLIENT_ID.value:
         configured_providers.append("GitHub")
-    if BLUENEXUS_CLIENT_ID.value:
-        configured_providers.append("BlueNexus")
+    # BlueNexus check with fallback
+    try:
+        if BLUENEXUS_CLIENT_ID.value:
+            configured_providers.append("BlueNexus")
+    except (NameError, AttributeError):
+        pass
     if FEISHU_CLIENT_ID.value:
         configured_providers.append("Feishu")
 

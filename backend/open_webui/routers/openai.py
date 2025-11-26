@@ -64,22 +64,21 @@ log.setLevel(SRC_LOG_LEVELS["OPENAI"])
 ##########################################
 
 
-def get_ssl_context(url: str):
-    """
-    Get SSL context for a URL. Disables SSL verification for localhost.
-    """
-    parsed_url = urlparse(url)
-    hostname = parsed_url.hostname or ""
-
-    # Disable SSL verification for localhost
-    if hostname in ["localhost", "127.0.0.1", "::1"]:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        return ssl_context
-
-    # Use default SSL settings for non-localhost
-    return AIOHTTP_CLIENT_SESSION_SSL
+# Import SSL context helper from bluenexus module (with fallback)
+try:
+    from open_webui.utils.bluenexus.llm import get_ssl_context_for_url as get_ssl_context
+except ImportError:
+    # Fallback implementation if bluenexus module is not available
+    def get_ssl_context(url: str):
+        """Get SSL context for a URL. Disables SSL verification for localhost."""
+        parsed_url = urlparse(url)
+        hostname = parsed_url.hostname or ""
+        if hostname in ["localhost", "127.0.0.1", "::1"]:
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            return ssl_context
+        return AIOHTTP_CLIENT_SESSION_SSL
 
 
 async def send_get_request(
@@ -265,61 +264,14 @@ def get_microsoft_entra_id_access_token():
         return None
 
 
-def ensure_bluenexus_provider(request: Request, user: UserModel):
-    """
-    Dynamically register BluNexus as an OpenAI-compatible provider when the user
-    authenticates via BluNexus OAuth. Uses per-user OAuth tokens via `system_oauth`.
-    """
-    try:
-        from open_webui.config import ENABLE_BLUENEXUS
-
-        # Check if BlueNexus is enabled (master flag)
-        if not ENABLE_BLUENEXUS.value:
-            return
-
-        if not getattr(request.app.state.config, "BLUENEXUS_LLM_AUTO_ENABLE", False):
-            return
-
-        session_id = request.cookies.get("oauth_session_id")
-        if not session_id or not user:
-            return
-
-        session = OAuthSessions.get_session_by_id_and_user_id(session_id, user.id)
-        if not session or session.provider != "bluenexus":
-            return
-
-        base_url = getattr(request.app.state.config, "BLUENEXUS_LLM_API_BASE_URL", "")
-        if not base_url:
-            return
-
-        base_url = base_url.rstrip("/")
-
-        base_urls = request.app.state.config.OPENAI_API_BASE_URLS
-        if base_url not in base_urls:
-            request.app.state.config.OPENAI_API_BASE_URLS = [*base_urls, base_url]
-            request.app.state.config.OPENAI_API_KEYS = [
-                *request.app.state.config.OPENAI_API_KEYS,
-                "",
-            ]
-            request.app.state.BASE_MODELS = None
-            request.app.state.MODELS = None
-
-        idx = request.app.state.config.OPENAI_API_BASE_URLS.index(base_url)
-        api_configs = request.app.state.config.OPENAI_API_CONFIGS
-
-        if (str(idx) not in api_configs) and (base_url not in api_configs):
-            updated_configs = {**api_configs}
-            updated_configs[str(idx)] = {
-                "name": "BluNexus",
-                "auth_type": "system_oauth",
-                "oauth_provider": "bluenexus",
-                "enable": True,
-                "connection_type": "external",
-                "tags": ["bluenexus"],
-            }
-            request.app.state.config.OPENAI_API_CONFIGS = updated_configs
-    except Exception as e:
-        log.error(f"Error enabling BluNexus LLM provider: {e}")
+# Import BlueNexus provider setup from bluenexus module (with no-op fallback)
+try:
+    from open_webui.utils.bluenexus.llm import ensure_bluenexus_provider
+except ImportError:
+    # Fallback no-op function if bluenexus module is not available
+    def ensure_bluenexus_provider(request: Request, user: UserModel):
+        """No-op fallback for BlueNexus provider setup."""
+        pass
 
 
 ##########################################

@@ -119,9 +119,6 @@ from open_webui.config import (
     OPENAI_API_BASE_URLS,
     OPENAI_API_KEYS,
     OPENAI_API_CONFIGS,
-    # BluNexus LLM
-    BLUENEXUS_LLM_API_BASE_URL,
-    BLUENEXUS_LLM_AUTO_ENABLE,
     # Direct Connections
     ENABLE_DIRECT_CONNECTIONS,
     # Model list
@@ -701,8 +698,16 @@ app.state.OPENAI_MODELS = {}
 #
 ########################################
 
-app.state.config.BLUENEXUS_LLM_API_BASE_URL = BLUENEXUS_LLM_API_BASE_URL
-app.state.config.BLUENEXUS_LLM_AUTO_ENABLE = BLUENEXUS_LLM_AUTO_ENABLE
+# BlueNexus configuration (imported from bluenexus module)
+try:
+    from open_webui.utils.bluenexus.config import (
+        BLUENEXUS_LLM_API_BASE_URL,
+        BLUENEXUS_LLM_AUTO_ENABLE,
+    )
+    app.state.config.BLUENEXUS_LLM_API_BASE_URL = BLUENEXUS_LLM_API_BASE_URL
+    app.state.config.BLUENEXUS_LLM_AUTO_ENABLE = BLUENEXUS_LLM_AUTO_ENABLE
+except ImportError:
+    pass
 
 ########################################
 #
@@ -1779,12 +1784,18 @@ async def get_app_config(request: Request):
         onboarding = user_count == 0
 
     # Filter OAuth providers based on ENABLE_BLUENEXUS flag
-    from open_webui.config import ENABLE_BLUENEXUS
-    oauth_providers = {
-        name: config.get("name", name)
-        for name, config in OAUTH_PROVIDERS.items()
-        if name != "bluenexus" or ENABLE_BLUENEXUS.value
-    }
+    try:
+        from open_webui.utils.bluenexus.config import is_bluenexus_enabled
+        oauth_providers = {
+            name: config.get("name", name)
+            for name, config in OAUTH_PROVIDERS.items()
+            if name != "bluenexus" or is_bluenexus_enabled()
+        }
+    except ImportError:
+        oauth_providers = {
+            name: config.get("name", name)
+            for name, config in OAUTH_PROVIDERS.items()
+        }
 
     return {
         **({"onboarding": True} if onboarding else {}),
@@ -1805,7 +1816,7 @@ async def get_app_config(request: Request):
             "enable_login_form": app.state.config.ENABLE_LOGIN_FORM,
             "enable_websocket": ENABLE_WEBSOCKET_SUPPORT,
             "enable_version_update_check": ENABLE_VERSION_UPDATE_CHECK,
-            "enable_bluenexus": ENABLE_BLUENEXUS.value,
+            "enable_bluenexus": is_bluenexus_enabled() if "is_bluenexus_enabled" in locals() else False,
             **(
                 {
                     "enable_direct_connections": app.state.config.ENABLE_DIRECT_CONNECTIONS,

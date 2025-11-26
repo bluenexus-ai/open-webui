@@ -189,8 +189,12 @@ def _build_oauth_callback_error_message(e: Exception) -> str:
 
 def _oauth_ssl_setting(provider: Optional[str] = None) -> bool:
     """Return ssl setting for aiohttp calls honoring OAuth SSL verification flag."""
-    if provider == "bluenexus":
-        return False
+    try:
+        from open_webui.utils.bluenexus.oauth import should_disable_ssl_for_provider
+        if should_disable_ssl_for_provider(provider):
+            return False
+    except ImportError:
+        pass
 
     return AIOHTTP_CLIENT_SESSION_SSL if OAUTH_SSL_VERIFY.value else False
 
@@ -1203,67 +1207,6 @@ class OAuthManager:
                     id=group_model.id, form_data=update_form, overwrite=False
                 )
 
-    def _configure_bluenexus_llm_api(
-        self, request, user_id: str, access_token: str
-    ) -> None:
-        """Automatically configure BlueNexus LLM API for a user after OAuth login.
-
-        Args:
-            request: FastAPI request object
-            user_id: User ID
-            access_token: OAuth access token for BlueNexus API
-        """
-        from open_webui.config import BLUENEXUS_API_BASE_URL
-
-        if not BLUENEXUS_API_BASE_URL.value:
-            log.warning("BLUENEXUS_API_BASE_URL not configured, skipping LLM API setup")
-            return
-
-        bluenexus_llm_url = f"{BLUENEXUS_API_BASE_URL.value}/api/v1"
-
-        # Get current OpenAI configurations
-        current_urls = request.app.state.config.OPENAI_API_BASE_URLS
-        current_keys = request.app.state.config.OPENAI_API_KEYS
-        current_configs = request.app.state.config.OPENAI_API_CONFIGS
-
-        # Check if BlueNexus LLM API is already configured
-        bluenexus_idx = None
-        for idx, url in enumerate(current_urls):
-            if url == bluenexus_llm_url:
-                bluenexus_idx = idx
-                break
-
-        # Use empty key with system_oauth auth type
-        bluenexus_key = ""
-
-        if bluenexus_idx is not None:
-            # Update existing BlueNexus configuration
-            current_keys[bluenexus_idx] = bluenexus_key
-            current_configs[str(bluenexus_idx)] = {
-                "name": "BlueNexus",
-                "enable": True,
-                "auth_type": "system_oauth",
-                "oauth_provider": "bluenexus",
-            }
-            log.info(f"Updated existing BlueNexus LLM API configuration at index {bluenexus_idx}")
-        else:
-            # Add new BlueNexus configuration
-            current_urls.append(bluenexus_llm_url)
-            current_keys.append(bluenexus_key)
-            new_idx = len(current_urls) - 1
-            current_configs[str(new_idx)] = {
-                "name": "BlueNexus",
-                "enable": True,
-                "auth_type": "system_oauth",
-                "oauth_provider": "bluenexus",
-            }
-            log.info(f"Added new BlueNexus LLM API configuration at index {new_idx}")
-
-        # Save updated configurations
-        request.app.state.config.OPENAI_API_BASE_URLS = current_urls
-        request.app.state.config.OPENAI_API_KEYS = current_keys
-        request.app.state.config.OPENAI_API_CONFIGS = current_configs
-
     async def _process_picture_url(
         self, picture_url: str, access_token: str = None
     ) -> str:
@@ -1640,10 +1583,11 @@ class OAuthManager:
                 log.info(f"  Expires In: {expires_in} seconds")
                 log.info(f"  Issued At: {issued_at}")
 
-            # Auto-configure BlueNexus LLM API if logging in via BlueNexus
+            # Auto-configure BlueNexus LLM API and sync data if logging in via BlueNexus
             if provider == "bluenexus":
                 try:
-                    self._configure_bluenexus_llm_api(request, user.id, token.get("access_token"))
+                    from open_webui.utils.bluenexus.llm import ensure_bluenexus_provider
+                    ensure_bluenexus_provider(request, user)
                     log.info(f"Configured BlueNexus LLM API for user {user.id}")
                 except Exception as e:
                     log.error(f"Failed to configure BlueNexus LLM API: {e}")

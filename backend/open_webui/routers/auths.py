@@ -1085,13 +1085,23 @@ async def get_api_key(user=Depends(get_current_user)):
 # OAuth Token Refresh
 ############################
 
+# Import OAuth token refresh handler from bluenexus module
+try:
+    from open_webui.utils.bluenexus.auth import (
+        refresh_oauth_token as _refresh_oauth_token_impl,
+        OAuthTokenStatusResponse,
+    )
+except ImportError:
+    # Fallback model and handler if bluenexus module is not available
+    class OAuthTokenStatusResponse(BaseModel):
+        has_session: bool
+        provider: Optional[str] = None
+        expires_at: Optional[int] = None
+        expires_in: Optional[int] = None
+        refreshed: bool = False
 
-class OAuthTokenStatusResponse(BaseModel):
-    has_session: bool
-    provider: Optional[str] = None
-    expires_at: Optional[int] = None
-    expires_in: Optional[int] = None
-    refreshed: bool = False
+    async def _refresh_oauth_token_impl(request: Request, user):
+        return OAuthTokenStatusResponse(has_session=False)
 
 
 @router.post("/oauth/refresh", response_model=OAuthTokenStatusResponse)
@@ -1101,53 +1111,4 @@ async def refresh_oauth_token(request: Request, user=Depends(get_current_user)):
     This endpoint is designed to be called periodically by the frontend
     to keep the OAuth session alive for active users.
     """
-    from open_webui.config import ENABLE_BLUENEXUS
-
-    # Check if BlueNexus (or any OAuth) is enabled
-    if not ENABLE_BLUENEXUS.value:
-        log.debug(f"OAuth refresh skipped - BlueNexus disabled for user {user.id}")
-        return OAuthTokenStatusResponse(has_session=False)
-
-    log.info(f"OAuth refresh requested for user {user.id}")
-
-    oauth_session_id = request.cookies.get("oauth_session_id")
-    if not oauth_session_id:
-        log.info(f"No oauth_session_id cookie found for user {user.id}")
-        return OAuthTokenStatusResponse(has_session=False)
-
-    log.info(f"Found oauth_session_id: {oauth_session_id[:8]}... for user {user.id}")
-
-    try:
-        # Get token with force_refresh=False - this will auto-refresh if needed
-        token = await request.app.state.oauth_manager.get_oauth_token(
-            user.id,
-            oauth_session_id,
-            force_refresh=False,  # Will refresh if within 5 min of expiry
-        )
-
-        if token:
-            expires_at = token.get("expires_at")
-            expires_in = None
-            if expires_at:
-                expires_in = max(0, int(expires_at - time.time()))
-
-            # Get session to check provider
-            session = OAuthSessions.get_session_by_id(oauth_session_id)
-            provider = session.provider if session else None
-
-            log.info(f"OAuth token valid for user {user.id}, provider: {provider}, expires_in: {expires_in}s")
-
-            return OAuthTokenStatusResponse(
-                has_session=True,
-                provider=provider,
-                expires_at=expires_at,
-                expires_in=expires_in,
-                refreshed=False,  # We don't know if it was refreshed, but token is valid
-            )
-        else:
-            log.warning(f"OAuth token not found or expired for user {user.id}, session {oauth_session_id[:8]}...")
-            return OAuthTokenStatusResponse(has_session=False)
-
-    except Exception as e:
-        log.error(f"Error refreshing OAuth token for user {user.id}: {e}")
-        return OAuthTokenStatusResponse(has_session=False)
+    return await _refresh_oauth_token_impl(request, user)

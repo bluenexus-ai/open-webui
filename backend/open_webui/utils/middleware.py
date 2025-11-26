@@ -1360,33 +1360,28 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         )
                         log.info("[MCP] Auth: Using session token")
                     elif auth_type == "system_oauth":
-                        # Check if this is a BlueNexus MCP server (URL contains bluenexus)
+                        # Check if this is a BlueNexus MCP server (use bluenexus module)
                         oauth_provider = mcp_server_connection.get("config", {}).get(
                             "oauth_provider"
                         )
 
                         log.info(f"[MCP] Auth: system_oauth - oauth_provider={oauth_provider}, server_id={server_id}")
 
-                        if oauth_provider == "bluenexus" or "bluenexus" in server_id:
-                            # Get BlueNexus OAuth session token directly
-                            from open_webui.models.oauth_sessions import OAuthSessions
-
-                            log.info(f"[MCP] Auth: Looking up BlueNexus OAuth session for user_id={user.id}")
-                            session = OAuthSessions.get_session_by_provider_and_user_id(
-                                provider="bluenexus", user_id=user.id
-                            )
-                            if session:
-                                oauth_token = session.token
+                        # Try to get BlueNexus OAuth token if applicable
+                        oauth_token = None
+                        try:
+                            from open_webui.utils.bluenexus.mcp import get_bluenexus_mcp_oauth_token
+                            oauth_token = get_bluenexus_mcp_oauth_token(user.id, server_id)
+                            if oauth_token:
                                 token_preview = oauth_token.get('access_token', '')[:20] + '...' if oauth_token.get('access_token') else 'N/A'
                                 log.info(f"[MCP] Auth: BlueNexus OAuth session FOUND, token_preview={token_preview}, expires_at={oauth_token.get('expires_at')}")
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
-                            else:
-                                log.warning(
-                                    f"[MCP] Auth: BlueNexus OAuth session NOT FOUND for user {user.id}"
-                                )
-                        else:
+                        except ImportError:
+                            pass
+
+                        if not oauth_token:
                             # Use the OAuth token from extra_params (standard system_oauth)
                             oauth_token = extra_params.get("__oauth_token__", None)
                             if oauth_token:
