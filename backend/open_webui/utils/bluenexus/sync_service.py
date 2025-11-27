@@ -19,6 +19,7 @@ from open_webui.env import SRC_LOG_LEVELS
 from open_webui.config import ENABLE_BLUENEXUS, ENABLE_BLUENEXUS_SYNC
 from open_webui.utils.bluenexus.chat_storage import BlueNexusChatStorage
 from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
+from open_webui.utils.bluenexus.types import BlueNexusNotFoundError
 from open_webui.utils.bluenexus.collections import Collections
 from open_webui.models.chats import Chats
 
@@ -385,14 +386,15 @@ class BlueNexusSyncService:
         Returns:
             True if sync was successful, False otherwise
         """
-        log.info(f"[BlueNexus Sync] sync_model_to_bluenexus ASYNC called: collection={collection}, record_id={record_id}, operation={operation}")
+        collection_name = getattr(collection, "value", collection)
+        log.info(f"[BlueNexus Sync] sync_model_to_bluenexus ASYNC called: collection={collection_name}, record_id={record_id}, operation={operation}")
 
         # Check if BlueNexus is enabled
         if not ENABLE_BLUENEXUS.value or not ENABLE_BLUENEXUS_SYNC.value:
             log.warning(f"[BlueNexus Sync] Sync disabled: ENABLE_BLUENEXUS={ENABLE_BLUENEXUS.value}, ENABLE_BLUENEXUS_SYNC={ENABLE_BLUENEXUS_SYNC.value}")
             return False
 
-        log.info(f"[BlueNexus Sync] Syncing {collection}/{record_id} (operation={operation})")
+        log.info(f"[BlueNexus Sync] Syncing {collection_name}/{record_id} (operation={operation})")
 
         client = get_bluenexus_client_for_user(user_id)
         if not client:
@@ -404,8 +406,8 @@ class BlueNexusSyncService:
         try:
             if operation == "delete":
                 # Delete from BlueNexus
-                result = await client.delete(collection, record_id)
-                log.info(f"[BlueNexus Sync] Deleted {collection}/{record_id} from BlueNexus")
+                result = await client.delete(collection_name, record_id)
+                log.info(f"[BlueNexus Sync] Deleted {collection_name}/{record_id} from BlueNexus")
                 return result is not None
 
             # Ensure data has required fields
@@ -415,22 +417,31 @@ class BlueNexusSyncService:
                 "user_id": user_id,
             }
 
-            # Check if record exists in BlueNexus
-            existing = await client.get(collection, record_id)
+            if operation == "create":
+                # Create new record in BlueNexus without preflight GET to avoid server errors
+                result = await client.create(collection_name, sync_data)
+                log.info(f"[BlueNexus Sync] Created {collection_name}/{record_id} in BlueNexus")
+                return result is not None
 
-            if operation == "create" or not existing:
+            # Check if record exists in BlueNexus (ignore 404)
+            try:
+                existing = await client.get(collection_name, record_id)
+            except BlueNexusNotFoundError:
+                existing = None
+
+            if not existing:
                 # Create new record in BlueNexus
-                result = await client.create(collection, sync_data)
-                log.info(f"[BlueNexus Sync] Created {collection}/{record_id} in BlueNexus")
+                result = await client.create(collection_name, sync_data)
+                log.info(f"[BlueNexus Sync] Created {collection_name}/{record_id} in BlueNexus")
                 return result is not None
 
             # Update existing record in BlueNexus
-            result = await client.update(collection, record_id, sync_data)
-            log.info(f"[BlueNexus Sync] Updated {collection}/{record_id} in BlueNexus")
+            result = await client.update(collection_name, record_id, sync_data)
+            log.info(f"[BlueNexus Sync] Updated {collection_name}/{record_id} in BlueNexus")
             return result is not None
 
         except Exception as e:
-            log.error(f"[BlueNexus Sync] Error syncing {collection}/{record_id} to BlueNexus: {e}")
+            log.error(f"[BlueNexus Sync] Error syncing {collection_name}/{record_id} to BlueNexus: {e}")
             return False
 
     def sync_model_to_bluenexus_background(

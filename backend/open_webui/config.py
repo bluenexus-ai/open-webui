@@ -442,32 +442,19 @@ GITHUB_CLIENT_REDIRECT_URI = PersistentConfig(
 # Import BlueNexus configuration from dedicated module
 # All BlueNexus functionality is gated by ENABLE_BLUENEXUS flag
 
-try:
-    from open_webui.utils.bluenexus.config import (
-        BLUENEXUS_CLIENT_ID,
-        BLUENEXUS_CLIENT_SECRET,
-        BLUENEXUS_OAUTH_SCOPE,
-        BLUENEXUS_REDIRECT_URI,
-        BLUENEXUS_API_BASE_URL,
-        BLUENEXUS_AUTHORIZATION_URL,
-        BLUENEXUS_TOKEN_URL,
-        BLUENEXUS_LLM_API_BASE_URL,
-        BLUENEXUS_LLM_AUTO_ENABLE,
-        ENABLE_BLUENEXUS,
-        ENABLE_BLUENEXUS_SYNC,
-    )
-except ImportError:
-    # Fallback if bluenexus module is not available
-    ENABLE_BLUENEXUS = PersistentConfig(
-        "ENABLE_BLUENEXUS",
-        "bluenexus.enable",
-        False,
-    )
-    ENABLE_BLUENEXUS_SYNC = PersistentConfig(
-        "ENABLE_BLUENEXUS_SYNC",
-        "bluenexus.sync.enable",
-        False,
-    )
+from open_webui.utils.bluenexus.config import (
+    BLUENEXUS_CLIENT_ID,
+    BLUENEXUS_CLIENT_SECRET,
+    BLUENEXUS_OAUTH_SCOPE,
+    BLUENEXUS_REDIRECT_URI,
+    BLUENEXUS_API_BASE_URL,
+    BLUENEXUS_AUTHORIZATION_URL,
+    BLUENEXUS_TOKEN_URL,
+    BLUENEXUS_LLM_API_BASE_URL,
+    BLUENEXUS_LLM_AUTO_ENABLE,
+    ENABLE_BLUENEXUS,
+    ENABLE_BLUENEXUS_SYNC,
+)
 
 ####################################
 # Generic OAuth/OIDC

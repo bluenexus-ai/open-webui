@@ -6,7 +6,18 @@ All configuration is gated by the ENABLE_BLUENEXUS flag.
 """
 
 import os
-from open_webui.config import PersistentConfig
+import sys
+from typing import TYPE_CHECKING
+
+# Avoid circular import when open_webui.config imports this module
+if TYPE_CHECKING:
+    from open_webui.config import PersistentConfig
+else:
+    _config_mod = sys.modules.get("open_webui.config")
+    if _config_mod and hasattr(_config_mod, "PersistentConfig"):
+        PersistentConfig = getattr(_config_mod, "PersistentConfig")
+    else:
+        from open_webui.config import PersistentConfig
 
 
 ####################################

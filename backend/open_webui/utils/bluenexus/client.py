@@ -116,9 +116,15 @@ class BlueNexusDataClient:
 
     def _build_url(self, collection: str, record_id: Optional[str] = None) -> str:
         """Build the API URL for a collection and optional record ID."""
-        if record_id:
-            return f"{self.base_url}{self._data_api_path}/{collection}/{record_id}"
-        return f"{self.base_url}{self._data_api_path}/{collection}"
+        # Normalize to avoid accidental double slashes if callers pass a leading slash
+        # Support Enum values (Collections) by using .value when present
+        collection_value = getattr(collection, "value", collection)
+        collection_path = str(collection_value).strip("/")
+        record_path = str(record_id).lstrip("/") if record_id is not None else None
+
+        if record_path:
+            return f"{self.base_url}{self._data_api_path}/{collection_path}/{record_path}"
+        return f"{self.base_url}{self._data_api_path}/{collection_path}"
 
     async def _handle_response(self, response: aiohttp.ClientResponse) -> dict[str, Any]:
         """

@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 
 from open_webui.env import SRC_LOG_LEVELS
-from open_webui.config import ENABLE_BLUENEXUS
+from open_webui.config import ENABLE_BLUENEXUS, BLUENEXUS_API_BASE_URL
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.utils.bluenexus.client import BlueNexusDataClient
 from open_webui.utils.bluenexus.types import BlueNexusAuthError
@@ -71,7 +71,6 @@ def get_bluenexus_client_for_user(
 
     # Get base URL from config if not provided
     if base_url is None:
-        from open_webui.config import BLUENEXUS_API_BASE_URL
         base_url = BLUENEXUS_API_BASE_URL.value
 
     if not base_url:
@@ -163,7 +162,6 @@ async def get_or_create_bluenexus_client(
 
                 if token and token.get("access_token"):
                     if base_url is None:
-                        from open_webui.config import BLUENEXUS_API_BASE_URL
                         base_url = BLUENEXUS_API_BASE_URL.value
 
                     return BlueNexusDataClient(
