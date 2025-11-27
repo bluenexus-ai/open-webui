@@ -19,6 +19,7 @@ from open_webui.env import SRC_LOG_LEVELS
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access, has_permission
+from open_webui.utils.bluenexus.sync_service import BlueNexusSync
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
@@ -109,6 +110,12 @@ async def create_new_note(
 
     try:
         note = Notes.insert_new_note(form_data, user.id)
+
+        # Sync to BlueNexus in background (non-blocking)
+        BlueNexusSync.sync_note_to_bluenexus_background(
+            note.id, user.id, note.model_dump(), operation="create"
+        )
+
         return note
     except Exception as e:
         log.exception(e)
@@ -200,6 +207,11 @@ async def update_note_by_id(
             to=f"note:{note.id}",
         )
 
+        # Sync to BlueNexus in background (non-blocking)
+        BlueNexusSync.sync_note_to_bluenexus_background(
+            id, note.user_id, note.model_dump(), operation="update"
+        )
+
         return note
     except Exception as e:
         log.exception(e)
@@ -238,7 +250,17 @@ async def delete_note_by_id(request: Request, id: str, user=Depends(get_verified
         )
 
     try:
-        note = Notes.delete_note_by_id(id)
+        # Get note details before deletion for sync
+        note_user_id = note.user_id
+
+        result = Notes.delete_note_by_id(id)
+
+        if result:
+            # Sync to BlueNexus in background (non-blocking)
+            BlueNexusSync.sync_note_to_bluenexus_background(
+                id, note_user_id, None, operation="delete"
+            )
+
         return True
     except Exception as e:
         log.exception(e)

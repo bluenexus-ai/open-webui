@@ -137,7 +137,9 @@ async def create_new_chat(form_data: ChatForm, user=Depends(get_verified_user)):
         chat = Chats.insert_new_chat(user.id, form_data)
 
         # Sync to BlueNexus in background (non-blocking)
-        BlueNexusSync.sync_chat_to_bluenexus_background(chat.id, user.id, operation="create")
+        BlueNexusSync.sync_chat_to_bluenexus_background(
+            chat.id, user.id, chat.model_dump(), operation="create"
+        )
 
         return ChatResponse(**chat.model_dump())
     except Exception as e:
@@ -467,7 +469,9 @@ async def update_chat_by_id(
         chat = Chats.update_chat_by_id(id, updated_chat)
 
         # Sync to BlueNexus in background (non-blocking)
-        BlueNexusSync.sync_chat_to_bluenexus_background(id, user.id, operation="update")
+        BlueNexusSync.sync_chat_to_bluenexus_background(
+            id, user.id, chat.model_dump(), operation="update"
+        )
 
         return ChatResponse(**chat.model_dump())
     else:
@@ -593,8 +597,10 @@ async def delete_chat_by_id(request: Request, id: str, user=Depends(get_verified
 
         result = Chats.delete_chat_by_id(id)
 
-        # Sync deletion to BlueNexus in background
-        BlueNexusSync.sync_chat_to_bluenexus_background(id, user.id, operation="delete")
+        # Sync deletion to BlueNexus in background (pass None for delete)
+        BlueNexusSync.sync_chat_to_bluenexus_background(
+            id, user.id, None, operation="delete"
+        )
 
         return result
     else:
@@ -613,8 +619,10 @@ async def delete_chat_by_id(request: Request, id: str, user=Depends(get_verified
 
         result = Chats.delete_chat_by_id_and_user_id(id, user.id)
 
-        # Sync deletion to BlueNexus in background
-        BlueNexusSync.sync_chat_to_bluenexus_background(id, user.id, operation="delete")
+        # Sync deletion to BlueNexus in background (pass None for delete)
+        BlueNexusSync.sync_chat_to_bluenexus_background(
+            id, user.id, None, operation="delete"
+        )
 
         return result
 

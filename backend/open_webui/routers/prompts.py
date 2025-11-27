@@ -10,6 +10,7 @@ from open_webui.models.prompts import (
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access, has_permission
+from open_webui.utils.bluenexus.sync_service import BlueNexusSync
 from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL
 
 router = APIRouter()
@@ -61,6 +62,11 @@ async def create_new_prompt(
         prompt = Prompts.insert_new_prompt(user.id, form_data)
 
         if prompt:
+            # Sync to BlueNexus in background (non-blocking)
+            BlueNexusSync.sync_prompt_to_bluenexus_background(
+                prompt.command, user.id, prompt.model_dump(), operation="create"
+            )
+
             return prompt
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -126,6 +132,11 @@ async def update_prompt_by_command(
 
     prompt = Prompts.update_prompt_by_command(f"/{command}", form_data)
     if prompt:
+        # Sync to BlueNexus in background (non-blocking)
+        BlueNexusSync.sync_prompt_to_bluenexus_background(
+            prompt.command, prompt.user_id, prompt.model_dump(), operation="update"
+        )
+
         return prompt
     else:
         raise HTTPException(
@@ -158,5 +169,15 @@ async def delete_prompt_by_command(command: str, user=Depends(get_verified_user)
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
         )
 
+    # Get user_id before deletion for sync
+    user_id = prompt.user_id
+
     result = Prompts.delete_prompt_by_command(f"/{command}")
+
+    if result:
+        # Sync to BlueNexus in background (non-blocking)
+        BlueNexusSync.sync_prompt_to_bluenexus_background(
+            f"/{command}", user_id, None, operation="delete"
+        )
+
     return result

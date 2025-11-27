@@ -6,6 +6,7 @@ from typing import Optional
 from open_webui.models.memories import Memories, MemoryModel
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.utils.auth import get_verified_user
+from open_webui.utils.bluenexus.sync_service import BlueNexusSync
 from open_webui.env import SRC_LOG_LEVELS
 
 
@@ -63,6 +64,11 @@ async def add_memory(
                 "metadata": {"created_at": memory.created_at},
             }
         ],
+    )
+
+    # Sync to BlueNexus in background (non-blocking)
+    BlueNexusSync.sync_memory_to_bluenexus_background(
+        memory.id, user.id, memory.model_dump(), operation="create"
     )
 
     return memory
@@ -181,6 +187,11 @@ async def update_memory_by_id(
             ],
         )
 
+    # Sync to BlueNexus in background (non-blocking)
+    BlueNexusSync.sync_memory_to_bluenexus_background(
+        memory.id, user.id, memory.model_dump(), operation="update"
+    )
+
     return memory
 
 
@@ -197,6 +208,12 @@ async def delete_memory_by_id(memory_id: str, user=Depends(get_verified_user)):
         VECTOR_DB_CLIENT.delete(
             collection_name=f"user-memory-{user.id}", ids=[memory_id]
         )
+
+        # Sync to BlueNexus in background (non-blocking)
+        BlueNexusSync.sync_memory_to_bluenexus_background(
+            memory_id, user.id, None, operation="delete"
+        )
+
         return True
 
     return False
