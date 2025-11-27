@@ -96,6 +96,19 @@ class NoteTable:
 
             db.add(new_note)
             db.commit()
+
+            # Sync to BlueNexus (non-blocking)
+            try:
+                from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                BlueNexusSync.sync_note_to_bluenexus_background(
+                    note.id,
+                    user_id,
+                    note.model_dump(),
+                    operation="create"
+                )
+            except Exception:
+                pass  # Don't fail if sync fails
+
             return note
 
     def get_notes(
@@ -206,12 +219,46 @@ class NoteTable:
             note.updated_at = int(time.time_ns())
 
             db.commit()
-            return NoteModel.model_validate(note) if note else None
+            validated_note = NoteModel.model_validate(note) if note else None
+
+            # Sync to BlueNexus (non-blocking)
+            if validated_note:
+                try:
+                    from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                    BlueNexusSync.sync_note_to_bluenexus_background(
+                        id,
+                        validated_note.user_id,
+                        validated_note.model_dump(),
+                        operation="update"
+                    )
+                except Exception:
+                    pass  # Don't fail if sync fails
+
+            return validated_note
 
     def delete_note_by_id(self, id: str):
         with get_db() as db:
+            # Get note before deleting to extract user_id
+            note = db.query(Note).filter(Note.id == id).first()
+            if not note:
+                return False
+
+            user_id = note.user_id
             db.query(Note).filter(Note.id == id).delete()
             db.commit()
+
+            # Sync to BlueNexus (non-blocking)
+            try:
+                from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                BlueNexusSync.sync_note_to_bluenexus_background(
+                    id,
+                    user_id,
+                    None,
+                    operation="delete"
+                )
+            except Exception:
+                pass  # Don't fail if sync fails
+
             return True
 
 

@@ -19,6 +19,7 @@ from open_webui.env import SRC_LOG_LEVELS
 from open_webui.config import ENABLE_BLUENEXUS, ENABLE_BLUENEXUS_SYNC
 from open_webui.utils.bluenexus.chat_storage import BlueNexusChatStorage
 from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
+from open_webui.utils.bluenexus.collections import Collections
 from open_webui.models.chats import Chats
 
 log = logging.getLogger(__name__)
@@ -358,6 +359,178 @@ class BlueNexusSyncService:
 
         log.info(f"[BlueNexus Sync] Bulk sync complete for user={user_id}: {stats}")
         return stats
+
+    # =========================================================================
+    # Generic Model Sync Methods
+    # =========================================================================
+
+    async def sync_model_to_bluenexus(
+        self,
+        collection: str,
+        record_id: str,
+        user_id: str,
+        data: dict,
+        operation: str = "update",
+    ) -> bool:
+        """
+        Generic method to sync any model to BlueNexus.
+
+        Args:
+            collection: BlueNexus collection name (e.g., Collections.PROMPTS)
+            record_id: Record ID
+            user_id: User ID
+            data: Record data to sync
+            operation: "create", "update", or "delete"
+
+        Returns:
+            True if sync was successful, False otherwise
+        """
+        log.info(f"[BlueNexus Sync] sync_model_to_bluenexus ASYNC called: collection={collection}, record_id={record_id}, operation={operation}")
+
+        # Check if BlueNexus is enabled
+        if not ENABLE_BLUENEXUS.value or not ENABLE_BLUENEXUS_SYNC.value:
+            log.warning(f"[BlueNexus Sync] Sync disabled: ENABLE_BLUENEXUS={ENABLE_BLUENEXUS.value}, ENABLE_BLUENEXUS_SYNC={ENABLE_BLUENEXUS_SYNC.value}")
+            return False
+
+        log.info(f"[BlueNexus Sync] Syncing {collection}/{record_id} (operation={operation})")
+
+        client = get_bluenexus_client_for_user(user_id)
+        if not client:
+            log.warning(f"[BlueNexus Sync] User {user_id} has no BlueNexus session, skipping sync")
+            return False
+
+        log.info(f"[BlueNexus Sync] Got BlueNexus client for user {user_id}")
+
+        try:
+            if operation == "delete":
+                # Delete from BlueNexus
+                result = await client.delete(collection, record_id)
+                log.info(f"[BlueNexus Sync] Deleted {collection}/{record_id} from BlueNexus")
+                return result is not None
+
+            # Ensure data has required fields
+            sync_data = {
+                **data,
+                "id": record_id,
+                "user_id": user_id,
+            }
+
+            # Check if record exists in BlueNexus
+            existing = await client.get(collection, record_id)
+
+            if operation == "create" or not existing:
+                # Create new record in BlueNexus
+                result = await client.create(collection, sync_data)
+                log.info(f"[BlueNexus Sync] Created {collection}/{record_id} in BlueNexus")
+                return result is not None
+
+            # Update existing record in BlueNexus
+            result = await client.update(collection, record_id, sync_data)
+            log.info(f"[BlueNexus Sync] Updated {collection}/{record_id} in BlueNexus")
+            return result is not None
+
+        except Exception as e:
+            log.error(f"[BlueNexus Sync] Error syncing {collection}/{record_id} to BlueNexus: {e}")
+            return False
+
+    def sync_model_to_bluenexus_background(
+        self,
+        collection: str,
+        record_id: str,
+        user_id: str,
+        data: dict = None,
+        operation: str = "update",
+    ):
+        """
+        Schedule a background sync for any model (fire-and-forget).
+
+        Args:
+            collection: BlueNexus collection name
+            record_id: Record ID
+            user_id: User ID
+            data: Record data (required for create/update)
+            operation: "create", "update", or "delete"
+        """
+        try:
+            log.info(f"[BlueNexus Sync] sync_model_to_bluenexus_background called: collection={collection}, record_id={record_id}, user_id={user_id}, operation={operation}, data_exists={data is not None}")
+
+            if operation != "delete" and not data:
+                log.warning(f"[BlueNexus Sync] Cannot sync {collection}/{record_id}: data required for {operation}")
+                return
+
+            log.info(f"[BlueNexus Sync] Data validation passed, creating task key")
+            task_key = f"{collection}:{user_id}:{record_id}"
+            log.info(f"[BlueNexus Sync] Creating background task with key: {task_key}")
+
+            # Cancel existing task if any
+            if task_key in self._sync_tasks:
+                self._sync_tasks[task_key].cancel()
+
+            try:
+                loop = asyncio.get_event_loop()
+                log.info(f"[BlueNexus Sync] Got event loop, creating task")
+                task = loop.create_task(
+                    self.sync_model_to_bluenexus(collection, record_id, user_id, data or {}, operation)
+                )
+                self._sync_tasks[task_key] = task
+                log.info(f"[BlueNexus Sync] Task created and registered")
+
+                def cleanup(_task):
+                    # Log task result or exception
+                    try:
+                        if _task.exception():
+                            log.error(f"[BlueNexus Sync] Task failed with exception: {_task.exception()}", exc_info=_task.exception())
+                        else:
+                            result = _task.result()
+                            log.info(f"[BlueNexus Sync] Task completed successfully: {result}")
+                    except Exception as e:
+                        log.error(f"[BlueNexus Sync] Error in cleanup callback: {e}")
+                    finally:
+                        if task_key in self._sync_tasks:
+                            del self._sync_tasks[task_key]
+
+                task.add_done_callback(cleanup)
+
+            except RuntimeError as e:
+                log.warning(f"[BlueNexus Sync] No event loop available: {e}, skipping background sync for {collection}/{record_id}")
+        except Exception as e:
+            log.error(f"[BlueNexus Sync] Unexpected error in sync_model_to_bluenexus_background: {e}", exc_info=True)
+
+    # =========================================================================
+    # Convenience Methods for Specific Models
+    # =========================================================================
+
+    def sync_message_to_bluenexus_background(
+        self, message_id: str, user_id: str, data: dict = None, operation: str = "update"
+    ):
+        """Sync a message to BlueNexus (background)."""
+        self.sync_model_to_bluenexus_background(
+            Collections.MESSAGES, message_id, user_id, data, operation
+        )
+
+    def sync_prompt_to_bluenexus_background(
+        self, command: str, user_id: str, data: dict = None, operation: str = "update"
+    ):
+        """Sync a prompt to BlueNexus (background)."""
+        self.sync_model_to_bluenexus_background(
+            Collections.PROMPTS, command, user_id, data, operation
+        )
+
+    def sync_memory_to_bluenexus_background(
+        self, memory_id: str, user_id: str, data: dict = None, operation: str = "update"
+    ):
+        """Sync a memory to BlueNexus (background)."""
+        self.sync_model_to_bluenexus_background(
+            Collections.MEMORIES, memory_id, user_id, data, operation
+        )
+
+    def sync_note_to_bluenexus_background(
+        self, note_id: str, user_id: str, data: dict = None, operation: str = "update"
+    ):
+        """Sync a note to BlueNexus (background)."""
+        self.sync_model_to_bluenexus_background(
+            Collections.NOTES, note_id, user_id, data, operation
+        )
 
 
 # Global singleton instance

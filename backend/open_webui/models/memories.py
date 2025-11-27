@@ -59,7 +59,25 @@ class MemoriesTable:
             db.commit()
             db.refresh(result)
             if result:
-                return MemoryModel.model_validate(result)
+                validated_memory = MemoryModel.model_validate(result)
+
+                # Sync to BlueNexus (non-blocking)
+                try:
+                    from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                    from open_webui.env import log
+                    log.info(f"[Memory Sync] Syncing memory {id} to BlueNexus")
+                    BlueNexusSync.sync_memory_to_bluenexus_background(
+                        id,
+                        user_id,
+                        validated_memory.model_dump(),
+                        operation="create"
+                    )
+                except Exception as e:
+                    from open_webui.env import log
+                    log.error(f"[Memory Sync] Failed to sync memory {id}: {e}")
+                    pass  # Don't fail if sync fails
+
+                return validated_memory
             else:
                 return None
 
@@ -79,7 +97,22 @@ class MemoriesTable:
                 memory.updated_at = int(time.time())
 
                 db.commit()
-                return self.get_memory_by_id(id)
+                validated_memory = self.get_memory_by_id(id)
+
+                # Sync to BlueNexus (non-blocking)
+                if validated_memory:
+                    try:
+                        from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                        BlueNexusSync.sync_memory_to_bluenexus_background(
+                            id,
+                            user_id,
+                            validated_memory.model_dump(),
+                            operation="update"
+                        )
+                    except Exception:
+                        pass  # Don't fail if sync fails
+
+                return validated_memory
             except Exception:
                 return None
 
@@ -138,6 +171,18 @@ class MemoriesTable:
                 # Delete the memory
                 db.delete(memory)
                 db.commit()
+
+                # Sync to BlueNexus (non-blocking)
+                try:
+                    from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                    BlueNexusSync.sync_memory_to_bluenexus_background(
+                        id,
+                        user_id,
+                        None,
+                        operation="delete"
+                    )
+                except Exception:
+                    pass  # Don't fail if sync fails
 
                 return True
             except Exception:

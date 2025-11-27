@@ -88,7 +88,25 @@ class PromptsTable:
                 db.commit()
                 db.refresh(result)
                 if result:
-                    return PromptModel.model_validate(result)
+                    validated_prompt = PromptModel.model_validate(result)
+
+                    # Sync to BlueNexus (non-blocking)
+                    try:
+                        from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                        from open_webui.env import log
+                        log.info(f"[Prompt Sync] Syncing prompt {validated_prompt.command} to BlueNexus")
+                        BlueNexusSync.sync_prompt_to_bluenexus_background(
+                            validated_prompt.command,
+                            user_id,
+                            validated_prompt.model_dump(),
+                            operation="create"
+                        )
+                    except Exception as e:
+                        from open_webui.env import log
+                        log.error(f"[Prompt Sync] Failed to sync prompt {validated_prompt.command}: {e}")
+                        pass  # Don't fail if sync fails
+
+                    return validated_prompt
                 else:
                     return None
         except Exception:
@@ -149,15 +167,56 @@ class PromptsTable:
                 prompt.access_control = form_data.access_control
                 prompt.timestamp = int(time.time())
                 db.commit()
-                return PromptModel.model_validate(prompt)
+
+                validated_prompt = PromptModel.model_validate(prompt)
+
+                # Sync to BlueNexus (non-blocking)
+                try:
+                    from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                    from open_webui.env import log
+                    log.info(f"[Prompt Sync] Syncing prompt update {command} to BlueNexus")
+                    BlueNexusSync.sync_prompt_to_bluenexus_background(
+                        command,
+                        validated_prompt.user_id,
+                        validated_prompt.model_dump(),
+                        operation="update"
+                    )
+                except Exception as e:
+                    from open_webui.env import log
+                    log.error(f"[Prompt Sync] Failed to sync prompt update {command}: {e}")
+                    pass  # Don't fail if sync fails
+
+                return validated_prompt
         except Exception:
             return None
 
     def delete_prompt_by_command(self, command: str) -> bool:
         try:
             with get_db() as db:
+                # Get prompt before deleting to extract user_id
+                prompt = db.query(Prompt).filter_by(command=command).first()
+                if not prompt:
+                    return False
+
+                user_id = prompt.user_id
                 db.query(Prompt).filter_by(command=command).delete()
                 db.commit()
+
+                # Sync to BlueNexus (non-blocking)
+                try:
+                    from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                    from open_webui.env import log
+                    log.info(f"[Prompt Sync] Syncing prompt deletion {command} to BlueNexus")
+                    BlueNexusSync.sync_prompt_to_bluenexus_background(
+                        command,
+                        user_id,
+                        None,
+                        operation="delete"
+                    )
+                except Exception as e:
+                    from open_webui.env import log
+                    log.error(f"[Prompt Sync] Failed to sync prompt deletion {command}: {e}")
+                    pass  # Don't fail if sync fails
 
                 return True
         except Exception:

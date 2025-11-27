@@ -133,7 +133,22 @@ class MessageTable:
             db.add(result)
             db.commit()
             db.refresh(result)
-            return MessageModel.model_validate(result) if result else None
+            validated_message = MessageModel.model_validate(result) if result else None
+
+            # Sync to BlueNexus (non-blocking)
+            if validated_message:
+                try:
+                    from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                    BlueNexusSync.sync_message_to_bluenexus_background(
+                        id,
+                        user_id,
+                        validated_message.model_dump(),
+                        operation="create"
+                    )
+                except Exception:
+                    pass  # Don't fail if sync fails
+
+            return validated_message
 
     def get_message_by_id(self, id: str) -> Optional[MessageResponse]:
         with get_db() as db:
@@ -297,7 +312,22 @@ class MessageTable:
             message.updated_at = int(time.time_ns())
             db.commit()
             db.refresh(message)
-            return MessageModel.model_validate(message) if message else None
+            validated_message = MessageModel.model_validate(message) if message else None
+
+            # Sync to BlueNexus (non-blocking)
+            if validated_message:
+                try:
+                    from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                    BlueNexusSync.sync_message_to_bluenexus_background(
+                        id,
+                        validated_message.user_id,
+                        validated_message.model_dump(),
+                        operation="update"
+                    )
+                except Exception:
+                    pass  # Don't fail if sync fails
+
+            return validated_message
 
     def add_reaction_to_message(
         self, id: str, user_id: str, name: str
@@ -358,12 +388,31 @@ class MessageTable:
 
     def delete_message_by_id(self, id: str) -> bool:
         with get_db() as db:
+            # Get message before deleting to extract user_id
+            message = db.get(Message, id)
+            if not message:
+                return False
+
+            user_id = message.user_id
             db.query(Message).filter_by(id=id).delete()
 
             # Delete all reactions to this message
             db.query(MessageReaction).filter_by(message_id=id).delete()
 
             db.commit()
+
+            # Sync to BlueNexus (non-blocking)
+            try:
+                from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+                BlueNexusSync.sync_message_to_bluenexus_background(
+                    id,
+                    user_id,
+                    None,
+                    operation="delete"
+                )
+            except Exception:
+                pass  # Don't fail if sync fails
+
             return True
 
 
