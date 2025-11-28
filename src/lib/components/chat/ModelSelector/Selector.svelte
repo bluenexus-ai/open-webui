@@ -395,7 +395,22 @@
 			}}
 		>
 			{#if selectedModel}
-				{selectedModel.label}
+				<div class="flex items-center gap-1.5 truncate">
+					{#if ($config?.features?.enable_bluenexus ?? false) && selectedModel.isTEE}
+						<Tooltip content={$i18n.t('Runs inside a trusted execution environment')}>
+							<div class="flex-shrink-0 text-emerald-500">
+								<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-3.5">
+									<path
+										fill-rule="evenodd"
+										d="M10 2a4 4 0 0 0-4 4v2.05c-.58.11-1 .63-1 1.25v5.5c0 .69.56 1.25 1.25 1.25h7.5c.69 0 1.25-.56 1.25-1.25v-5.5c0-.62-.42-1.14-1-1.25V6a4 4 0 0 0-4-4Zm0 2a2 2 0 0 1 2 2v2H8V6a2 2 0 0 1 2-2Z"
+										clip-rule="evenodd"
+									/>
+								</svg>
+							</div>
+						</Tooltip>
+					{/if}
+					<span class="truncate">{selectedModel.label}</span>
+				</div>
 			{:else}
 				{placeholder}
 			{/if}
