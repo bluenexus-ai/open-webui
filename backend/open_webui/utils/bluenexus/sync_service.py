@@ -82,15 +82,31 @@ class BlueNexusSyncService:
         try:
             bn_storage = BlueNexusChatStorage(client)
 
-            # Get all chats from BlueNexus
-            remote_chats = await bn_storage.get_chats_by_user_id(
-                user_id=user_id,
-                include_archived=True,
-                skip=0,
-                limit=1000,  # Pull all chats
-            )
+            # Get all chats from BlueNexus (paginated due to 100 limit)
+            remote_chats = []
+            page = 0
+            page_size = 100  # Maximum allowed by API
 
-            log.info(f"[BlueNexus Sync] Found {len(remote_chats)} chats in BlueNexus for user={user_id}")
+            while True:
+                batch = await bn_storage.get_chats_by_user_id(
+                    user_id=user_id,
+                    include_archived=True,
+                    skip=page * page_size,
+                    limit=page_size,
+                )
+
+                if not batch:
+                    break
+
+                remote_chats.extend(batch)
+
+                # If we got fewer than page_size, we've reached the end
+                if len(batch) < page_size:
+                    break
+
+                page += 1
+
+            log.info(f"[BlueNexus Sync] Found {len(remote_chats)} chats in BlueNexus for user={user_id} across {page + 1} page(s)")
 
             stats = {
                 "pulled": len(remote_chats),
