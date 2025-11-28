@@ -17,6 +17,7 @@ import asyncio
 
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.config import ENABLE_BLUENEXUS, ENABLE_BLUENEXUS_SYNC
+from open_webui.utils.bluenexus.chat_storage import BlueNexusChatStorage
 from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
 from open_webui.utils.bluenexus.types import BlueNexusNotFoundError
 from open_webui.utils.bluenexus.collections import Collections
@@ -182,6 +183,131 @@ class BlueNexusSyncService:
             # Same timestamp, skip
             log.debug(f"[BlueNexus Sync] Chat {chat_id} is in sync, skipping")
             return "skipped"
+
+    # =========================================================================
+    # Push Sync (Local → BlueNexus)
+    # =========================================================================
+
+    async def sync_chat_to_bluenexus(
+        self,
+        chat_id: str,
+        user_id: str,
+        operation: str = "update",
+    ) -> bool:
+        """
+        Push a chat to BlueNexus (async, non-blocking).
+
+        This is called after local chat operations to backup data to BlueNexus.
+
+        Args:
+            chat_id: Chat ID to sync
+            user_id: User ID
+            operation: "create", "update", or "delete"
+
+        Returns:
+            True if sync was successful, False otherwise
+        """
+        # Check if BlueNexus is enabled
+        if not ENABLE_BLUENEXUS.value:
+            log.debug(f"[BlueNexus Sync] BlueNexus disabled via ENABLE_BLUENEXUS, skipping sync for chat {chat_id}")
+            return False
+
+        # Check if BlueNexus sync is enabled
+        if not ENABLE_BLUENEXUS_SYNC.value:
+            log.debug(f"[BlueNexus Sync] Sync disabled via ENABLE_BLUENEXUS_SYNC, skipping sync for chat {chat_id}")
+            return False
+
+        log.debug(f"[BlueNexus Sync] Syncing chat {chat_id} to BlueNexus (operation={operation})")
+
+        client = get_bluenexus_client_for_user(user_id)
+        if not client:
+            log.debug(f"[BlueNexus Sync] User {user_id} has no BlueNexus session, skipping sync")
+            return False
+
+        try:
+            bn_storage = BlueNexusChatStorage(client)
+
+            if operation == "delete":
+                # Delete from BlueNexus
+                result = await bn_storage.delete_chat_by_id_and_user_id(chat_id, user_id)
+                log.info(f"[BlueNexus Sync] Deleted chat {chat_id} from BlueNexus: {result}")
+                return result
+
+            # Get local chat
+            local_chat = Chats.get_chat_by_id_and_user_id(chat_id, user_id)
+            if not local_chat:
+                log.warning(f"[BlueNexus Sync] Chat {chat_id} not found locally, skipping sync")
+                return False
+
+            # Check if chat exists in BlueNexus
+            remote_chat = await bn_storage.get_chat_by_id_and_user_id(chat_id, user_id)
+
+            if operation == "create" or not remote_chat:
+                # Create new chat in BlueNexus
+                log.debug(f"[BlueNexus Sync] Creating chat {chat_id} in BlueNexus")
+                chat_data = local_chat.chat
+                chat_data["id"] = chat_id  # Preserve original ID
+
+                result = await bn_storage.insert_new_chat(
+                    user_id=user_id,
+                    chat_data=chat_data,
+                    folder_id=local_chat.folder_id,
+                )
+                log.info(f"[BlueNexus Sync] Created chat {chat_id} in BlueNexus")
+                return result is not None
+
+            # Update existing chat in BlueNexus
+            log.debug(f"[BlueNexus Sync] Updating chat {chat_id} in BlueNexus")
+            result = await bn_storage.update_chat_by_id(chat_id, local_chat.chat)
+            log.info(f"[BlueNexus Sync] Updated chat {chat_id} in BlueNexus")
+            return result is not None
+
+        except Exception as e:
+            log.error(f"[BlueNexus Sync] Error syncing chat {chat_id} to BlueNexus: {e}")
+            return False
+
+    def sync_chat_to_bluenexus_background(
+        self,
+        chat_id: str,
+        user_id: str,
+        operation: str = "update",
+    ):
+        """
+        Schedule a background sync to BlueNexus (fire-and-forget).
+
+        This method is non-blocking and returns immediately.
+        The actual sync happens in the background.
+
+        Args:
+            chat_id: Chat ID to sync
+            user_id: User ID
+            operation: "create", "update", or "delete"
+        """
+        # Create background task
+        task_key = f"{user_id}:{chat_id}"
+
+        # Cancel existing task if any
+        if task_key in self._sync_tasks:
+            self._sync_tasks[task_key].cancel()
+
+        # Create new task
+        try:
+            loop = asyncio.get_event_loop()
+            task = loop.create_task(
+                self.sync_chat_to_bluenexus(chat_id, user_id, operation)
+            )
+            self._sync_tasks[task_key] = task
+
+            # Clean up task when done
+            def cleanup(_task):
+                if task_key in self._sync_tasks:
+                    del self._sync_tasks[task_key]
+
+            task.add_done_callback(cleanup)
+
+        except RuntimeError:
+            # No event loop, sync will happen on next request
+            log.debug(f"[BlueNexus Sync] No event loop, skipping background sync for {chat_id}")
 
     # =========================================================================
     # Bulk Sync
@@ -384,18 +510,6 @@ class BlueNexusSyncService:
     # =========================================================================
     # Convenience Methods for Specific Models
     # =========================================================================
-
-    def sync_chat_to_bluenexus_background(
-        self,
-        chat_id: str,
-        user_id: str,
-        chat_data: dict = None,
-        operation: str = "update",
-    ):
-        """Sync a chat to BlueNexus (background)."""
-        self.sync_model_to_bluenexus_background(
-            Collections.CHATS, chat_id, user_id, chat_data, operation
-        )
 
     def sync_message_to_bluenexus_background(
         self, message_id: str, user_id: str, data: dict = None, operation: str = "update"
