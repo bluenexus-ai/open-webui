@@ -84,14 +84,6 @@ if TYPE_CHECKING:
         get_or_create_bluenexus_client,
         BlueNexusClientContext,
     )
-    from open_webui.utils.bluenexus.chat_storage import (  # noqa: F401
-        BlueNexusChatStorage,
-        ChatData,
-    )
-    from open_webui.utils.bluenexus.hybrid_chat_storage import (  # noqa: F401
-        HybridChatStorage,
-        HybridChats,
-    )
     from open_webui.utils.bluenexus.sync_service import (  # noqa: F401
         BlueNexusSyncService,
         BlueNexusSync,
@@ -135,10 +127,6 @@ __all__ = [
     "has_bluenexus_session",
     "get_or_create_bluenexus_client",
     "BlueNexusClientContext",
-    "BlueNexusChatStorage",
-    "ChatData",
-    "HybridChatStorage",
-    "HybridChats",
     "BlueNexusSyncService",
     "BlueNexusSync",
 ]
@@ -223,13 +211,6 @@ def __getattr__(name):
         from open_webui.utils.bluenexus import factory as _factory
         return getattr(_factory, name)
 
-    if name in {"BlueNexusChatStorage", "ChatData"}:
-        from open_webui.utils.bluenexus import chat_storage as _cs
-        return getattr(_cs, name)
-
-    if name in {"HybridChatStorage", "HybridChats"}:
-        from open_webui.utils.bluenexus import hybrid_chat_storage as _hcs
-        return getattr(_hcs, name)
 
     if name in {"BlueNexusSyncService", "BlueNexusSync"}:
         from open_webui.utils.bluenexus import sync_service as _sync

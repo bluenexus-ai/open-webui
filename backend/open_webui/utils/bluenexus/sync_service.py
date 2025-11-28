@@ -17,9 +17,8 @@ import asyncio
 
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.config import ENABLE_BLUENEXUS, ENABLE_BLUENEXUS_SYNC
-from open_webui.utils.bluenexus.chat_storage import BlueNexusChatStorage
 from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
-from open_webui.utils.bluenexus.types import BlueNexusNotFoundError
+from open_webui.utils.bluenexus.types import BlueNexusNotFoundError, QueryOptions, SortBy, SortOrder
 from open_webui.utils.bluenexus.collections import Collections
 from open_webui.models.chats import Chats
 
@@ -80,33 +79,37 @@ class BlueNexusSyncService:
             return {"pulled": 0, "updated": 0, "created": 0, "conflicts": 0}
 
         try:
-            bn_storage = BlueNexusChatStorage(client)
-
             # Get all chats from BlueNexus (paginated due to 100 limit)
             remote_chats = []
-            page = 0
+            page = 1
             page_size = 100  # Maximum allowed by API
 
             while True:
-                batch = await bn_storage.get_chats_by_user_id(
-                    user_id=user_id,
-                    include_archived=True,
-                    skip=page * page_size,
-                    limit=page_size,
+                # Query using generic client.query()
+                response = await client.query(
+                    Collections.CHATS,
+                    QueryOptions(
+                        page=page,
+                        limit=page_size,
+                        sort_by=SortBy.CREATED_AT,
+                        sort_order=SortOrder.DESC,
+                    )
                 )
 
-                if not batch:
+                if not response.data:
                     break
 
-                remote_chats.extend(batch)
+                # Convert BlueNexusRecord to dict
+                for record in response.get_records():
+                    remote_chats.append(record.to_dict())
 
-                # If we got fewer than page_size, we've reached the end
-                if len(batch) < page_size:
+                # Check if there are more pages
+                if not response.pagination.hasNext:
                     break
 
                 page += 1
 
-            log.info(f"[BlueNexus Sync] Found {len(remote_chats)} chats in BlueNexus for user={user_id} across {page + 1} page(s)")
+            log.info(f"[BlueNexus Sync] Found {len(remote_chats)} chats in BlueNexus for user={user_id} across {page} page(s)")
 
             stats = {
                 "pulled": len(remote_chats),
@@ -138,13 +141,14 @@ class BlueNexusSyncService:
 
         Args:
             user_id: User ID
-            remote_chat: Chat data from BlueNexus
+            remote_chat: Chat data from BlueNexus (raw dict from API)
 
         Returns:
             "created", "updated", "conflict", or "skipped"
         """
-        chat_id = remote_chat.get("id")
-        remote_updated_at = remote_chat.get("updated_at", 0)
+        # Get the Open WebUI ID from owui_id field
+        chat_id = remote_chat.get("owui_id") or remote_chat.get("id")
+        remote_updated_at = remote_chat.get("owui_updated_at") or remote_chat.get("updated_at", 0)
 
         # Check if chat exists locally
         local_chat = Chats.get_chat_by_id(chat_id)
@@ -214,6 +218,7 @@ class BlueNexusSyncService:
         Push a chat to BlueNexus (async, non-blocking).
 
         This is called after local chat operations to backup data to BlueNexus.
+        Now uses the generic sync_model_to_bluenexus for consistency.
 
         Args:
             chat_id: Chat ID to sync
@@ -223,159 +228,45 @@ class BlueNexusSyncService:
         Returns:
             True if sync was successful, False otherwise
         """
-        # Check if BlueNexus is enabled
-        if not ENABLE_BLUENEXUS.value:
-            log.debug(f"[BlueNexus Sync] BlueNexus disabled via ENABLE_BLUENEXUS, skipping sync for chat {chat_id}")
-            return False
-
-        # Check if BlueNexus sync is enabled
-        if not ENABLE_BLUENEXUS_SYNC.value:
-            log.debug(f"[BlueNexus Sync] Sync disabled via ENABLE_BLUENEXUS_SYNC, skipping sync for chat {chat_id}")
-            return False
-
-        log.debug(f"[BlueNexus Sync] Syncing chat {chat_id} to BlueNexus (operation={operation})")
-
-        client = get_bluenexus_client_for_user(user_id)
-        if not client:
-            log.debug(f"[BlueNexus Sync] User {user_id} has no BlueNexus session, skipping sync")
-            return False
-
-        try:
-            bn_storage = BlueNexusChatStorage(client)
-
-            if operation == "delete":
-                # Delete from BlueNexus
-                result = await bn_storage.delete_chat_by_id_and_user_id(chat_id, user_id)
-                log.info(f"[BlueNexus Sync] Deleted chat {chat_id} from BlueNexus: {result}")
-                return result
-
-            # Get local chat
-            local_chat = Chats.get_chat_by_id_and_user_id(chat_id, user_id)
-            if not local_chat:
-                log.warning(f"[BlueNexus Sync] Chat {chat_id} not found locally, skipping sync")
-                return False
-
-            # Check if chat exists in BlueNexus
-            remote_chat = await bn_storage.get_chat_by_id_and_user_id(chat_id, user_id)
-
-            if operation == "create" or not remote_chat:
-                # Create new chat in BlueNexus
-                log.debug(f"[BlueNexus Sync] Creating chat {chat_id} in BlueNexus")
-                chat_data = local_chat.chat
-                chat_data["id"] = chat_id  # Preserve original ID
-
-                result = await bn_storage.insert_new_chat(
-                    user_id=user_id,
-                    chat_data=chat_data,
-                    folder_id=local_chat.folder_id,
-                )
-                log.info(f"[BlueNexus Sync] Created chat {chat_id} in BlueNexus")
-                return result is not None
-
-            # Update existing chat in BlueNexus
-            log.debug(f"[BlueNexus Sync] Updating chat {chat_id} in BlueNexus")
-            result = await bn_storage.update_chat_by_id(chat_id, local_chat.chat)
-            log.info(f"[BlueNexus Sync] Updated chat {chat_id} in BlueNexus")
-            return result is not None
-
-        except Exception as e:
-            log.error(f"[BlueNexus Sync] Error syncing chat {chat_id} to BlueNexus: {e}")
-            return False
-
-    def sync_chat_to_bluenexus_background(
-        self,
-        chat_id: str,
-        user_id: str,
-        operation: str = "update",
-    ):
-        """
-        Schedule a background sync to BlueNexus (fire-and-forget).
-
-        This method is non-blocking and returns immediately.
-        The actual sync happens in the background.
-
-        Args:
-            chat_id: Chat ID to sync
-            user_id: User ID
-            operation: "create", "update", or "delete"
-        """
-        # Create background task
-        task_key = f"{user_id}:{chat_id}"
-
-        # Cancel existing task if any
-        if task_key in self._sync_tasks:
-            self._sync_tasks[task_key].cancel()
-
-        # Create new task
-        try:
-            loop = asyncio.get_event_loop()
-            task = loop.create_task(
-                self.sync_chat_to_bluenexus(chat_id, user_id, operation)
+        if operation == "delete":
+            # For delete, we don't need the chat data
+            return await self.sync_model_to_bluenexus(
+                Collections.CHATS,
+                chat_id,
+                user_id,
+                {},  # No data needed for delete
+                operation="delete"
             )
-            self._sync_tasks[task_key] = task
 
-            # Clean up task when done
-            def cleanup(_task):
-                if task_key in self._sync_tasks:
-                    del self._sync_tasks[task_key]
+        # Get local chat data
+        local_chat = Chats.get_chat_by_id_and_user_id(chat_id, user_id)
+        if not local_chat:
+            log.warning(f"[BlueNexus Sync] Chat {chat_id} not found locally, skipping sync")
+            return False
 
-            task.add_done_callback(cleanup)
+        # Prepare chat data for BlueNexus
+        chat_data = {
+            "owui_id": chat_id,
+            "user_id": user_id,
+            "title": local_chat.title,
+            "chat": local_chat.chat,
+            "share_id": local_chat.share_id,
+            "archived": local_chat.archived,
+            "pinned": local_chat.pinned,
+            "meta": local_chat.meta,
+            "folder_id": local_chat.folder_id,
+            "owui_created_at": local_chat.created_at,
+            "owui_updated_at": local_chat.updated_at,
+        }
 
-        except RuntimeError:
-            # No event loop, sync will happen on next request
-            log.debug(f"[BlueNexus Sync] No event loop, skipping background sync for {chat_id}")
-
-    # =========================================================================
-    # Bulk Sync
-    # =========================================================================
-
-    async def sync_all_chats_to_bluenexus(self, user_id: str) -> dict:
-        """
-        Sync all local chats to BlueNexus.
-
-        This is useful for initial migration or manual sync.
-
-        Args:
-            user_id: User ID to sync
-
-        Returns:
-            Dictionary with sync statistics
-        """
-        # Check if BlueNexus is enabled
-        if not ENABLE_BLUENEXUS.value:
-            log.debug(f"[BlueNexus Sync] BlueNexus disabled via ENABLE_BLUENEXUS, skipping bulk sync for user={user_id}")
-            return {"synced": 0, "failed": 0}
-
-        # Check if BlueNexus sync is enabled
-        if not ENABLE_BLUENEXUS_SYNC.value:
-            log.debug(f"[BlueNexus Sync] Sync disabled via ENABLE_BLUENEXUS_SYNC, skipping bulk sync for user={user_id}")
-            return {"synced": 0, "failed": 0}
-
-        log.info(f"[BlueNexus Sync] Starting bulk sync for user={user_id}")
-
-        client = get_bluenexus_client_for_user(user_id)
-        if not client:
-            log.info(f"[BlueNexus Sync] User {user_id} has no BlueNexus session, skipping sync")
-            return {"synced": 0, "failed": 0}
-
-        # Get all local chats
-        local_chats = Chats.get_chats_by_user_id(user_id)
-
-        stats = {"synced": 0, "failed": 0}
-
-        for chat in local_chats:
-            try:
-                result = await self.sync_chat_to_bluenexus(chat.id, user_id, "create")
-                if result:
-                    stats["synced"] += 1
-                else:
-                    stats["failed"] += 1
-            except Exception as e:
-                log.error(f"[BlueNexus Sync] Error syncing chat {chat.id}: {e}")
-                stats["failed"] += 1
-
-        log.info(f"[BlueNexus Sync] Bulk sync complete for user={user_id}: {stats}")
-        return stats
+        # Use generic sync method
+        return await self.sync_model_to_bluenexus(
+            Collections.CHATS,
+            chat_id,
+            user_id,
+            chat_data,
+            operation=operation
+        )
 
     # =========================================================================
     # Generic Model Sync Methods
@@ -420,40 +311,66 @@ class BlueNexusSyncService:
         log.info(f"[BlueNexus Sync] Got BlueNexus client for user {user_id}")
 
         try:
+            # Helper function to find BlueNexus record ID by Open WebUI ID
+            async def find_bluenexus_id(owui_id: str) -> str | None:
+                """Query BlueNexus to find the MongoDB ID for a given Open WebUI ID."""
+                try:
+                    log.debug(f"[BlueNexus Sync] Querying for record with owui_id={owui_id}")
+                    response = await client.query(
+                        collection_name,
+                        QueryOptions(filter={"owui_id": owui_id}, limit=1)
+                    )
+                    if response.data and len(response.data) > 0:
+                        # BlueNexus returns records with MongoDB's _id as "id"
+                        bluenexus_id = response.get_records()[0].id
+                        log.info(f"[BlueNexus Sync] Found BlueNexus ID {bluenexus_id} for Open WebUI ID {owui_id}")
+                        return bluenexus_id
+                    log.debug(f"[BlueNexus Sync] No record found with id={owui_id}")
+                    return None
+                except Exception as e:
+                    log.error(f"[BlueNexus Sync] Error querying for record: {e}")
+                    return None
+
             if operation == "delete":
-                # Delete from BlueNexus
-                result = await client.delete(collection_name, record_id)
-                log.info(f"[BlueNexus Sync] Deleted {collection_name}/{record_id} from BlueNexus")
-                return result is not None
+                # Find the BlueNexus ID first by querying with Open WebUI ID
+                bluenexus_id = await find_bluenexus_id(record_id)
+                if not bluenexus_id:
+                    log.warning(f"[BlueNexus Sync] Cannot delete {collection_name}/{record_id}: record not found in BlueNexus")
+                    return False
+
+                # Delete using the BlueNexus MongoDB ID
+                await client.delete(collection_name, bluenexus_id)
+                log.info(f"[BlueNexus Sync] Deleted {collection_name}/{record_id} (BlueNexus ID: {bluenexus_id}) from BlueNexus")
+                return True
 
             # Ensure data has required fields
+            # Note: We use "owui_id" instead of "id" because "id" is reserved
+            # for MongoDB's _id in the BlueNexus schema transform
             sync_data = {
                 **data,
-                "id": record_id,
+                "owui_id": record_id,  # Open WebUI's original ID
                 "user_id": user_id,
             }
 
             if operation == "create":
-                # Create new record in BlueNexus without preflight GET to avoid server errors
-                result = await client.create(collection_name, sync_data)
-                log.info(f"[BlueNexus Sync] Created {collection_name}/{record_id} in BlueNexus")
-                return result is not None
-
-            # Check if record exists in BlueNexus (ignore 404)
-            try:
-                existing = await client.get(collection_name, record_id)
-            except BlueNexusNotFoundError:
-                existing = None
-
-            if not existing:
                 # Create new record in BlueNexus
                 result = await client.create(collection_name, sync_data)
-                log.info(f"[BlueNexus Sync] Created {collection_name}/{record_id} in BlueNexus")
+                log.info(f"[BlueNexus Sync] Created {collection_name}/{record_id} in BlueNexus (BlueNexus ID: {result.id})")
                 return result is not None
 
-            # Update existing record in BlueNexus
-            result = await client.update(collection_name, record_id, sync_data)
-            log.info(f"[BlueNexus Sync] Updated {collection_name}/{record_id} in BlueNexus")
+            # For UPDATE operation, find existing record by Open WebUI ID
+            bluenexus_id = await find_bluenexus_id(record_id)
+
+            if not bluenexus_id:
+                # Record doesn't exist, create it instead
+                log.info(f"[BlueNexus Sync] Record {collection_name}/{record_id} not found, creating instead of updating")
+                result = await client.create(collection_name, sync_data)
+                log.info(f"[BlueNexus Sync] Created {collection_name}/{record_id} in BlueNexus (BlueNexus ID: {result.id})")
+                return result is not None
+
+            # Update existing record using BlueNexus MongoDB ID
+            result = await client.update(collection_name, bluenexus_id, sync_data)
+            log.info(f"[BlueNexus Sync] Updated {collection_name}/{record_id} (BlueNexus ID: {bluenexus_id}) in BlueNexus")
             return result is not None
 
         except Exception as e:
@@ -526,6 +443,14 @@ class BlueNexusSyncService:
     # =========================================================================
     # Convenience Methods for Specific Models
     # =========================================================================
+
+    def sync_chat_to_bluenexus_background(
+        self, chat_id: str, user_id: str, data: dict = None, operation: str = "update"
+    ):
+        """Sync a message to BlueNexus (background)."""
+        self.sync_model_to_bluenexus_background(
+            Collections.CHATS, chat_id, user_id, data, operation
+        )
 
     def sync_message_to_bluenexus_background(
         self, message_id: str, user_id: str, data: dict = None, operation: str = "update"
