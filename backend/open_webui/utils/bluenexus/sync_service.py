@@ -210,6 +210,97 @@ class BlueNexusSyncService:
             log.error(f"[BlueNexus Sync] Unexpected error in sync_model_to_bluenexus_background: {e}", exc_info=True)
 
     # =========================================================================
+    # High-Level Helper Methods
+    # =========================================================================
+
+    def sync_create(self, collection: str, model_instance, record_id: str = None):
+        """
+        Sync a newly created model instance to BlueNexus.
+
+        Args:
+            collection: Collection name (e.g., Collections.CHATS)
+            model_instance: Model instance with user_id and model_dump() method
+            record_id: Optional explicit record ID (uses model_instance.id if not provided)
+
+        Example:
+            chat = Chats.insert_new_chat(user.id, form_data)
+            BlueNexusSync.sync_create(Collections.CHATS, chat)
+
+            # For models with different ID fields:
+            prompt = Prompts.insert_new_prompt(user.id, form_data)
+            BlueNexusSync.sync_create(Collections.PROMPTS, prompt, prompt.command)
+        """
+        # Use explicit record_id if provided, otherwise try to get 'id' attribute
+        if record_id is None:
+            record_id = getattr(model_instance, 'id', None)
+            if record_id is None:
+                # Try 'command' for prompts
+                record_id = getattr(model_instance, 'command', None)
+
+        self.sync_model_to_bluenexus_background(
+            collection,
+            record_id,
+            model_instance.user_id,
+            model_instance.model_dump(),
+            operation="create"
+        )
+
+    def sync_update(self, collection: str, model_instance, record_id: str = None):
+        """
+        Sync an updated model instance to BlueNexus.
+
+        Args:
+            collection: Collection name (e.g., Collections.NOTES)
+            model_instance: Model instance with user_id and model_dump() method
+            record_id: Optional explicit record ID (uses model_instance.id if not provided)
+
+        Example:
+            note = Notes.update_note_by_id(id, form_data)
+            BlueNexusSync.sync_update(Collections.NOTES, note)
+
+            # For models with different ID fields:
+            prompt = Prompts.update_prompt_by_command(command, form_data)
+            BlueNexusSync.sync_update(Collections.PROMPTS, prompt, prompt.command)
+        """
+        # Use explicit record_id if provided, otherwise try to get 'id' attribute
+        if record_id is None:
+            record_id = getattr(model_instance, 'id', None)
+            if record_id is None:
+                # Try 'command' for prompts
+                record_id = getattr(model_instance, 'command', None)
+
+        self.sync_model_to_bluenexus_background(
+            collection,
+            record_id,
+            model_instance.user_id,
+            model_instance.model_dump(),
+            operation="update"
+        )
+
+    def sync_delete(self, collection: str, record_id: str, user_id: str):
+        """
+        Sync a deletion to BlueNexus.
+
+        Args:
+            collection: Collection name (e.g., Collections.PROMPTS)
+            record_id: ID of the deleted record
+            user_id: User ID who owns the record
+
+        Example:
+            # Capture user_id before deletion
+            user_id = prompt.user_id
+            Prompts.delete_prompt_by_command(command)
+            BlueNexusSync.sync_delete(Collections.PROMPTS, command, user_id)
+        """
+        self.sync_model_to_bluenexus_background(
+            collection,
+            record_id,
+            user_id,
+            None,
+            operation="delete"
+        )
+
+    # =========================================================================
     # Convenience Methods for Specific Models
     # =========================================================================
 

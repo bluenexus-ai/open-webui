@@ -7,6 +7,7 @@ from open_webui.models.memories import Memories, MemoryModel
 from open_webui.retrieval.vector.factory import VECTOR_DB_CLIENT
 from open_webui.utils.auth import get_verified_user
 from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+from open_webui.utils.bluenexus.collections import Collections
 from open_webui.env import SRC_LOG_LEVELS
 
 
@@ -66,11 +67,7 @@ async def add_memory(
         ],
     )
 
-    # Sync to BlueNexus in background (non-blocking)
-    BlueNexusSync.sync_memory_to_bluenexus_background(
-        memory.id, user.id, memory.model_dump(), operation="create"
-    )
-
+    BlueNexusSync.sync_create(Collections.MEMORIES, memory)
     return memory
 
 
@@ -187,11 +184,7 @@ async def update_memory_by_id(
             ],
         )
 
-    # Sync to BlueNexus in background (non-blocking)
-    BlueNexusSync.sync_memory_to_bluenexus_background(
-        memory.id, user.id, memory.model_dump(), operation="update"
-    )
-
+    BlueNexusSync.sync_update(Collections.MEMORIES, memory)
     return memory
 
 
@@ -209,11 +202,7 @@ async def delete_memory_by_id(memory_id: str, user=Depends(get_verified_user)):
             collection_name=f"user-memory-{user.id}", ids=[memory_id]
         )
 
-        # Sync to BlueNexus in background (non-blocking)
-        BlueNexusSync.sync_memory_to_bluenexus_background(
-            memory_id, user.id, None, operation="delete"
-        )
-
+        BlueNexusSync.sync_delete(Collections.MEMORIES, memory_id, user.id)
         return True
 
     return False

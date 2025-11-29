@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
 from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+from open_webui.utils.bluenexus.collections import Collections
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
@@ -133,12 +134,8 @@ async def get_user_chat_list_by_user_id(
 @router.post("/new", response_model=Optional[ChatResponse])
 async def create_new_chat(form_data: ChatForm, user=Depends(get_verified_user)):
     try:
-        # Create chat in local database
         chat = Chats.insert_new_chat(user.id, form_data)
-
-        # Sync to BlueNexus in background (non-blocking)
-        BlueNexusSync.sync_chat_to_bluenexus_background(chat.id, user.id, chat.model_dump(), operation="create")
-
+        BlueNexusSync.sync_create(Collections.CHATS, chat)
         return ChatResponse(**chat.model_dump())
     except Exception as e:
         log.exception(e)
@@ -465,10 +462,7 @@ async def update_chat_by_id(
     if chat:
         updated_chat = {**chat.chat, **form_data.chat}
         chat = Chats.update_chat_by_id(id, updated_chat)
-
-        # Sync to BlueNexus in background (non-blocking)
-        BlueNexusSync.sync_chat_to_bluenexus_background(id, user.id, chat.model_dump(), operation="update")
-
+        BlueNexusSync.sync_update(Collections.CHATS, chat)
         return ChatResponse(**chat.model_dump())
     else:
         raise HTTPException(
@@ -592,10 +586,7 @@ async def delete_chat_by_id(request: Request, id: str, user=Depends(get_verified
                 Tags.delete_tag_by_name_and_user_id(tag, user.id)
 
         result = Chats.delete_chat_by_id(id)
-
-        # Sync deletion to BlueNexus in background
-        BlueNexusSync.sync_chat_to_bluenexus_background(id, user.id, None, operation="delete")
-
+        BlueNexusSync.sync_delete(Collections.CHATS, id, user.id)
         return result
     else:
         if not has_permission(
@@ -612,10 +603,7 @@ async def delete_chat_by_id(request: Request, id: str, user=Depends(get_verified
                 Tags.delete_tag_by_name_and_user_id(tag, user.id)
 
         result = Chats.delete_chat_by_id_and_user_id(id, user.id)
-
-        # Sync deletion to BlueNexus in background
-        BlueNexusSync.sync_chat_to_bluenexus_background(id, user.id, None, operation="delete")
-
+        BlueNexusSync.sync_delete(Collections.CHATS, id, user.id)
         return result
 
 

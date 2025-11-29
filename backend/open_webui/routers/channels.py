@@ -42,6 +42,7 @@ from open_webui.utils.access_control import has_access, get_users_with_access
 from open_webui.utils.webhook import post_webhook
 from open_webui.utils.channels import extract_mentions, replace_mentions
 from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+from open_webui.utils.bluenexus.collections import Collections
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
@@ -511,12 +512,7 @@ async def post_new_message(
             )
 
         background_tasks.add_task(background_handler)
-
-        # Sync to BlueNexus in background (non-blocking)
-        BlueNexusSync.sync_message_to_bluenexus_background(
-            message.id, user.id, message.model_dump(), operation="create"
-        )
-
+        BlueNexusSync.sync_create(Collections.MESSAGES, message)
         return message
 
     except HTTPException as e:
@@ -680,11 +676,7 @@ async def update_message_by_id(
                 to=f"channel:{channel.id}",
             )
 
-            # Sync to BlueNexus in background (non-blocking)
-            BlueNexusSync.sync_message_to_bluenexus_background(
-                message.id, message.user_id, message.model_dump(), operation="update"
-            )
-
+            BlueNexusSync.sync_update(Collections.MESSAGES, message)
         return MessageModel(**message.model_dump())
     except Exception as e:
         log.exception(e)
@@ -906,11 +898,7 @@ async def delete_message_by_id(
                     to=f"channel:{channel.id}",
                 )
 
-        # Sync to BlueNexus in background (non-blocking)
-        BlueNexusSync.sync_message_to_bluenexus_background(
-            message_id, message_user_id, None, operation="delete"
-        )
-
+        BlueNexusSync.sync_delete(Collections.MESSAGES, message_id, message_user_id)
         return True
     except Exception as e:
         log.exception(e)
