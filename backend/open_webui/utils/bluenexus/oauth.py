@@ -7,6 +7,7 @@ This module handles OAuth provider registration and authentication for BlueNexus
 import httpx
 import ssl
 import urllib3
+from urllib.parse import urlparse
 from authlib.integrations.starlette_client import OAuth
 
 from open_webui.utils.bluenexus.config import (
@@ -22,11 +23,34 @@ from open_webui.utils.bluenexus.config import (
 )
 
 
+def _is_localhost_url(url: str) -> bool:
+    """Check if a URL points to localhost."""
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        return hostname in ["localhost", "127.0.0.1", "::1"]
+    except Exception:
+        return False
+
+
+def _should_disable_ssl_for_bluenexus() -> bool:
+    """
+    Check if SSL should be disabled for BlueNexus based on URL.
+    Only disables SSL for localhost development.
+    """
+    api_url = BLUENEXUS_API_BASE_URL.value
+    token_url = BLUENEXUS_TOKEN_URL.value
+    return _is_localhost_url(api_url) or _is_localhost_url(token_url)
+
+
 def get_bluenexus_ssl_context():
     """
     Get SSL context for BlueNexus connections.
-    Disables SSL verification for localhost development.
+    Disables SSL verification only for localhost development.
     """
+    if not _should_disable_ssl_for_bluenexus():
+        return None  # Use default SSL verification
+
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
@@ -50,13 +74,17 @@ def register_bluenexus_oauth(oauth: OAuth, oauth_timeout: str = ""):
     if not is_bluenexus_configured():
         return None
 
-    # Disable SSL warnings for localhost development
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    # Only disable SSL for localhost development
+    disable_ssl = _should_disable_ssl_for_bluenexus()
 
-    # Create httpx client with SSL verification disabled for localhost
+    if disable_ssl:
+        # Disable SSL warnings only for localhost development
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    # Create httpx client with SSL verification based on environment
     httpx_client = httpx.AsyncClient(
-        verify=False,
-        trust_env=False
+        verify=not disable_ssl,
+        trust_env=not disable_ssl
     )
 
     client = oauth.register(
@@ -72,7 +100,7 @@ def register_bluenexus_oauth(oauth: OAuth, oauth_timeout: str = ""):
             "scope": BLUENEXUS_OAUTH_SCOPE.value,
             "code_challenge_method": "S256",
             "token_endpoint_auth_method": "client_secret_post",
-            "verify": False,
+            "verify": not disable_ssl,
             **(
                 {"timeout": int(oauth_timeout)}
                 if oauth_timeout
@@ -111,6 +139,7 @@ def get_bluenexus_oauth_provider_config(oauth_timeout: str = "") -> dict:
 def should_disable_ssl_for_provider(provider: str) -> bool:
     """
     Check if SSL verification should be disabled for a provider.
+    Only returns True for BlueNexus when connecting to localhost.
 
     Args:
         provider: OAuth provider name
@@ -121,4 +150,8 @@ def should_disable_ssl_for_provider(provider: str) -> bool:
     if not is_bluenexus_enabled():
         return False
 
-    return provider == "bluenexus"
+    if provider != "bluenexus":
+        return False
+
+    # Only disable SSL for localhost development
+    return _should_disable_ssl_for_bluenexus()

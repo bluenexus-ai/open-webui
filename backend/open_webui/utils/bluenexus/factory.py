@@ -8,7 +8,7 @@ import logging
 from typing import Optional
 
 from open_webui.env import SRC_LOG_LEVELS
-from open_webui.config import ENABLE_BLUENEXUS, BLUENEXUS_API_BASE_URL
+from open_webui.utils.bluenexus.config import ENABLE_BLUENEXUS, BLUENEXUS_API_BASE_URL
 from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.utils.bluenexus.client import BlueNexusDataClient
 from open_webui.utils.bluenexus.types import BlueNexusAuthError
@@ -42,21 +42,21 @@ def get_bluenexus_client_for_user(
     """
     # Check if BlueNexus is enabled
     if not ENABLE_BLUENEXUS.value:
-        log.debug(f"[BlueNexus Factory] BlueNexus disabled via ENABLE_BLUENEXUS, returning None for user {user_id}")
+        log.debug(f"[BlueNexus Factory] BlueNexus disabled, returning None for user {user_id}")
         return None
 
     # Get BlueNexus OAuth session for user
-    log.info(f"[BlueNexus Factory] Looking up BlueNexus OAuth session for user {user_id}")
+    log.debug(f"[BlueNexus Factory] Looking up BlueNexus OAuth session for user {user_id}")
     session = OAuthSessions.get_session_by_provider_and_user_id(
         provider="bluenexus",
         user_id=user_id,
     )
 
     if not session:
-        log.info(f"[BlueNexus Factory] No BlueNexus session found for user {user_id}")
+        log.debug(f"[BlueNexus Factory] No BlueNexus session found for user {user_id}")
         return None
 
-    log.info(f"[BlueNexus Factory] Found BlueNexus session for user {user_id}, session_id={session.id}")
+    log.debug(f"[BlueNexus Factory] Found BlueNexus session for user {user_id}")
 
     # Extract access token
     token_data = session.token
@@ -77,7 +77,7 @@ def get_bluenexus_client_for_user(
         log.error("[BlueNexus Factory] BLUENEXUS_API_BASE_URL not configured")
         return None
 
-    log.info(f"[BlueNexus Factory] Creating BlueNexusDataClient for user {user_id}, base_url={base_url}")
+    log.debug(f"[BlueNexus Factory] Creating BlueNexusDataClient for user {user_id}")
 
     return BlueNexusDataClient(
         base_url=base_url,
@@ -169,7 +169,7 @@ async def get_or_create_bluenexus_client(
                         access_token=token["access_token"],
                     )
             except Exception as e:
-                log.error(f"[BlueNexus Factory] Token refresh failed: {e}")
+                log.error(f"[BlueNexus Factory] Token refresh failed: {e}", exc_info=True)
 
     return None
 

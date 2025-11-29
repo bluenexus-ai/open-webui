@@ -245,7 +245,7 @@ async def delete_note_by_id(request: Request, id: str, user=Depends(get_verified
         result = Notes.delete_note_by_id(id)
         if result:
             BlueNexusSync.sync_delete(Collections.NOTES, id, note_user_id)
-        return True
+        return result
     except Exception as e:
         log.exception(e)
         raise HTTPException(

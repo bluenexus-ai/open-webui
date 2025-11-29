@@ -56,15 +56,15 @@ async def get_bluenexus_mcp_servers(user_id: str) -> BlueNexusMCPServersResponse
 
     try:
         # Get BlueNexus OAuth session token
-        session = OAuthSessions.get_session_by_provider_and_user_id(
+        oauth_session = OAuthSessions.get_session_by_provider_and_user_id(
             provider="bluenexus", user_id=user_id
         )
 
-        if not session:
+        if not oauth_session:
             log.warning(f"No BlueNexus OAuth session found for user {user_id}")
             return BlueNexusMCPServersResponse(data=[])
 
-        access_token = session.token.get("access_token")
+        access_token = oauth_session.token.get("access_token")
         if not access_token:
             log.warning(f"No access token found in BlueNexus session for user {user_id}")
             return BlueNexusMCPServersResponse(data=[])
@@ -73,9 +73,9 @@ async def get_bluenexus_mcp_servers(user_id: str) -> BlueNexusMCPServersResponse
         mcp_servers_url = f"{BLUENEXUS_API_BASE_URL.value}/api/v1/mcps"
         headers = {"Authorization": f"Bearer {access_token}"}
 
-        async with aiohttp.ClientSession(trust_env=True) as session:
+        async with aiohttp.ClientSession(trust_env=True) as http_session:
             ssl_context = get_ssl_context_for_url(mcp_servers_url)
-            async with session.get(
+            async with http_session.get(
                 mcp_servers_url, headers=headers, ssl=ssl_context
             ) as response:
                 if response.status == 200:

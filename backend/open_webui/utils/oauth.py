@@ -977,13 +977,11 @@ class OAuthManager:
                                 + new_token_data["expires_in"]
                             )
 
-                        # Log refresh details for BlueNexus
+                        # Log refresh details for BlueNexus (DEBUG level for token, INFO for timing)
                         if provider == "bluenexus":
-                            log.info(f"BlueNexus token refresh successful:")
-                            log.info(f"  New expires_at: {new_token_data.get('expires_at')}")
-                            log.info(f"  New expires_in: {new_token_data.get('expires_in')} seconds")
-                            access_token = new_token_data.get("access_token", "N/A")
-                            log.info(f"  New Access Token: {access_token[:50]}..." if len(access_token) > 50 else f"  New Access Token: {access_token}")
+                            expires_at = new_token_data.get('expires_at')
+                            expires_in = new_token_data.get('expires_in')
+                            log.info(f"BlueNexus token refresh successful: expires_at={expires_at}, expires_in={expires_in}s")
 
                         log.debug(f"Token refresh successful for provider {provider}")
                         return new_token_data
@@ -1524,11 +1522,11 @@ class OAuthManager:
             )
 
         try:
-            # Log raw token from BlueNexus for debugging
+            # Log raw token from BlueNexus for debugging (DEBUG level for security)
             if provider == "bluenexus":
-                log.info(f"BlueNexus raw token keys: {list(token.keys())}")
-                log.info(f"BlueNexus raw expires_at: {token.get('expires_at')}")
-                log.info(f"BlueNexus raw expires_in: {token.get('expires_in')}")
+                log.debug(f"BlueNexus raw token keys: {list(token.keys())}")
+                log.debug(f"BlueNexus raw expires_at: {token.get('expires_at')}")
+                log.debug(f"BlueNexus raw expires_in: {token.get('expires_in')}")
 
             # Add timestamp for tracking
             token["issued_at"] = int(datetime.now().timestamp())
@@ -1562,10 +1560,10 @@ class OAuthManager:
                 f"Stored OAuth session server-side for user {user.id}, provider {provider}"
             )
 
-            # Log token details for debugging (BlueNexus)
+            # Log token details for debugging (BlueNexus) - DEBUG level for security
             if provider == "bluenexus":
-                access_token = token.get("access_token", "N/A")
-                refresh_token = token.get("refresh_token", "N/A")
+                access_token = token.get("access_token", "")
+                refresh_token = token.get("refresh_token", "")
                 expires_at = token.get("expires_at")
                 expires_in = token.get("expires_in")
                 issued_at = token.get("issued_at")
@@ -1576,12 +1574,16 @@ class OAuthManager:
                     from datetime import datetime as dt
                     expires_at_str = dt.fromtimestamp(expires_at).isoformat()
 
-                log.info(f"BlueNexus OAuth Token Details for user {user.id}:")
-                log.info(f"  Access Token: {access_token[:50]}..." if len(access_token) > 50 else f"  Access Token: {access_token}")
-                log.info(f"  Refresh Token: {refresh_token[:50]}..." if refresh_token and len(refresh_token) > 50 else f"  Refresh Token: {refresh_token}")
-                log.info(f"  Expires At: {expires_at_str} (timestamp: {expires_at})")
-                log.info(f"  Expires In: {expires_in} seconds")
-                log.info(f"  Issued At: {issued_at}")
+                # Redact tokens for security - only show first/last few chars
+                def redact_token(t: str) -> str:
+                    if not t or len(t) < 20:
+                        return "[redacted]"
+                    return f"{t[:8]}...{t[-4:]}"
+
+                log.debug(f"BlueNexus OAuth Token Details for user {user.id}:")
+                log.debug(f"  Access Token: {redact_token(access_token)}")
+                log.debug(f"  Refresh Token: {redact_token(refresh_token)}")
+                log.info(f"BlueNexus OAuth session created for user {user.id}, expires_at: {expires_at_str}, expires_in: {expires_in}s")
 
             # Auto-configure BlueNexus LLM API if logging in via BlueNexus
             if provider == "bluenexus":
