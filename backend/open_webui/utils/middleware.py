@@ -729,6 +729,42 @@ async def chat_web_search_handler(
     return form_data
 
 
+def strip_images_from_messages(messages: list) -> list:
+    """
+    Strip image content from messages so they can be sent to non-vision LLMs.
+    Converts messages with image_url content to text-only content.
+    """
+    stripped_messages = []
+    for message in messages:
+        new_message = {**message}
+        content = message.get("content")
+
+        # If content is a list (multimodal format), extract only text
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        text_parts.append(item.get("text", ""))
+                    # Skip image_url items
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            new_message["content"] = " ".join(text_parts).strip() or "[Image]"
+
+        # Remove files with image type from the message
+        if "files" in new_message:
+            new_message["files"] = [
+                f for f in new_message.get("files", [])
+                if f.get("type") != "image"
+            ]
+            if not new_message["files"]:
+                del new_message["files"]
+
+        stripped_messages.append(new_message)
+
+    return stripped_messages
+
+
 def get_last_images(message_list):
     images = []
     for message in reversed(message_list):
@@ -886,6 +922,8 @@ async def chat_image_generation_handler(
             )
 
             system_message_content = "<context>The requested image has been created and is now being shown to the user. Let them know that it has been generated.</context>"
+
+            form_data["messages"] = strip_images_from_messages(form_data["messages"])
         except Exception as e:
             log.debug(e)
 

@@ -3315,10 +3315,21 @@ COMFYUI_WORKFLOW = PersistentConfig(
     os.getenv("COMFYUI_WORKFLOW", COMFYUI_DEFAULT_WORKFLOW),
 )
 
+COMFYUI_DEFAULT_WORKFLOW_NODES = [
+    {"type": "model", "node_ids": ["4"], "key": "ckpt_name"},
+    {"type": "prompt", "node_ids": ["6"], "key": "text"},
+    {"type": "negative_prompt", "node_ids": ["7"], "key": "text"},
+    {"type": "width", "node_ids": ["5"], "key": "width"},
+    {"type": "height", "node_ids": ["5"], "key": "height"},
+    {"type": "n", "node_ids": ["5"], "key": "batch_size"},
+    {"type": "seed", "node_ids": ["3"], "key": "seed"},
+    {"type": "steps", "node_ids": ["3"], "key": "steps"},
+]
+
 COMFYUI_WORKFLOW_NODES = PersistentConfig(
-    "COMFYUI_WORKFLOW",
+    "COMFYUI_WORKFLOW_NODES",
     "image_generation.comfyui.nodes",
-    [],
+    COMFYUI_DEFAULT_WORKFLOW_NODES,
 )
 
 IMAGES_OPENAI_API_BASE_URL = PersistentConfig(
@@ -3412,16 +3423,100 @@ IMAGES_EDIT_COMFYUI_API_KEY = PersistentConfig(
     os.getenv("IMAGES_EDIT_COMFYUI_API_KEY", ""),
 )
 
+COMFYUI_DEFAULT_EDIT_WORKFLOW = """
+{
+  "1": {
+    "inputs": {
+      "image": "input.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {"title": "Load Image"}
+  },
+  "2": {
+    "inputs": {
+      "ckpt_name": "model.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "Load Checkpoint"}
+  },
+  "3": {
+    "inputs": {
+      "pixels": ["1", 0],
+      "vae": ["2", 2]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {"title": "VAE Encode"}
+  },
+  "4": {
+    "inputs": {
+      "text": "Prompt",
+      "clip": ["2", 1]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "CLIP Text Encode (Prompt)"}
+  },
+  "5": {
+    "inputs": {
+      "text": "",
+      "clip": ["2", 1]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "CLIP Text Encode (Negative)"}
+  },
+  "6": {
+    "inputs": {
+      "seed": 0,
+      "steps": 20,
+      "cfg": 8,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 0.75,
+      "model": ["2", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["3", 0]
+    },
+    "class_type": "KSampler",
+    "_meta": {"title": "KSampler"}
+  },
+  "7": {
+    "inputs": {
+      "samples": ["6", 0],
+      "vae": ["2", 2]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {"title": "VAE Decode"}
+  },
+  "8": {
+    "inputs": {
+      "filename_prefix": "ComfyUI_Edit",
+      "images": ["7", 0]
+    },
+    "class_type": "SaveImage",
+    "_meta": {"title": "Save Image"}
+  }
+}
+"""
+
+COMFYUI_DEFAULT_EDIT_WORKFLOW_NODES = [
+    {"type": "image", "node_ids": ["1"], "key": "image"},
+    {"type": "model", "node_ids": ["2"], "key": "ckpt_name"},
+    {"type": "prompt", "node_ids": ["4"], "key": "text"},
+    {"type": "negative_prompt", "node_ids": ["5"], "key": "text"},
+    {"type": "seed", "node_ids": ["6"], "key": "seed"},
+    {"type": "steps", "node_ids": ["6"], "key": "steps"},
+]
+
 IMAGES_EDIT_COMFYUI_WORKFLOW = PersistentConfig(
     "IMAGES_EDIT_COMFYUI_WORKFLOW",
     "images.edit.comfyui.workflow",
-    os.getenv("IMAGES_EDIT_COMFYUI_WORKFLOW", ""),
+    os.getenv("IMAGES_EDIT_COMFYUI_WORKFLOW", COMFYUI_DEFAULT_EDIT_WORKFLOW),
 )
 
 IMAGES_EDIT_COMFYUI_WORKFLOW_NODES = PersistentConfig(
     "IMAGES_EDIT_COMFYUI_WORKFLOW_NODES",
     "images.edit.comfyui.nodes",
-    [],
+    COMFYUI_DEFAULT_EDIT_WORKFLOW_NODES,
 )
 
 ####################################
