@@ -1411,8 +1411,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             from open_webui.utils.bluenexus.mcp import get_bluenexus_mcp_oauth_token
                             oauth_token = get_bluenexus_mcp_oauth_token(user.id, server_id)
                             if oauth_token:
-                                token_preview = oauth_token.get('access_token', '')[:20] + '...' if oauth_token.get('access_token') else 'N/A'
-                                log.info(f"[MCP] Auth: BlueNexus OAuth session FOUND, token_preview={token_preview}, expires_at={oauth_token.get('expires_at')}")
+                                # Do not log access_token; log only that the token was found and expiration.
+                                log.info(f"[MCP] Auth: BlueNexus OAuth session FOUND, expires_at={oauth_token.get('expires_at')}")
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
@@ -1423,8 +1423,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             # Use the OAuth token from extra_params (standard system_oauth)
                             oauth_token = extra_params.get("__oauth_token__", None)
                             if oauth_token:
-                                token_preview = oauth_token.get('access_token', '')[:20] + '...' if oauth_token.get('access_token') else 'N/A'
-                                log.info(f"[MCP] Auth: Using system_oauth token from extra_params, token_preview={token_preview}")
+                                # Do not log access_token; indicate token was found.
+                                log.info(f"[MCP] Auth: Using system_oauth token from extra_params.")
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
