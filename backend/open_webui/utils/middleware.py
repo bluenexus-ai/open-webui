@@ -1403,7 +1403,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             "oauth_provider"
                         )
 
-                        log.info(f"[MCP] Auth: system_oauth - oauth_provider={oauth_provider}, server_id={server_id}")
+                        log.info(f"[MCP] Auth: system_oauth - server_id={server_id}")
 
                         # Try to get BlueNexus OAuth token if applicable
                         oauth_token = None
@@ -1441,8 +1441,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             )
 
                             if oauth_token:
-                                token_preview = oauth_token.get('access_token', '')[:20] + '...' if oauth_token.get('access_token') else 'N/A'
-                                log.info(f"[MCP] Auth: oauth_2.1 token obtained, token_preview={token_preview}")
+                                log.info(f"[MCP] Auth: oauth_2.1 token obtained.")
+                                headers["Authorization"] = (
+                                    f"Bearer {oauth_token.get('access_token', '')}"
+                                )
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
