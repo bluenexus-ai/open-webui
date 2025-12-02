@@ -1412,7 +1412,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             oauth_token = get_bluenexus_mcp_oauth_token(user.id, server_id)
                             if oauth_token:
                                 # Do not log access_token; log only that the token was found and expiration.
-                                log.info(f"[MCP] Auth: BlueNexus OAuth session FOUND, expires_at={oauth_token.get('expires_at')}")
+                                log.info("[MCP] Auth: BlueNexus OAuth token session FOUND.")
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
