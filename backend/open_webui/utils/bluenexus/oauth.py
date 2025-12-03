@@ -24,11 +24,11 @@ from open_webui.utils.bluenexus.config import (
 
 
 def _is_localhost_url(url: str) -> bool:
-    """Check if a URL points to localhost."""
+    """Check if a URL points to localhost or Docker host."""
     try:
         parsed = urlparse(url)
         hostname = parsed.hostname or ""
-        return hostname in ["localhost", "127.0.0.1", "::1"]
+        return hostname in ["localhost", "127.0.0.1", "::1", "host.docker.internal"]
     except Exception:
         return False
 

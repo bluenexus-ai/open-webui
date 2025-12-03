@@ -39,8 +39,8 @@ def get_ssl_context_for_url(url: str):
     parsed_url = urlparse(url)
     hostname = parsed_url.hostname or ""
 
-    # Disable SSL verification for localhost
-    if hostname in ["localhost", "127.0.0.1", "::1"]:
+    # Disable SSL verification for localhost or Docker host
+    if hostname in ["localhost", "127.0.0.1", "::1", "host.docker.internal"]:
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE

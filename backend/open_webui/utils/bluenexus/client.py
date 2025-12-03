@@ -85,11 +85,11 @@ class BlueNexusDataClient:
         self.access_token = access_token
         self.timeout = aiohttp.ClientTimeout(total=timeout)
 
-        # Auto-detect SSL verification for localhost
+        # Auto-detect SSL verification for localhost or Docker host
         if verify_ssl is None:
             parsed = urlparse(self.base_url)
             hostname = parsed.hostname or ""
-            self.verify_ssl = hostname not in ["localhost", "127.0.0.1", "::1"]
+            self.verify_ssl = hostname not in ["localhost", "127.0.0.1", "::1", "host.docker.internal"]
         else:
             self.verify_ssl = verify_ssl
 
