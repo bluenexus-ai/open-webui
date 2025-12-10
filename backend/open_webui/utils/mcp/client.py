@@ -109,12 +109,38 @@ class MCPClient:
                 await asyncio.shield(self.disconnect())
                 raise e
 
-    async def list_tool_specs(self) -> Optional[dict]:
+    async def list_tool_specs(self, timeout: float = 60.0) -> Optional[dict]:
+        """
+        List available tools from the MCP server.
+
+        Uses asyncio.shield() to protect against external cancellation during
+        the HTTP request, ensuring the operation completes even if the parent
+        task is cancelled.
+
+        Args:
+            timeout: Maximum time to wait for the operation (default: 60s)
+        """
         if not self.session:
             raise RuntimeError("MCP client is not connected.")
 
         log.debug("[MCP Client] Listing tools...")
-        result = await self.session.list_tools()
+        try:
+            # Shield the operation from external cancellation
+            # This ensures the MCP request completes even if parent task is cancelled
+            async def _list_tools():
+                return await self.session.list_tools()
+
+            result = await asyncio.wait_for(
+                asyncio.shield(_list_tools()),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            log.error(f"[MCP Client] list_tools() timed out after {timeout}s")
+            raise
+        except asyncio.CancelledError:
+            log.warning("[MCP Client] list_tools() was cancelled but operation may have completed")
+            raise
+
         tools = result.tools
         log.info(f"[MCP Client] Retrieved {len(tools)} tools from server")
 
@@ -136,15 +162,43 @@ class MCPClient:
         return tool_specs
 
     async def call_tool(
-        self, function_name: str, function_args: dict
+        self, function_name: str, function_args: dict, timeout: float = 120.0
     ) -> Optional[dict]:
+        """
+        Call a tool on the MCP server.
+
+        Uses asyncio.shield() to protect against external cancellation during
+        the HTTP request, ensuring the tool call completes even if the parent
+        task is cancelled.
+
+        Args:
+            function_name: Name of the tool to call
+            function_args: Arguments to pass to the tool
+            timeout: Maximum time to wait for the operation (default: 120s)
+        """
         if not self.session:
             raise RuntimeError("MCP client is not connected.")
 
         log.info(f"[MCP Client] Calling tool '{function_name}' with args: {list(function_args.keys())}")
         log.debug(f"[MCP Client] Full args: {function_args}")
 
-        result = await self.session.call_tool(function_name, function_args)
+        try:
+            # Shield the operation from external cancellation
+            # This ensures the MCP tool call completes even if parent task is cancelled
+            async def _call_tool():
+                return await self.session.call_tool(function_name, function_args)
+
+            result = await asyncio.wait_for(
+                asyncio.shield(_call_tool()),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            log.error(f"[MCP Client] Tool '{function_name}' timed out after {timeout}s")
+            raise
+        except asyncio.CancelledError:
+            log.warning(f"[MCP Client] Tool '{function_name}' was cancelled but operation may have completed")
+            raise
+
         if not result:
             log.error(f"[MCP Client] Tool '{function_name}' returned no result")
             raise Exception("No result returned from MCP tool call.")

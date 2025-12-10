@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
-	import { models, config, toolServers, tools } from '$lib/stores';
+	import { models, config, toolServers, tools, bluenexusMcpServers } from '$lib/stores';
 
 	import { toast } from 'svelte-sonner';
 	import { deleteSharedChatById, getChatById, shareChatById } from '$lib/apis/chats';
@@ -15,8 +15,13 @@
 	export let selectedToolIds = [];
 
 	let selectedTools = [];
+	let selectedBluenexusMcpServers = [];
 
 	$: selectedTools = ($tools ?? []).filter((tool) => selectedToolIds.includes(tool.id));
+	$: selectedBluenexusMcpServers = ($bluenexusMcpServers ?? []).filter((server) => {
+		const serverId = server.info?.id || `bluenexus_mcp:${server.slug}`;
+		return selectedToolIds.includes(serverId);
+	});
 
 	const i18n = getContext('i18n');
 </script>
@@ -109,6 +114,48 @@
 										</div>
 									</div>
 								{/each}
+							</div>
+						</Collapsible>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		{#if selectedBluenexusMcpServers && selectedBluenexusMcpServers.length > 0}
+			<div class=" flex justify-between dark:text-gray-300 px-5 pb-0.5">
+				<div class=" text-base font-medium self-center flex items-center gap-2">
+					{$i18n.t('BlueNexus MCP Servers')}
+					<span class="text-blue-500 text-xs font-medium px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 rounded">BN</span>
+				</div>
+			</div>
+
+			<div class="px-5 pb-5 w-full flex flex-col justify-center">
+				<div class=" text-xs text-gray-600 dark:text-gray-300 mb-2">
+					{$i18n.t('MCP servers from your BlueNexus account.')}
+				</div>
+				<div class=" text-sm dark:text-gray-300 mb-1">
+					{#each selectedBluenexusMcpServers as mcpServer}
+						<Collapsible buttonClassName="w-full" chevron>
+							<div>
+								<div class="text-sm font-medium dark:text-gray-100 text-gray-800 flex items-center gap-2">
+									{mcpServer?.info?.title ?? mcpServer?.slug}
+								</div>
+
+								{#if mcpServer?.info?.description}
+									<div class="text-xs text-gray-500">
+										{mcpServer?.info?.description}
+									</div>
+								{/if}
+
+								<div class="text-xs text-gray-500">
+									{mcpServer?.url}
+								</div>
+							</div>
+
+							<div slot="content">
+								<div class="text-xs text-gray-500">
+									ID: {mcpServer?.info?.id ?? `bluenexus_mcp:${mcpServer?.slug}`}
+								</div>
 							</div>
 						</Collapsible>
 					{/each}

@@ -106,7 +106,8 @@ async def refresh_oauth_token(request: Request, user: UserModel) -> OAuthTokenSt
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
                     continue
-                return OAuthTokenStatusResponse(has_session=False)
+                # Session may have been deleted, user needs to re-authenticate
+                return OAuthTokenStatusResponse(has_session=False, requires_reauth=True)
 
         except Exception as e:
             last_error = e
@@ -116,4 +117,5 @@ async def refresh_oauth_token(request: Request, user: UserModel) -> OAuthTokenSt
                 continue
 
     log.error(f"Failed to refresh OAuth token after {MAX_RETRIES} attempts for user {user.id}: {last_error}")
-    return OAuthTokenStatusResponse(has_session=False)
+    # Session may have been deleted by oauth manager, user needs to re-authenticate
+    return OAuthTokenStatusResponse(has_session=False, requires_reauth=True)

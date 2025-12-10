@@ -63,6 +63,7 @@ export const tools = writable(null);
 export const functions = writable(null);
 
 export const toolServers = writable([]);
+export const bluenexusMcpServers = writable([]);
 
 export const banners: Writable<Banner[]> = writable([]);
 

@@ -1354,7 +1354,239 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     if tool_ids:
         log.info(f"[MCP] Processing {len(tool_ids)} tool_ids: {tool_ids}")
         for tool_id in tool_ids:
-            if tool_id.startswith("server:mcp:"):
+            # Handle BlueNexus MCP servers (user-specific, fetched from BlueNexus API)
+            if tool_id.startswith("bluenexus_mcp:"):
+                try:
+                    server_slug = tool_id[len("bluenexus_mcp:"):]
+                    log.info(f"[BlueNexus MCP] Processing server slug: {server_slug}")
+
+                    # Send status update to keep the connection alive
+                    if event_emitter:
+                        await event_emitter(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "action": "mcp_connect",
+                                    "description": f"Connecting to MCP server: {server_slug}",
+                                    "done": False,
+                                },
+                            }
+                        )
+
+                    # Fetch user's BlueNexus MCP servers
+                    from open_webui.utils.bluenexus.mcp import get_bluenexus_mcp_servers, get_bluenexus_mcp_oauth_token
+                    bn_servers_response = await get_bluenexus_mcp_servers(user.id)
+                    bn_servers = bn_servers_response.data if bn_servers_response else []
+
+                    # Find the matching server
+                    mcp_server = None
+                    for server in bn_servers:
+                        if server.slug == server_slug:
+                            mcp_server = server
+                            break
+
+                    if not mcp_server:
+                        log.error(f"[BlueNexus MCP] Server not found for slug: {server_slug}")
+                        continue
+
+                    log.info(f"[BlueNexus MCP] Found server: {mcp_server.label} at {mcp_server.url}")
+
+                    # Get BlueNexus OAuth token
+                    headers = {}
+                    oauth_token = get_bluenexus_mcp_oauth_token(user.id, f"bluenexus:{server_slug}")
+                    if oauth_token:
+                        log.info("[BlueNexus MCP] OAuth token found")
+                        headers["Authorization"] = f"Bearer {oauth_token.get('access_token', '')}"
+                    else:
+                        log.warning("[BlueNexus MCP] No OAuth token found - connection may fail")
+
+                    # Connect to MCP server with retry logic
+                    mcp_url = mcp_server.url
+                    log.info(f"[BlueNexus MCP] Connecting to {mcp_url}")
+
+                    mcp_clients[server_slug] = MCPClient()
+
+                    # Helper function to check if error is connection-related
+                    def is_connection_error(error):
+                        """Check if an error (including ExceptionGroup) is connection-related."""
+                        error_str = str(error)
+                        # Check the error string
+                        if any(keyword in error_str for keyword in ["ConnectError", "Connection", "connect", "ConnectionReset"]):
+                            return True
+                        # Check for ExceptionGroup/BaseExceptionGroup
+                        if isinstance(error, BaseException) and hasattr(error, 'exceptions'):
+                            # It's an ExceptionGroup - check nested exceptions
+                            for exc in error.exceptions:
+                                if is_connection_error(exc):
+                                    return True
+                        # Check the exception type name
+                        if "Connect" in type(error).__name__ or "Connection" in type(error).__name__:
+                            return True
+                        return False
+
+                    # Retry logic for MCP connection
+                    max_retries = 3
+                    retry_delay = 1.0
+                    last_error = None
+                    connected = False
+
+                    for attempt in range(max_retries):
+                        try:
+                            # Create a new MCPClient for each attempt (in case previous attempt left it in bad state)
+                            mcp_clients[server_slug] = MCPClient()
+                            await mcp_clients[server_slug].connect(
+                                url=mcp_url,
+                                headers=headers if headers else None,
+                            )
+                            connected = True
+                            log.info(f"[BlueNexus MCP] Connected successfully to {mcp_url}")
+                            break
+                        except BaseException as conn_error:
+                            last_error = conn_error
+                            # Check if it's a connection error that's worth retrying
+                            if is_connection_error(conn_error):
+                                if attempt < max_retries - 1:
+                                    delay = retry_delay * (2 ** attempt)
+                                    log.warning(
+                                        f"[BlueNexus MCP] Connection error (attempt {attempt + 1}/{max_retries}): {type(conn_error).__name__}. Retrying in {delay}s..."
+                                    )
+                                    await asyncio.sleep(delay)
+                                else:
+                                    log.error(
+                                        f"[BlueNexus MCP] Connection failed after {max_retries} attempts: {conn_error}"
+                                    )
+                            else:
+                                # Non-connection error, don't retry
+                                raise
+
+                    if not connected:
+                        raise last_error if last_error else Exception("MCP connection failed")
+
+                    # Send status update - connection succeeded, now listing tools
+                    if event_emitter:
+                        await event_emitter(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "action": "mcp_connect",
+                                    "description": f"Loading tools from {server_slug}...",
+                                    "done": False,
+                                },
+                            }
+                        )
+
+                    # List and register tools with heartbeat to prevent timeout
+                    # Send immediate status event before starting list_tools (prevents early timeout)
+                    if event_emitter:
+                        await event_emitter(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "action": "mcp_connect",
+                                    "description": f"Fetching tools from {server_slug}...",
+                                    "done": False,
+                                },
+                            }
+                        )
+
+                    # Create task for list_tool_specs
+                    list_tools_task = asyncio.create_task(mcp_clients[server_slug].list_tool_specs())
+
+                    # Send heartbeat while waiting for tools
+                    heartbeat_interval = 0.5  # seconds - shorter interval for faster keepalive
+                    tool_specs = None
+                    while not list_tools_task.done():
+                        try:
+                            tool_specs = await asyncio.wait_for(asyncio.shield(list_tools_task), timeout=heartbeat_interval)
+                            break
+                        except asyncio.TimeoutError:
+                            # Task not done yet, send heartbeat
+                            if event_emitter:
+                                await event_emitter(
+                                    {
+                                        "type": "status",
+                                        "data": {
+                                            "action": "mcp_connect",
+                                            "description": f"Loading tools from {server_slug}...",
+                                            "done": False,
+                                        },
+                                    }
+                                )
+
+                    # Get result if not already obtained
+                    if tool_specs is None:
+                        tool_specs = await list_tools_task
+                    log.info(f"[BlueNexus MCP] Retrieved {len(tool_specs) if tool_specs else 0} tool specs")
+
+                    for tool_spec in tool_specs:
+                        tool_name = tool_spec.get("name", "unknown")
+                        full_tool_name = f"{server_slug}_{tool_name}"
+
+                        def make_tool_function(client, function_name, srv_slug):
+                            async def tool_function(**kwargs):
+                                log.info(f"[BlueNexus MCP] Calling tool '{function_name}' on server '{srv_slug}'")
+                                try:
+                                    result = await client.call_tool(
+                                        function_name,
+                                        function_args=kwargs,
+                                    )
+                                    log.info(f"[BlueNexus MCP] Tool '{function_name}' returned successfully")
+                                    return result
+                                except Exception as e:
+                                    log.error(f"[BlueNexus MCP] Tool '{function_name}' failed: {e}")
+                                    raise
+
+                            return tool_function
+
+                        tool_function = make_tool_function(
+                            mcp_clients[server_slug], tool_spec["name"], server_slug
+                        )
+
+                        mcp_tools_dict[full_tool_name] = {
+                            "spec": {
+                                **tool_spec,
+                                "name": full_tool_name,
+                            },
+                            "callable": tool_function,
+                            "type": "mcp",
+                            "client": mcp_clients[server_slug],
+                            "direct": False,
+                        }
+
+                    log.info(f"[BlueNexus MCP] Registered {len(tool_specs) if tool_specs else 0} tools from {server_slug}")
+
+                    # Send status update - tools loaded successfully
+                    if event_emitter:
+                        await event_emitter(
+                            {
+                                "type": "status",
+                                "data": {
+                                    "action": "mcp_connect",
+                                    "description": f"MCP server {server_slug} ready ({len(tool_specs) if tool_specs else 0} tools)",
+                                    "done": True,
+                                },
+                            }
+                        )
+
+                except Exception as e:
+                    log.error(f"[BlueNexus MCP] Failed to process server {tool_id}: {e}")
+                    import traceback
+                    log.error(f"[BlueNexus MCP] Full traceback:\n{traceback.format_exc()}")
+                    if event_emitter:
+                        await event_emitter(
+                            {
+                                "type": "chat:message:error",
+                                "data": {
+                                    "error": {
+                                        "content": f"Failed to connect to BlueNexus MCP server '{server_slug}'"
+                                    }
+                                },
+                            }
+                        )
+                    continue
+
+            # Handle admin-configured MCP servers
+            elif tool_id.startswith("server:mcp:"):
                 try:
                     server_id = tool_id[len("server:mcp:") :]
                     log.info(f"[MCP] Step 1: Finding MCP server config for server_id: {server_id}")

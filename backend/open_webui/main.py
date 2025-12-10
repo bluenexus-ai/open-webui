@@ -1615,7 +1615,9 @@ async def chat_completion(
                 request, response, form_data, user, metadata, model, events, tasks
             )
         except asyncio.CancelledError:
+            import traceback
             log.info("Chat processing was cancelled")
+            log.info(f"[CancelledError] Stack trace:\n{''.join(traceback.format_stack())}")
             try:
                 event_emitter = get_event_emitter(metadata)
                 await asyncio.shield(

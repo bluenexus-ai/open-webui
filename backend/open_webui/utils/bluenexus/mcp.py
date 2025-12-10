@@ -4,6 +4,7 @@ BlueNexus MCP (Model Context Protocol) Integration Module
 This module handles fetching and managing MCP servers from BlueNexus.
 """
 
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 import aiohttp
@@ -69,34 +70,56 @@ async def get_bluenexus_mcp_servers(user_id: str) -> BlueNexusMCPServersResponse
             log.warning(f"No access token found in BlueNexus session for user {user_id}")
             return BlueNexusMCPServersResponse(data=[])
 
-        # Fetch available MCP servers from BlueNexus API
+        # Fetch available MCP servers from BlueNexus API with retry logic
         mcp_servers_url = f"{BLUENEXUS_API_BASE_URL.value}/api/v1/mcps"
         headers = {"Authorization": f"Bearer {access_token}"}
 
-        async with aiohttp.ClientSession(trust_env=True) as http_session:
-            ssl_context = get_ssl_context_for_url(mcp_servers_url)
-            async with http_session.get(
-                mcp_servers_url, headers=headers, ssl=ssl_context
-            ) as response:
-                if response.status == 200:
-                    result = await response.json()
-                    mcp_servers = result.get("data", [])
+        max_retries = 3
+        retry_delay = 1.0
+        last_error = None
 
-                    # Transform to include full proxy URL
-                    for server in mcp_servers:
-                        server["url"] = (
-                            f"{BLUENEXUS_API_BASE_URL.value}/api/v1/mcps/{server['slug']}"
-                        )
+        for attempt in range(max_retries):
+            try:
+                async with aiohttp.ClientSession(trust_env=True) as http_session:
+                    ssl_context = get_ssl_context_for_url(mcp_servers_url)
+                    async with http_session.get(
+                        mcp_servers_url, headers=headers, ssl=ssl_context
+                    ) as response:
+                        if response.status == 200:
+                            result = await response.json()
+                            mcp_servers = result.get("data", [])
 
-                    log.info(
-                        f"Fetched {len(mcp_servers)} BlueNexus MCP servers for user {user_id}"
+                            # Transform to include full proxy URL
+                            for server in mcp_servers:
+                                server["url"] = (
+                                    f"{BLUENEXUS_API_BASE_URL.value}/api/v1/mcps/{server['slug']}"
+                                )
+
+                            log.info(
+                                f"Fetched {len(mcp_servers)} BlueNexus MCP servers for user {user_id}"
+                            )
+                            return BlueNexusMCPServersResponse(data=mcp_servers)
+                        else:
+                            log.error(
+                                f"Failed to fetch BlueNexus MCP servers: HTTP {response.status}"
+                            )
+                            return BlueNexusMCPServersResponse(data=[])
+
+            except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, asyncio.TimeoutError) as conn_error:
+                last_error = conn_error
+                if attempt < max_retries - 1:
+                    delay = retry_delay * (2 ** attempt)
+                    log.warning(
+                        f"BlueNexus MCP server fetch connection error (attempt {attempt + 1}/{max_retries}): {conn_error}. Retrying in {delay}s..."
                     )
-                    return BlueNexusMCPServersResponse(data=mcp_servers)
+                    await asyncio.sleep(delay)
                 else:
                     log.error(
-                        f"Failed to fetch BlueNexus MCP servers: HTTP {response.status}"
+                        f"BlueNexus MCP server fetch failed after {max_retries} attempts: {conn_error}"
                     )
-                    return BlueNexusMCPServersResponse(data=[])
+
+        # All retries exhausted
+        return BlueNexusMCPServersResponse(data=[])
 
     except Exception as e:
         log.error(f"Error fetching BlueNexus MCP servers: {e}")

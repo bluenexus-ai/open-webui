@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import copy
 import hashlib
@@ -888,12 +889,14 @@ class OAuthManager:
             log.error(f"Error refreshing token for session {session.id}: {e}")
             return None
 
-    async def _perform_token_refresh(self, session) -> dict:
+    async def _perform_token_refresh(self, session, max_retries: int = 3, retry_delay: float = 1.0) -> dict:
         """
-        Perform the actual OAuth token refresh.
+        Perform the actual OAuth token refresh with retry logic.
 
         Args:
             session: The OAuth session object
+            max_retries: Maximum number of retry attempts for connection errors
+            retry_delay: Base delay between retries (uses exponential backoff)
 
         Returns:
             dict: New token data, or None if refresh failed
@@ -950,47 +953,67 @@ class OAuthManager:
             # Determine SSL setting - disable for bluenexus (self-signed cert)
             ssl_setting = _oauth_ssl_setting(provider)
 
-            # Make refresh request
-            async with aiohttp.ClientSession(trust_env=True) as session_http:
-                async with session_http.post(
-                    token_endpoint,
-                    data=refresh_data,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    ssl=ssl_setting,
-                ) as r:
-                    if r.status == 200:
-                        new_token_data = await r.json()
+            # Make refresh request with retry logic for connection errors
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    async with aiohttp.ClientSession(trust_env=True) as session_http:
+                        async with session_http.post(
+                            token_endpoint,
+                            data=refresh_data,
+                            headers={"Content-Type": "application/x-www-form-urlencoded"},
+                            ssl=ssl_setting,
+                        ) as r:
+                            if r.status == 200:
+                                new_token_data = await r.json()
 
-                        # Merge with existing token data (preserve refresh_token if not provided)
-                        if "refresh_token" not in new_token_data:
-                            new_token_data["refresh_token"] = token_data[
-                                "refresh_token"
-                            ]
+                                # Merge with existing token data (preserve refresh_token if not provided)
+                                if "refresh_token" not in new_token_data:
+                                    new_token_data["refresh_token"] = token_data[
+                                        "refresh_token"
+                                    ]
 
-                        # Add timestamp for tracking
-                        new_token_data["issued_at"] = int(datetime.now().timestamp())
+                                # Add timestamp for tracking
+                                new_token_data["issued_at"] = int(datetime.now().timestamp())
 
-                        # Always calculate expires_at from expires_in to ensure correct timestamp
-                        if "expires_in" in new_token_data:
-                            new_token_data["expires_at"] = int(
-                                datetime.now().timestamp()
-                                + new_token_data["expires_in"]
-                            )
+                                # Always calculate expires_at from expires_in to ensure correct timestamp
+                                if "expires_in" in new_token_data:
+                                    new_token_data["expires_at"] = int(
+                                        datetime.now().timestamp()
+                                        + new_token_data["expires_in"]
+                                    )
 
-                        # Log refresh details for BlueNexus (DEBUG level for token, INFO for timing)
-                        if provider == "bluenexus":
-                            expires_at = new_token_data.get('expires_at')
-                            expires_in = new_token_data.get('expires_in')
-                            log.info(f"BlueNexus token refresh successful: expires_at={expires_at}, expires_in={expires_in}s")
+                                # Log refresh details for BlueNexus (DEBUG level for token, INFO for timing)
+                                if provider == "bluenexus":
+                                    expires_at = new_token_data.get('expires_at')
+                                    expires_in = new_token_data.get('expires_in')
+                                    log.info(f"BlueNexus token refresh successful: expires_at={expires_at}, expires_in={expires_in}s")
 
-                        log.debug(f"Token refresh successful for provider {provider}")
-                        return new_token_data
-                    else:
-                        error_text = await r.text()
-                        log.error(
-                            f"Token refresh failed for provider {provider}: {r.status} - {error_text}"
+                                log.debug(f"Token refresh successful for provider {provider}")
+                                return new_token_data
+                            else:
+                                error_text = await r.text()
+                                log.error(
+                                    f"Token refresh failed for provider {provider}: {r.status} - {error_text}"
+                                )
+                                return None
+
+                except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, asyncio.TimeoutError) as conn_error:
+                    last_error = conn_error
+                    if attempt < max_retries - 1:
+                        delay = retry_delay * (2 ** attempt)  # Exponential backoff
+                        log.warning(
+                            f"Token refresh connection error for provider {provider} (attempt {attempt + 1}/{max_retries}): {conn_error}. Retrying in {delay}s..."
                         )
-                        return None
+                        await asyncio.sleep(delay)
+                    else:
+                        log.error(
+                            f"Token refresh connection failed for provider {provider} after {max_retries} attempts: {conn_error}"
+                        )
+
+            # All retries exhausted
+            if last_error:
+                return None
 
         except Exception as e:
             log.error(f"Exception during token refresh for provider {provider}: {e}")
