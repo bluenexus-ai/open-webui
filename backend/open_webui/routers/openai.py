@@ -52,6 +52,12 @@ from open_webui.utils.misc import (
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access
 
+# Import BlueNexus session check - guarded to avoid circular imports
+try:
+    from open_webui.utils.bluenexus import has_bluenexus_session
+except ImportError:
+    has_bluenexus_session = lambda user_id: False
+
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["OPENAI"])
@@ -87,6 +93,8 @@ async def send_get_request(
     user: UserModel = None,
     request: Request | None = None,
     config: Optional[dict] = None,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
 ):
     timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
     headers = {}
@@ -115,19 +123,31 @@ async def send_get_request(
             ),
         }
 
-    try:
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            async with session.get(
-                url,
-                headers=headers,
-                cookies=cookies,
-                ssl=get_ssl_context(url),
-            ) as response:
-                return await response.json()
-    except Exception as e:
-        # Handle connection error here
-        log.error(f"Connection error: {e}")
-        return None
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    cookies=cookies,
+                    ssl=get_ssl_context(url),
+                ) as response:
+                    return await response.json()
+        except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, asyncio.TimeoutError) as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                log.warning(f"Connection error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                log.error(f"Connection error after {max_retries} attempts: {e}")
+        except Exception as e:
+            # Handle other errors without retry
+            log.error(f"Unexpected error: {e}")
+            return None
+
+    return None
 
 
 async def cleanup_response(
@@ -449,13 +469,23 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
         model_ids = api_config.get("model_ids", [])
 
         if "bluenexus" in api_config.get("tags", []):
+            # Check if user has BlueNexus session - first by cookie, then by database lookup
             session_id = request.cookies.get("oauth_session_id")
             session = (
                 OAuthSessions.get_session_by_id_and_user_id(session_id, user.id)
                 if session_id
                 else None
             )
-            if not session or session.provider != "bluenexus":
+            has_valid_session = session and session.provider == "bluenexus"
+
+            # Fallback: check database directly if cookie check fails
+            if not has_valid_session:
+                has_valid_session = has_bluenexus_session(user.id)
+                if has_valid_session:
+                    log.info(f"BlueNexus session found via database lookup for user {user.id}")
+
+            if not has_valid_session:
+                log.debug(f"Skipping BlueNexus models for user {user.id} - no valid session")
                 request_tasks.append(asyncio.ensure_future(asyncio.sleep(0, None)))
                 continue
 
@@ -929,11 +959,17 @@ async def generate_chat_completion(
                     detail="Model not found",
                 )
     elif not bypass_filter:
+        # For models not in DB (like BlueNexus runtime models), check if user has BlueNexus session
         if user.role != "admin":
-            raise HTTPException(
-                status_code=403,
-                detail="Model not found",
-            )
+            # Check if this is a BlueNexus model by checking if user has session
+            if has_bluenexus_session(user.id):
+                # Allow BlueNexus users to use runtime BlueNexus models
+                log.info(f"Allowing BlueNexus model access for user {user.id} (model not in DB)")
+            else:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Model not found",
+                )
 
     await get_all_models(request, user=user)
     model = request.app.state.OPENAI_MODELS.get(model_id)

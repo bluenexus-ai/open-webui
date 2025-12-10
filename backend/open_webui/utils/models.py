@@ -27,6 +27,13 @@ from open_webui.config import (
 )
 
 from open_webui.env import BYPASS_MODEL_ACCESS_CONTROL, SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL
+
+# Import BlueNexus session check - guarded to avoid circular imports
+try:
+    from open_webui.utils.bluenexus import has_bluenexus_session, is_bluenexus_enabled
+except ImportError:
+    has_bluenexus_session = lambda user_id: False
+    is_bluenexus_enabled = lambda: False
 from open_webui.models.users import UserModel
 
 
@@ -327,6 +334,9 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
 
 
 def check_model_access(user, model):
+    model_id = model.get("id", "unknown")
+    log.info(f"[check_model_access] model_id={model_id}, user={user.id}, role={user.role}, tags={model.get('tags', [])}")
+
     if model.get("arena"):
         if not has_access(
             user.id,
@@ -337,8 +347,30 @@ def check_model_access(user, model):
         ):
             raise Exception("Model not found")
     else:
+        # Check if this is a BlueNexus model and user has BlueNexus session
+        model_tags = model.get("tags", [])
+        tag_names = []
+        for tag in model_tags:
+            if isinstance(tag, str):
+                tag_names.append(tag)
+            elif isinstance(tag, dict) and "name" in tag:
+                tag_names.append(tag.get("name"))
+
+        log.info(f"[check_model_access] tag_names={tag_names}")
+
+        if "bluenexus" in tag_names:
+            # Allow BlueNexus models for users with BlueNexus session
+            bn_enabled = is_bluenexus_enabled()
+            bn_session = has_bluenexus_session(user.id) if bn_enabled else False
+            log.info(f"[check_model_access] BlueNexus model detected: enabled={bn_enabled}, has_session={bn_session}")
+            if bn_enabled and bn_session:
+                return  # Access granted
+            else:
+                raise Exception("Model not found")
+
         model_info = Models.get_model_by_id(model.get("id"))
         if not model_info:
+            log.info(f"[check_model_access] Model not in database: {model_id}")
             raise Exception("Model not found")
         elif not (
             user.id == model_info.user_id
@@ -356,7 +388,17 @@ def get_filtered_models(models, user):
         or (user.role == "admin" and not BYPASS_ADMIN_ACCESS_CONTROL)
     ) and not BYPASS_MODEL_ACCESS_CONTROL:
         filtered_models = []
+
+        # Check if user has BlueNexus session (cached for this filtering pass)
+        bluenexus_enabled = is_bluenexus_enabled()
+        user_has_session = has_bluenexus_session(user.id) if bluenexus_enabled else False
+        user_has_bluenexus = bluenexus_enabled and user_has_session
+
+        log.info(f"[get_filtered_models] user={user.id}, role={user.role}, bluenexus_enabled={bluenexus_enabled}, has_session={user_has_session}")
+
         for model in models:
+            model_id = model.get("id", "unknown")
+
             if model.get("arena"):
                 if has_access(
                     user.id,
@@ -366,6 +408,24 @@ def get_filtered_models(models, user):
                     .get("access_control", {}),
                 ):
                     filtered_models.append(model)
+                continue
+
+            # Allow BlueNexus models for users with a valid BlueNexus session
+            model_tags = model.get("tags", [])
+            # Handle tags that could be strings or dicts with "name" key
+            tag_names = []
+            for tag in model_tags:
+                if isinstance(tag, str):
+                    tag_names.append(tag)
+                elif isinstance(tag, dict) and "name" in tag:
+                    tag_names.append(tag["name"])
+
+            # Debug: log model tags for first few models
+            if len(filtered_models) < 3:
+                log.info(f"[get_filtered_models] model={model_id}, tags={model_tags}, tag_names={tag_names}")
+
+            if "bluenexus" in tag_names and user_has_bluenexus:
+                filtered_models.append(model)
                 continue
 
             model_info = Models.get_model_by_id(model["id"])

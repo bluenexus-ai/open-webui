@@ -506,6 +506,16 @@
 					);
 				} else {
 					console.log('No OAuth session found');
+					// If requires_reauth is true, the user needs to re-login
+					if (oauthStatus?.requires_reauth) {
+						console.log('OAuth session expired - redirecting to login');
+						toast.error('Your session has expired. Please log in again.');
+						const res = await userSignOut();
+						user.set(null);
+						localStorage.removeItem('token');
+						location.href = res?.redirect_url ?? '/auth';
+						return;
+					}
 				}
 			} catch (err) {
 				console.error('OAuth token refresh failed:', err);

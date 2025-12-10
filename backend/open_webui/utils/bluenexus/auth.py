@@ -4,6 +4,7 @@ BlueNexus Authentication Module
 This module handles OAuth token refresh and session management for BlueNexus.
 """
 
+import asyncio
 import logging
 import time
 from typing import Optional
@@ -17,6 +18,10 @@ from open_webui.utils.bluenexus.config import is_bluenexus_enabled
 
 log = logging.getLogger(__name__)
 
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 1
+
 
 class OAuthTokenStatusResponse(BaseModel):
     """OAuth token status response model."""
@@ -25,6 +30,7 @@ class OAuthTokenStatusResponse(BaseModel):
     expires_at: Optional[int] = None
     expires_in: Optional[int] = None
     refreshed: bool = False
+    requires_reauth: bool = False  # True if user needs to re-login
 
 
 async def refresh_oauth_token(request: Request, user: UserModel) -> OAuthTokenStatusResponse:
@@ -47,43 +53,67 @@ async def refresh_oauth_token(request: Request, user: UserModel) -> OAuthTokenSt
     log.info(f"OAuth refresh requested for user {user.id}")
 
     oauth_session_id = request.cookies.get("oauth_session_id")
-    if not oauth_session_id:
-        log.info(f"No oauth_session_id cookie found for user {user.id}")
-        return OAuthTokenStatusResponse(has_session=False)
 
-    log.info(f"Found oauth_session_id: {oauth_session_id[:8]}... for user {user.id}")
+    # Try to get session - first by cookie session ID, then fallback to provider lookup
+    session = None
+    if oauth_session_id:
+        log.info(f"Found oauth_session_id: {oauth_session_id[:8]}... for user {user.id}")
+        session = OAuthSessions.get_session_by_id_and_user_id(oauth_session_id, user.id)
 
-    try:
-        # Get token with force_refresh=False - this will auto-refresh if needed
-        token = await request.app.state.oauth_manager.get_oauth_token(
-            user.id,
-            oauth_session_id,
-            force_refresh=False,
-        )
+    # Fallback: lookup by provider if cookie session not found
+    if not session:
+        log.info(f"Session not found by ID, trying provider lookup for user {user.id}")
+        session = OAuthSessions.get_session_by_provider_and_user_id("bluenexus", user.id)
+        if session:
+            oauth_session_id = session.id
+            log.info(f"Found BlueNexus session by provider lookup: {oauth_session_id[:8]}...")
 
-        if token:
-            expires_at = token.get("expires_at")
-            expires_in = None
-            if expires_at:
-                expires_in = max(0, int(expires_at - time.time()))
+    if not session or not oauth_session_id:
+        log.info(f"No BlueNexus OAuth session found for user {user.id} - requires re-authentication")
+        # User has oauth_session_id cookie but no valid session - needs to re-login
+        return OAuthTokenStatusResponse(has_session=False, requires_reauth=True)
 
-            # Get session to check provider
-            session = OAuthSessions.get_session_by_id(oauth_session_id)
-            provider = session.provider if session else None
-
-            log.info(f"OAuth token valid for user {user.id}, provider: {provider}, expires_in: {expires_in}s")
-
-            return OAuthTokenStatusResponse(
-                has_session=True,
-                provider=provider,
-                expires_at=expires_at,
-                expires_in=expires_in,
-                refreshed=False,
+    # Retry logic for token refresh
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            # Get token with force_refresh=False - this will auto-refresh if needed
+            token = await request.app.state.oauth_manager.get_oauth_token(
+                user.id,
+                oauth_session_id,
+                force_refresh=(attempt > 0),  # Force refresh on retry
             )
-        else:
-            log.warning(f"OAuth token not found or expired for user {user.id}, session {oauth_session_id[:8]}...")
-            return OAuthTokenStatusResponse(has_session=False)
 
-    except Exception as e:
-        log.error(f"Error refreshing OAuth token for user {user.id}: {e}")
-        return OAuthTokenStatusResponse(has_session=False)
+            if token:
+                expires_at = token.get("expires_at")
+                expires_in = None
+                if expires_at:
+                    expires_in = max(0, int(expires_at - time.time()))
+
+                provider = session.provider if session else "bluenexus"
+
+                log.info(f"OAuth token valid for user {user.id}, provider: {provider}, expires_in: {expires_in}s")
+
+                return OAuthTokenStatusResponse(
+                    has_session=True,
+                    provider=provider,
+                    expires_at=expires_at,
+                    expires_in=expires_in,
+                    refreshed=(attempt > 0),
+                )
+            else:
+                log.warning(f"OAuth token not found (attempt {attempt + 1}/{MAX_RETRIES}) for user {user.id}")
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                return OAuthTokenStatusResponse(has_session=False)
+
+        except Exception as e:
+            last_error = e
+            log.warning(f"Error refreshing OAuth token (attempt {attempt + 1}/{MAX_RETRIES}) for user {user.id}: {e}")
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+                continue
+
+    log.error(f"Failed to refresh OAuth token after {MAX_RETRIES} attempts for user {user.id}: {last_error}")
+    return OAuthTokenStatusResponse(has_session=False)

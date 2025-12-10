@@ -1414,10 +1414,17 @@ async def get_models(
                 tag.get("name")
                 for tag in model.get("info", {}).get("meta", {}).get("tags", [])
             ]
-            tags = [tag.get("name") for tag in model.get("tags", [])]
+            # Handle tags that could be strings or dicts with "name" key
+            raw_tags = model.get("tags", [])
+            tags = []
+            for tag in raw_tags:
+                if isinstance(tag, str):
+                    tags.append(tag)
+                elif isinstance(tag, dict) and "name" in tag:
+                    tags.append(tag.get("name"))
 
             tags = list(set(model_tags + tags))
-            model["tags"] = [{"name": tag} for tag in tags]
+            model["tags"] = [{"name": tag} for tag in tags if tag]
         except Exception as e:
             log.debug(f"Error processing model tags: {e}")
             model["tags"] = []
@@ -1489,8 +1496,8 @@ async def chat_completion(
     form_data: dict,
     user=Depends(get_verified_user),
 ):
-    if not request.app.state.MODELS:
-        await get_all_models(request, user=user)
+    # Always refresh models for the current user to ensure BlueNexus models are loaded
+    await get_all_models(request, user=user)
 
     model_id = form_data.get("model", None)
     model_item = form_data.pop("model_item", {})
@@ -1500,6 +1507,7 @@ async def chat_completion(
     try:
         if not model_item.get("direct", False):
             if model_id not in request.app.state.MODELS:
+                log.warning(f"[chat_completion] Model {model_id} not found in MODELS cache for user {user.id}. Available models: {list(request.app.state.MODELS.keys())[:10]}...")
                 raise Exception("Model not found")
 
             model = request.app.state.MODELS[model_id]

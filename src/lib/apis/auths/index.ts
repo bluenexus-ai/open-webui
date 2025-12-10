@@ -703,6 +703,7 @@ export interface OAuthTokenStatus {
 	expires_at?: number;
 	expires_in?: number;
 	refreshed: boolean;
+	requires_reauth?: boolean;
 }
 
 export const refreshOAuthToken = async (token: string): Promise<OAuthTokenStatus | null> => {
