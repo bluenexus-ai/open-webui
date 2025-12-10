@@ -28,6 +28,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access, has_permission
+from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+from open_webui.utils.bluenexus.collections import Collections
 from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL, STATIC_DIR
 
 log = logging.getLogger(__name__)
@@ -99,6 +101,7 @@ async def create_new_model(
     else:
         model = Models.insert_new_model(form_data, user.id)
         if model:
+            BlueNexusSync.sync_create(Collections.MODELS, model, model.id)
             return model
         else:
             raise HTTPException(
@@ -299,6 +302,8 @@ async def update_model_by_id(
         )
 
     model = Models.update_model_by_id(id, form_data)
+    if model:
+        BlueNexusSync.sync_update(Collections.MODELS, model, model.id)
     return model
 
 
@@ -326,7 +331,12 @@ async def delete_model_by_id(id: str, user=Depends(get_verified_user)):
             detail=ERROR_MESSAGES.UNAUTHORIZED,
         )
 
+    # Get user_id before deletion for sync
+    model_user_id = model.user_id
+
     result = Models.delete_model_by_id(id)
+    if result:
+        BlueNexusSync.sync_delete(Collections.MODELS, id, model_user_id)
     return result
 
 

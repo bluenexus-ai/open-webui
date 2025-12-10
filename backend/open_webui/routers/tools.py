@@ -26,6 +26,8 @@ from open_webui.utils.tools import get_tool_specs
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access, has_permission
 from open_webui.utils.tools import get_tool_servers
+from open_webui.utils.bluenexus.sync_service import BlueNexusSync
+from open_webui.utils.bluenexus.collections import Collections
 
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.config import CACHE_DIR, BYPASS_ADMIN_ACCESS_CONTROL
@@ -298,6 +300,7 @@ async def create_new_tools(
             tool_cache_dir.mkdir(parents=True, exist_ok=True)
 
             if tools:
+                BlueNexusSync.sync_create(Collections.TOOLS, tools, tools.id)
                 return tools
             else:
                 raise HTTPException(
@@ -389,6 +392,7 @@ async def update_tools_by_id(
         tools = Tools.update_tool_by_id(id, updated)
 
         if tools:
+            BlueNexusSync.sync_update(Collections.TOOLS, tools, tools.id)
             return tools
         else:
             raise HTTPException(
@@ -429,11 +433,15 @@ async def delete_tools_by_id(
             detail=ERROR_MESSAGES.UNAUTHORIZED,
         )
 
+    # Get user_id before deletion for sync
+    tool_user_id = tools.user_id
+
     result = Tools.delete_tool_by_id(id)
     if result:
         TOOLS = request.app.state.TOOLS
         if id in TOOLS:
             del TOOLS[id]
+        BlueNexusSync.sync_delete(Collections.TOOLS, id, tool_user_id)
 
     return result
 
