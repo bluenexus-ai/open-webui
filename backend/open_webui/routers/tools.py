@@ -15,7 +15,6 @@ from open_webui.models.tools import (
     ToolModel,
     ToolResponse,
     ToolUserResponse,
-    Tools,
 )
 from open_webui.utils.plugin import (
     load_tool_module_by_id,
@@ -26,8 +25,9 @@ from open_webui.utils.tools import get_tool_specs
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access, has_permission
 from open_webui.utils.tools import get_tool_servers
-from open_webui.utils.bluenexus.sync_service import BlueNexusSync
 from open_webui.utils.bluenexus.collections import Collections
+from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
+from open_webui.utils.bluenexus.types import QueryOptions, BlueNexusError
 
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.config import CACHE_DIR, BYPASS_ADMIN_ACCESS_CONTROL
@@ -39,6 +39,17 @@ log.setLevel(SRC_LOG_LEVELS["MAIN"])
 
 
 router = APIRouter()
+
+
+def get_client_or_raise(user_id: str):
+    """Get BlueNexus client for user or raise 401 error."""
+    client = get_bluenexus_client_for_user(user_id)
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="BlueNexus session required. Please log in with BlueNexus.",
+        )
+    return client
 
 
 def get_tool_module(request, tool_id, load_from_db=True):
@@ -58,17 +69,29 @@ def get_tool_module(request, tool_id, load_from_db=True):
 async def get_tools(request: Request, user=Depends(get_verified_user)):
     tools = []
 
-    # Local Tools
-    for tool in Tools.get_tools():
-        tool_module = get_tool_module(request, tool.id)
-        tools.append(
-            ToolUserResponse(
-                **{
-                    **tool.model_dump(),
-                    "has_user_valves": hasattr(tool_module, "UserValves"),
-                }
+    # Local Tools from BlueNexus
+    client = get_bluenexus_client_for_user(user.id)
+    if client:
+        try:
+            response = await client.query(
+                Collections.TOOLS,
+                QueryOptions(filter={"user_id": user.id}, limit=100)
             )
-        )
+            for record in response.get_records():
+                tool_data = record.model_dump()
+                tool_id = tool_data.get("owui_id", tool_data.get("id"))
+                tool_data["id"] = tool_id
+                tool_module = get_tool_module(request, tool_id, load_from_db=False)
+                tools.append(
+                    ToolUserResponse(
+                        **{
+                            **tool_data,
+                            "has_user_valves": hasattr(tool_module, "UserValves") if tool_module else False,
+                        }
+                    )
+                )
+        except BlueNexusError as e:
+            log.warning(f"Failed to fetch tools from BlueNexus: {e}")
 
     # OpenAPI Tool Servers
     for server in await get_tool_servers(request):
@@ -161,11 +184,35 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
 
 @router.get("/list", response_model=list[ToolUserResponse])
 async def get_tool_list(user=Depends(get_verified_user)):
-    if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
-        tools = Tools.get_tools()
-    else:
-        tools = Tools.get_tools_by_user_id(user.id, "write")
-    return tools
+    client = get_client_or_raise(user.id)
+
+    try:
+        # Query all tools from BlueNexus for this user
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"user_id": user.id})
+        )
+
+        records = response.get_records()
+        tools = []
+
+        for record in records:
+            tool_data = record.model_dump()
+            tool_data["id"] = tool_data.get("owui_id", tool_data.get("id"))
+
+            # Apply access control for write permission
+            if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
+                tools.append(ToolUserResponse(**tool_data))
+            elif has_access(user.id, "write", tool_data.get("access_control")):
+                tools.append(ToolUserResponse(**tool_data))
+
+        return tools
+
+    except BlueNexusError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
+        )
 
 
 ############################
@@ -250,8 +297,28 @@ async def load_tool_from_url(
 
 @router.get("/export", response_model=list[ToolModel])
 async def export_tools(user=Depends(get_admin_user)):
-    tools = Tools.get_tools()
-    return tools
+    client = get_client_or_raise(user.id)
+
+    try:
+        # Query all tools from BlueNexus for export
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"user_id": user.id})
+        )
+
+        tools = []
+        for record in response.get_records():
+            tool_data = record.model_dump()
+            tool_data["id"] = tool_data.get("owui_id", tool_data.get("id"))
+            tools.append(ToolModel(**tool_data))
+
+        return tools
+
+    except BlueNexusError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
+        )
 
 
 ############################
@@ -280,43 +347,59 @@ async def create_new_tools(
         )
 
     form_data.id = form_data.id.lower()
+    client = get_client_or_raise(user.id)
 
-    tools = Tools.get_tool_by_id(form_data.id)
-    if tools is None:
-        try:
-            form_data.content = replace_imports(form_data.content)
-            tool_module, frontmatter = load_tool_module_by_id(
-                form_data.id, content=form_data.content
-            )
-            form_data.meta.manifest = frontmatter
+    try:
+        # Check if tool with this ID already exists
+        existing = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"owui_id": form_data.id, "user_id": user.id}, limit=1)
+        )
 
-            TOOLS = request.app.state.TOOLS
-            TOOLS[form_data.id] = tool_module
-
-            specs = get_tool_specs(TOOLS[form_data.id])
-            tools = Tools.insert_new_tool(user.id, form_data, specs)
-
-            tool_cache_dir = CACHE_DIR / "tools" / form_data.id
-            tool_cache_dir.mkdir(parents=True, exist_ok=True)
-
-            if tools:
-                BlueNexusSync.sync_create(Collections.TOOLS, tools, tools.id)
-                return tools
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=ERROR_MESSAGES.DEFAULT("Error creating tools"),
-                )
-        except Exception as e:
-            log.exception(f"Failed to load the tool by id {form_data.id}: {e}")
+        if existing.data and len(existing.data) > 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.DEFAULT(str(e)),
+                detail=ERROR_MESSAGES.ID_TAKEN,
             )
-    else:
+
+        # Process tool module
+        form_data.content = replace_imports(form_data.content)
+        tool_module, frontmatter = load_tool_module_by_id(
+            form_data.id, content=form_data.content
+        )
+        form_data.meta.manifest = frontmatter
+
+        TOOLS = request.app.state.TOOLS
+        TOOLS[form_data.id] = tool_module
+
+        specs = get_tool_specs(TOOLS[form_data.id])
+
+        tool_cache_dir = CACHE_DIR / "tools" / form_data.id
+        tool_cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create tool in BlueNexus
+        tool_data = form_data.model_dump()
+        tool_data["owui_id"] = form_data.id
+        tool_data["user_id"] = user.id
+        tool_data["specs"] = specs
+
+        record = await client.create(Collections.TOOLS, tool_data)
+
+        # Convert back to ToolResponse
+        result_data = record.model_dump()
+        result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+        return ToolResponse(**result_data)
+
+    except BlueNexusError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
+        )
+    except Exception as e:
+        log.exception(f"Failed to load the tool by id {form_data.id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ERROR_MESSAGES.ID_TAKEN,
+            detail=ERROR_MESSAGES.DEFAULT(str(e)),
         )
 
 
@@ -327,19 +410,42 @@ async def create_new_tools(
 
 @router.get("/id/{id}", response_model=Optional[ToolModel])
 async def get_tools_by_id(id: str, user=Depends(get_verified_user)):
-    tools = Tools.get_tool_by_id(id)
+    client = get_client_or_raise(user.id)
 
-    if tools:
+    try:
+        # Query BlueNexus for tool with this ID
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"owui_id": id}, limit=1)
+        )
+
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
+        record = response.get_records()[0]
+        tool_data = record.model_dump()
+        tool_data["id"] = tool_data.get("owui_id", tool_data.get("id"))
+
+        # Check access
         if (
             user.role == "admin"
-            or tools.user_id == user.id
-            or has_access(user.id, "read", tools.access_control)
+            or tool_data.get("user_id") == user.id
+            or has_access(user.id, "read", tool_data.get("access_control"))
         ):
-            return tools
-    else:
+            return ToolModel(**tool_data)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
+    except BlueNexusError as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.NOT_FOUND,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
         )
 
 
@@ -355,25 +461,36 @@ async def update_tools_by_id(
     form_data: ToolForm,
     user=Depends(get_verified_user),
 ):
-    tools = Tools.get_tool_by_id(id)
-    if not tools:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.NOT_FOUND,
-        )
-
-    # Is the user the original creator, in a group with write access, or an admin
-    if (
-        tools.user_id != user.id
-        and not has_access(user.id, "write", tools.access_control)
-        and user.role != "admin"
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.UNAUTHORIZED,
-        )
+    client = get_client_or_raise(user.id)
 
     try:
+        # Find the tool by ID
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"owui_id": id}, limit=1)
+        )
+
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
+        record = response.get_records()[0]
+        tool_data = record.model_dump()
+
+        # Check access
+        if (
+            tool_data.get("user_id") != user.id
+            and not has_access(user.id, "write", tool_data.get("access_control"))
+            and user.role != "admin"
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.UNAUTHORIZED,
+            )
+
+        # Process tool module
         form_data.content = replace_imports(form_data.content)
         tool_module, frontmatter = load_tool_module_by_id(id, content=form_data.content)
         form_data.meta.manifest = frontmatter
@@ -383,23 +500,24 @@ async def update_tools_by_id(
 
         specs = get_tool_specs(TOOLS[id])
 
-        updated = {
-            **form_data.model_dump(exclude={"id"}),
-            "specs": specs,
-        }
+        # Update in BlueNexus
+        updated_data = form_data.model_dump(exclude={"id"})
+        updated_data["owui_id"] = id
+        updated_data["user_id"] = tool_data.get("user_id")
+        updated_data["specs"] = specs
 
-        log.debug(updated)
-        tools = Tools.update_tool_by_id(id, updated)
+        updated_record = await client.update(Collections.TOOLS, record.id, updated_data)
 
-        if tools:
-            BlueNexusSync.sync_update(Collections.TOOLS, tools, tools.id)
-            return tools
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.DEFAULT("Error updating tools"),
-            )
+        # Convert back to ToolModel
+        result_data = updated_record.model_dump()
+        result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+        return ToolModel(**result_data)
 
+    except BlueNexusError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -416,34 +534,50 @@ async def update_tools_by_id(
 async def delete_tools_by_id(
     request: Request, id: str, user=Depends(get_verified_user)
 ):
-    tools = Tools.get_tool_by_id(id)
-    if not tools:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.NOT_FOUND,
+    client = get_client_or_raise(user.id)
+
+    try:
+        # Find the tool by ID
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"owui_id": id}, limit=1)
         )
 
-    if (
-        tools.user_id != user.id
-        and not has_access(user.id, "write", tools.access_control)
-        and user.role != "admin"
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.UNAUTHORIZED,
-        )
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
 
-    # Get user_id before deletion for sync
-    tool_user_id = tools.user_id
+        record = response.get_records()[0]
+        tool_data = record.model_dump()
 
-    result = Tools.delete_tool_by_id(id)
-    if result:
+        # Check access
+        if (
+            tool_data.get("user_id") != user.id
+            and not has_access(user.id, "write", tool_data.get("access_control"))
+            and user.role != "admin"
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.UNAUTHORIZED,
+            )
+
+        # Delete from BlueNexus
+        await client.delete(Collections.TOOLS, record.id)
+
+        # Clean up from app state
         TOOLS = request.app.state.TOOLS
         if id in TOOLS:
             del TOOLS[id]
-        BlueNexusSync.sync_delete(Collections.TOOLS, id, tool_user_id)
 
-    return result
+        return True
+
+    except BlueNexusError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
+        )
 
 
 ############################
@@ -453,20 +587,27 @@ async def delete_tools_by_id(
 
 @router.get("/id/{id}/valves", response_model=Optional[dict])
 async def get_tools_valves_by_id(id: str, user=Depends(get_verified_user)):
-    tools = Tools.get_tool_by_id(id)
-    if tools:
-        try:
-            valves = Tools.get_tool_valves_by_id(id)
-            return valves
-        except Exception as e:
+    client = get_client_or_raise(user.id)
+
+    try:
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"owui_id": id}, limit=1)
+        )
+
+        if not response.data or len(response.data) == 0:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.DEFAULT(str(e)),
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
             )
-    else:
+
+        tool_data = response.get_records()[0].model_dump()
+        return tool_data.get("valves", {})
+
+    except BlueNexusError as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.NOT_FOUND,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
         )
 
 
@@ -479,8 +620,20 @@ async def get_tools_valves_by_id(id: str, user=Depends(get_verified_user)):
 async def get_tools_valves_spec_by_id(
     request: Request, id: str, user=Depends(get_verified_user)
 ):
-    tools = Tools.get_tool_by_id(id)
-    if tools:
+    client = get_client_or_raise(user.id)
+
+    try:
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"owui_id": id}, limit=1)
+        )
+
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
         if id in request.app.state.TOOLS:
             tools_module = request.app.state.TOOLS[id]
         else:
@@ -491,10 +644,11 @@ async def get_tools_valves_spec_by_id(
             Valves = tools_module.Valves
             return Valves.schema()
         return None
-    else:
+
+    except BlueNexusError as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.NOT_FOUND,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
         )
 
 
@@ -507,42 +661,65 @@ async def get_tools_valves_spec_by_id(
 async def update_tools_valves_by_id(
     request: Request, id: str, form_data: dict, user=Depends(get_verified_user)
 ):
-    tools = Tools.get_tool_by_id(id)
-    if not tools:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.NOT_FOUND,
-        )
-
-    if (
-        tools.user_id != user.id
-        and not has_access(user.id, "write", tools.access_control)
-        and user.role != "admin"
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
-        )
-
-    if id in request.app.state.TOOLS:
-        tools_module = request.app.state.TOOLS[id]
-    else:
-        tools_module, _ = load_tool_module_by_id(id)
-        request.app.state.TOOLS[id] = tools_module
-
-    if not hasattr(tools_module, "Valves"):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.NOT_FOUND,
-        )
-    Valves = tools_module.Valves
+    client = get_client_or_raise(user.id)
 
     try:
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"owui_id": id}, limit=1)
+        )
+
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
+        record = response.get_records()[0]
+        tool_data = record.model_dump()
+
+        # Check access
+        if (
+            tool_data.get("user_id") != user.id
+            and not has_access(user.id, "write", tool_data.get("access_control"))
+            and user.role != "admin"
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+            )
+
+        if id in request.app.state.TOOLS:
+            tools_module = request.app.state.TOOLS[id]
+        else:
+            tools_module, _ = load_tool_module_by_id(id)
+            request.app.state.TOOLS[id] = tools_module
+
+        if not hasattr(tools_module, "Valves"):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+        Valves = tools_module.Valves
+
+        # Validate and update valves
         form_data = {k: v for k, v in form_data.items() if v is not None}
         valves = Valves(**form_data)
         valves_dict = valves.model_dump(exclude_unset=True)
-        Tools.update_tool_valves_by_id(id, valves_dict)
+
+        # Update tool with new valves in BlueNexus
+        tool_data["valves"] = valves_dict
+        await client.update(Collections.TOOLS, record.id, tool_data)
+
         return valves_dict
+
+    except BlueNexusError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         log.exception(f"Failed to update tool valves by id {id}: {e}")
         raise HTTPException(
@@ -558,20 +735,28 @@ async def update_tools_valves_by_id(
 
 @router.get("/id/{id}/valves/user", response_model=Optional[dict])
 async def get_tools_user_valves_by_id(id: str, user=Depends(get_verified_user)):
-    tools = Tools.get_tool_by_id(id)
-    if tools:
-        try:
-            user_valves = Tools.get_user_valves_by_id_and_user_id(id, user.id)
-            return user_valves
-        except Exception as e:
+    client = get_client_or_raise(user.id)
+
+    try:
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"owui_id": id}, limit=1)
+        )
+
+        if not response.data or len(response.data) == 0:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.DEFAULT(str(e)),
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
             )
-    else:
+
+        tool_data = response.get_records()[0].model_dump()
+        user_valves_all = tool_data.get("user_valves", {})
+        return user_valves_all.get(user.id, {})
+
+    except BlueNexusError as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.NOT_FOUND,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
         )
 
 
@@ -579,8 +764,20 @@ async def get_tools_user_valves_by_id(id: str, user=Depends(get_verified_user)):
 async def get_tools_user_valves_spec_by_id(
     request: Request, id: str, user=Depends(get_verified_user)
 ):
-    tools = Tools.get_tool_by_id(id)
-    if tools:
+    client = get_client_or_raise(user.id)
+
+    try:
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"owui_id": id}, limit=1)
+        )
+
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
         if id in request.app.state.TOOLS:
             tools_module = request.app.state.TOOLS[id]
         else:
@@ -591,10 +788,11 @@ async def get_tools_user_valves_spec_by_id(
             UserValves = tools_module.UserValves
             return UserValves.schema()
         return None
-    else:
+
+    except BlueNexusError as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.NOT_FOUND,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
         )
 
 
@@ -602,39 +800,60 @@ async def get_tools_user_valves_spec_by_id(
 async def update_tools_user_valves_by_id(
     request: Request, id: str, form_data: dict, user=Depends(get_verified_user)
 ):
-    tools = Tools.get_tool_by_id(id)
+    client = get_client_or_raise(user.id)
 
-    if tools:
+    try:
+        response = await client.query(
+            Collections.TOOLS,
+            QueryOptions(filter={"owui_id": id}, limit=1)
+        )
+
+        if not response.data or len(response.data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
+        record = response.get_records()[0]
+        tool_data = record.model_dump()
+
         if id in request.app.state.TOOLS:
             tools_module = request.app.state.TOOLS[id]
         else:
             tools_module, _ = load_tool_module_by_id(id)
             request.app.state.TOOLS[id] = tools_module
 
-        if hasattr(tools_module, "UserValves"):
-            UserValves = tools_module.UserValves
-
-            try:
-                form_data = {k: v for k, v in form_data.items() if v is not None}
-                user_valves = UserValves(**form_data)
-                user_valves_dict = user_valves.model_dump(exclude_unset=True)
-                Tools.update_user_valves_by_id_and_user_id(
-                    id, user.id, user_valves_dict
-                )
-                return user_valves_dict
-            except Exception as e:
-                log.exception(f"Failed to update user valves by id {id}: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=ERROR_MESSAGES.DEFAULT(str(e)),
-                )
-        else:
+        if not hasattr(tools_module, "UserValves"):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=ERROR_MESSAGES.NOT_FOUND,
             )
-    else:
+
+        UserValves = tools_module.UserValves
+
+        # Validate and update user valves
+        form_data = {k: v for k, v in form_data.items() if v is not None}
+        user_valves = UserValves(**form_data)
+        user_valves_dict = user_valves.model_dump(exclude_unset=True)
+
+        # Update tool with user valves in BlueNexus
+        user_valves_all = tool_data.get("user_valves", {})
+        user_valves_all[user.id] = user_valves_dict
+        tool_data["user_valves"] = user_valves_all
+        await client.update(Collections.TOOLS, record.id, tool_data)
+
+        return user_valves_dict
+
+    except BlueNexusError as e:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.NOT_FOUND,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"BlueNexus service unavailable: {str(e)}",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(f"Failed to update user valves by id {id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(str(e)),
         )
