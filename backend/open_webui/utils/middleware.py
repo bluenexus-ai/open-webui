@@ -105,9 +105,11 @@ from open_webui.utils.mcp.client import MCPClient
 from open_webui.config import (
     CACHE_DIR,
     DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
+    DEFAULT_TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE,
     DEFAULT_CODE_INTERPRETER_PROMPT,
     CODE_INTERPRETER_BLOCKED_MODULES,
 )
+from open_webui.utils.workflow.executor import ParallelToolExecutor, parse_execution_plan
 from open_webui.env import (
     SRC_LOG_LEVELS,
     GLOBAL_LOG_LEVEL,
@@ -296,6 +298,11 @@ def process_tool_result(
 async def chat_completion_tools_handler(
     request: Request, body: dict, extra_params: dict, user: UserModel, models, tools
 ) -> tuple[dict, dict]:
+    """
+    Enhanced tool handler with execution planning and parallel execution.
+    Supports both legacy tool_calls format and new execution_plan format.
+    """
+
     async def get_content_from_response(response) -> Optional[str]:
         content = None
         if hasattr(response, "body_iterator"):
@@ -313,7 +320,7 @@ async def chat_completion_tools_handler(
     def get_tools_function_calling_payload(messages, task_model_id, content):
         user_message = get_last_user_message(messages)
 
-        recent_messages = messages[-4:] if len(messages) > 4 else messages
+        recent_messages = messages[-6:] if len(messages) > 6 else messages
         chat_history = "\n".join(
             f"{message['role'].upper()}: \"\"\"{get_content_from_message(message)}\"\"\""
             for message in recent_messages
@@ -342,16 +349,18 @@ async def chat_completion_tools_handler(
         models,
     )
 
-    skip_files = False
-    sources = []
-
     specs = [tool["spec"] for tool in tools.values()]
     tools_specs = json.dumps(specs)
 
-    if request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE != "":
+    # Use execution planning template if available, otherwise fall back to legacy
+    if hasattr(request.app.state.config, "TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE") and \
+       request.app.state.config.TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE != "":
+        template = request.app.state.config.TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE
+    elif request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE != "":
         template = request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
     else:
-        template = DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+        # Use the new execution planning template by default
+        template = DEFAULT_TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE
 
     tools_function_calling_prompt = tools_function_calling_generation_template(
         template, tools_specs
@@ -369,162 +378,57 @@ async def chat_completion_tools_handler(
         if not content:
             return body, {}
 
-        try:
-            content = content[content.find("{") : content.rfind("}") + 1]
-            if not content:
-                raise Exception("No JSON object found in the response")
+        # Parse the execution plan from LLM response
+        execution_plan = parse_execution_plan(content, tools)
 
-            result = json.loads(content)
+        if not execution_plan or not execution_plan.steps:
+            log.debug("[Tools Handler] No valid execution plan parsed from response")
+            return body, {}
 
-            async def tool_call_handler(tool_call):
-                nonlocal skip_files
+        log.info(
+            f"[Tools Handler] Execution plan: {execution_plan.total_tools} tools in "
+            f"{len(execution_plan.steps)} steps"
+        )
+        if execution_plan.reasoning:
+            log.info(f"[Tools Handler] Plan reasoning: {execution_plan.reasoning}")
 
-                log.debug(f"{tool_call=}")
+        # Create parallel executor
+        executor = ParallelToolExecutor(
+            tools_dict=tools,
+            event_emitter=event_emitter,
+            event_caller=event_caller,
+            metadata=metadata,
+            process_tool_result_fn=process_tool_result,
+            request=request,
+            user=user,
+        )
 
-                tool_function_name = tool_call.get("name", None)
-                if tool_function_name not in tools:
-                    return body, {}
+        # Execute the plan (steps run sequentially, tools within steps run in parallel)
+        context = await executor.execute_plan(execution_plan)
 
-                tool_function_params = tool_call.get("parameters", {})
-
-                tool = None
-                tool_type = ""
-                direct_tool = False
-
-                try:
-                    tool = tools[tool_function_name]
-                    tool_type = tool.get("type", "")
-                    direct_tool = tool.get("direct", False)
-
-                    spec = tool.get("spec", {})
-                    allowed_params = (
-                        spec.get("parameters", {}).get("properties", {}).keys()
-                    )
-                    tool_function_params = {
-                        k: v
-                        for k, v in tool_function_params.items()
-                        if k in allowed_params
-                    }
-
-                    if tool.get("direct", False):
-                        tool_result = await event_caller(
-                            {
-                                "type": "execute:tool",
-                                "data": {
-                                    "id": str(uuid4()),
-                                    "name": tool_function_name,
-                                    "params": tool_function_params,
-                                    "server": tool.get("server", {}),
-                                    "session_id": metadata.get("session_id", None),
-                                },
-                            }
-                        )
-                    else:
-                        tool_function = tool["callable"]
-                        tool_result = await tool_function(**tool_function_params)
-
-                except Exception as e:
-                    tool_result = str(e)
-
-                tool_result, tool_result_files, tool_result_embeds = (
-                    process_tool_result(
-                        request,
-                        tool_function_name,
-                        tool_result,
-                        tool_type,
-                        direct_tool,
-                        metadata,
-                        user,
-                    )
-                )
-
-                if event_emitter:
-                    if tool_result_files:
-                        await event_emitter(
-                            {
-                                "type": "files",
-                                "data": {
-                                    "files": tool_result_files,
-                                },
-                            }
-                        )
-
-                    if tool_result_embeds:
-                        await event_emitter(
-                            {
-                                "type": "embeds",
-                                "data": {
-                                    "embeds": tool_result_embeds,
-                                },
-                            }
-                        )
-
-                print(
-                    f"Tool {tool_function_name} result: {tool_result}",
-                    tool_result_files,
-                    tool_result_embeds,
-                )
-
-                if tool_result:
-                    tool = tools[tool_function_name]
+        # Update body messages with tool results
+        for step_num, step_results in context.step_results.items():
+            for tool_name, result in step_results.items():
+                if result:
+                    tool = tools.get(tool_name, {})
                     tool_id = tool.get("tool_id", "")
+                    display_name = f"{tool_id}/{tool_name}" if tool_id else tool_name
 
-                    tool_name = (
-                        f"{tool_id}/{tool_function_name}"
-                        if tool_id
-                        else f"{tool_function_name}"
-                    )
-
-                    # Citation is enabled for this tool
-                    sources.append(
-                        {
-                            "source": {
-                                "name": (f"{tool_name}"),
-                            },
-                            "document": [str(tool_result)],
-                            "metadata": [
-                                {
-                                    "source": (f"{tool_name}"),
-                                    "parameters": tool_function_params,
-                                }
-                            ],
-                            "tool_result": True,
-                        }
-                    )
-
-                    # Citation is not enabled for this tool
                     body["messages"] = add_or_update_user_message(
-                        f"\nTool `{tool_name}` Output: {tool_result}",
+                        f"\nTool `{display_name}` Output: {result}",
                         body["messages"],
                     )
 
-                    if (
-                        tools[tool_function_name]
-                        .get("metadata", {})
-                        .get("file_handler", False)
-                    ):
-                        skip_files = True
+        # Handle skip_files flag
+        if context.skip_files and "files" in body.get("metadata", {}):
+            del body["metadata"]["files"]
 
-            # check if "tool_calls" in result
-            if result.get("tool_calls"):
-                for tool_call in result.get("tool_calls"):
-                    await tool_call_handler(tool_call)
-            else:
-                await tool_call_handler(result)
+        log.debug(f"[Tools Handler] Completed with {len(context.sources)} sources")
+        return body, {"sources": context.sources}
 
-        except Exception as e:
-            log.debug(f"Error: {e}")
-            content = None
     except Exception as e:
-        log.debug(f"Error: {e}")
-        content = None
-
-    log.debug(f"tool_contexts: {sources}")
-
-    if skip_files and "files" in body.get("metadata", {}):
-        del body["metadata"]["files"]
-
-    return body, {"sources": sources}
+        log.error(f"[Tools Handler] Error: {e}")
+        return body, {}
 
 
 async def chat_memory_handler(
@@ -3120,14 +3024,13 @@ async def process_chat_response(
 
                     tools = metadata.get("tools", {})
 
-                    results = []
-
-                    for tool_call in response_tool_calls:
-                        tool_call_id = tool_call.get("id", "")
-                        tool_function_name = tool_call.get("function", {}).get(
+                    # Define async function to execute a single tool call
+                    async def execute_native_tool_call(tool_call_data):
+                        tool_call_id = tool_call_data.get("id", "")
+                        tool_function_name = tool_call_data.get("function", {}).get(
                             "name", ""
                         )
-                        tool_args = tool_call.get("function", {}).get("arguments", "{}")
+                        tool_args = tool_call_data.get("function", {}).get("arguments", "{}")
 
                         tool_function_params = {}
                         try:
@@ -3151,7 +3054,7 @@ async def process_chat_response(
                         log.debug(
                             f"Parsed args from {tool_args} to {tool_function_params}"
                         )
-                        tool_call.setdefault("function", {})["arguments"] = json.dumps(
+                        tool_call_data.setdefault("function", {})["arguments"] = json.dumps(
                             tool_function_params
                         )
 
@@ -3226,22 +3129,37 @@ async def process_chat_response(
                             )
                         )
 
-                        results.append(
-                            {
-                                "tool_call_id": tool_call_id,
-                                "content": tool_result or "",
-                                **(
-                                    {"files": tool_result_files}
-                                    if tool_result_files
-                                    else {}
-                                ),
-                                **(
-                                    {"embeds": tool_result_embeds}
-                                    if tool_result_embeds
-                                    else {}
-                                ),
-                            }
-                        )
+                        return {
+                            "tool_call_id": tool_call_id,
+                            "content": tool_result or "",
+                            **(
+                                {"files": tool_result_files}
+                                if tool_result_files
+                                else {}
+                            ),
+                            **(
+                                {"embeds": tool_result_embeds}
+                                if tool_result_embeds
+                                else {}
+                            ),
+                        }
+
+                    # Execute all tool calls in parallel using asyncio.gather
+                    log.info(f"[Native Tools] Executing {len(response_tool_calls)} tool calls in parallel")
+                    tool_tasks = [execute_native_tool_call(tc) for tc in response_tool_calls]
+                    parallel_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
+
+                    # Process results, handling any exceptions
+                    results = []
+                    for i, result in enumerate(parallel_results):
+                        if isinstance(result, Exception):
+                            log.error(f"[Native Tools] Tool call {i} failed: {result}")
+                            results.append({
+                                "tool_call_id": response_tool_calls[i].get("id", ""),
+                                "content": f"Error: {str(result)}",
+                            })
+                        else:
+                            results.append(result)
 
                     content_blocks[-1]["results"] = results
                     content_blocks.append(

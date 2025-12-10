@@ -60,6 +60,7 @@ from starsessions.stores.redis import RedisStore
 from open_webui.utils import logger
 from open_webui.utils.audit import AuditLevel, AuditLoggingMiddleware
 from open_webui.utils.logger import start_logger
+from open_webui.utils.mcp.pool import init_mcp_pool, shutdown_mcp_pool
 from open_webui.socket.main import (
     app as socket_app,
     periodic_usage_pool_cleanup,
@@ -598,6 +599,10 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(periodic_usage_pool_cleanup())
 
+    # Initialize MCP connection pool
+    log.info("Initializing MCP connection pool...")
+    await init_mcp_pool()
+
     if app.state.config.ENABLE_BASE_MODELS_CACHE:
         await get_all_models(
             Request(
@@ -620,6 +625,10 @@ async def lifespan(app: FastAPI):
         )
 
     yield
+
+    # Shutdown MCP connection pool
+    log.info("Shutting down MCP connection pool...")
+    await shutdown_mcp_pool()
 
     if hasattr(app.state, "redis_task_command_listener"):
         app.state.redis_task_command_listener.cancel()
