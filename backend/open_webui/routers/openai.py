@@ -33,6 +33,7 @@ from open_webui.env import (
     AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST,
     ENABLE_FORWARD_USER_INFO_HEADERS,
     BYPASS_MODEL_ACCESS_CONTROL,
+    API_CONNECTION_MAX_RETRIES,
 )
 from open_webui.models.users import UserModel
 from open_webui.models.oauth_sessions import OAuthSessions
@@ -1061,55 +1062,95 @@ async def generate_chat_completion(
     streaming = False
     response = None
 
-    try:
-        session = aiohttp.ClientSession(
-            trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
-        )
+    # Retry logic for connection errors
+    max_retries = API_CONNECTION_MAX_RETRIES
+    last_error = None
 
-        r = await session.request(
-            method="POST",
-            url=request_url,
-            data=payload,
-            headers=headers,
-            cookies=cookies,
-            ssl=get_ssl_context(request_url),
-        )
+    for attempt in range(max_retries + 1):
+        try:
+            # Clean up previous session if retrying
+            if session is not None:
+                await cleanup_response(r, session)
+                r = None
+                session = None
 
-        # Check if response is SSE
-        if "text/event-stream" in r.headers.get("Content-Type", ""):
-            streaming = True
-            return StreamingResponse(
-                r.content,
-                status_code=r.status,
-                headers=dict(r.headers),
-                background=BackgroundTask(
-                    cleanup_response, response=r, session=session
-                ),
+            session = aiohttp.ClientSession(
+                trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
             )
-        else:
-            try:
-                response = await r.json()
-            except Exception as e:
-                log.error(e)
-                response = await r.text()
 
-            if r.status >= 400:
-                if isinstance(response, (dict, list)):
-                    return JSONResponse(status_code=r.status, content=response)
-                else:
-                    return PlainTextResponse(status_code=r.status, content=response)
+            r = await session.request(
+                method="POST",
+                url=request_url,
+                data=payload,
+                headers=headers,
+                cookies=cookies,
+                ssl=get_ssl_context(request_url),
+            )
 
-            return response
-    except Exception as e:
-        log.exception(e)
+            # Check if response is SSE
+            if "text/event-stream" in r.headers.get("Content-Type", ""):
+                streaming = True
+                return StreamingResponse(
+                    r.content,
+                    status_code=r.status,
+                    headers=dict(r.headers),
+                    background=BackgroundTask(
+                        cleanup_response, response=r, session=session
+                    ),
+                )
+            else:
+                try:
+                    response = await r.json()
+                except Exception as e:
+                    log.error(e)
+                    response = await r.text()
 
+                if r.status >= 400:
+                    if isinstance(response, (dict, list)):
+                        return JSONResponse(status_code=r.status, content=response)
+                    else:
+                        return PlainTextResponse(status_code=r.status, content=response)
+
+                return response
+
+        except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, ConnectionResetError, OSError) as e:
+            last_error = e
+            if attempt < max_retries:
+                retry_delay = 0.5 * (2 ** attempt)  # Exponential backoff: 0.5s, 1s, 2s
+                log.warning(
+                    f"[OpenAI API] Connection error (attempt {attempt + 1}/{max_retries + 1}): {type(e).__name__}: {e}. Retrying in {retry_delay}s..."
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+            else:
+                log.error(f"[OpenAI API] Connection failed after {max_retries + 1} attempts: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Open WebUI: Server Connection Error after {max_retries + 1} attempts",
+                )
+
+        except Exception as e:
+            log.exception(e)
+            raise HTTPException(
+                status_code=r.status if r else 500,
+                detail="Open WebUI: Server Connection Error",
+            )
+
+        finally:
+            # Only cleanup if we're not returning a streaming response
+            # and we're exiting the loop (not retrying)
+            pass
+
+    # If we get here, all retries failed
+    if last_error:
         raise HTTPException(
-            status_code=r.status if r else 500,
-            detail="Open WebUI: Server Connection Error",
+            status_code=503,
+            detail=f"Open WebUI: Server Connection Error after {max_retries + 1} attempts",
         )
-    finally:
-        if not streaming:
-            await cleanup_response(r, session)
+
+    # Final cleanup for non-streaming responses
+    if not streaming and session is not None:
+        await cleanup_response(r, session)
 
 
 async def embeddings(request: Request, form_data: dict, user):
