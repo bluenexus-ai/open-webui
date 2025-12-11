@@ -51,7 +51,8 @@ def normalize_chat_data(chat_data: dict) -> dict:
     import time
 
     # Map owui_id to id
-    normalize_chat_data(chat_data)
+    if "owui_id" in chat_data:
+        chat_data["id"] = chat_data.get("owui_id", chat_data.get("id"))
 
     # Handle timestamp conversion (BlueNexus uses camelCase datetime, OWUI uses snake_case int)
     if "createdAt" in chat_data and chat_data["createdAt"]:

@@ -8,10 +8,24 @@ to store and retrieve user data for Open WebUI.
 import json
 import logging
 import ssl
+from datetime import datetime
 from typing import Any, Optional, TypeVar
 from urllib.parse import urlparse, urlencode
 
 import aiohttp
+
+
+def _serialize_for_json(obj: Any) -> Any:
+    """
+    Recursively convert datetime objects to ISO format strings for JSON serialization.
+    """
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    elif isinstance(obj, dict):
+        return {k: _serialize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_serialize_for_json(item) for item in obj]
+    return obj
 
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.utils.bluenexus.types import (
@@ -210,7 +224,7 @@ class BlueNexusDataClient:
                 }
 
                 if data is not None:
-                    kwargs["json"] = data
+                    kwargs["json"] = _serialize_for_json(data)
 
                 if params is not None:
                     kwargs["params"] = params
