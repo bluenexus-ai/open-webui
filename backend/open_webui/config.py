@@ -1895,6 +1895,116 @@ The format for the JSON response is strictly:
 }"""
 
 
+DEFAULT_TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE = """Available Tools: {{TOOLS}}
+
+You are an expert tool orchestrator. Analyze the user's query and create an execution plan that:
+1. Identifies which tools need to be called
+2. Determines dependencies between tool calls (e.g., tool B needs output from tool A)
+3. Groups independent tools that can execute in parallel
+4. Orders steps based on dependencies
+
+### Rules:
+- Tools with no dependencies on each other can run in the same step (parallel execution)
+- Tools that depend on another tool's output must be in a later step
+- Use tool output references like {{step_N_result_toolName}} for dependent parameters
+- Return ONLY the JSON, no explanation text before or after
+
+### Output Format:
+{
+  "reasoning": "Brief explanation of the execution plan",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "What this step accomplishes",
+        "tool_calls": [
+          {
+            "id": "unique_id_1",
+            "name": "toolName",
+            "parameters": {"param1": "value1"},
+            "depends_on": []
+          }
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Process results from step 1",
+        "tool_calls": [
+          {
+            "id": "unique_id_2",
+            "name": "anotherTool",
+            "parameters": {"input": "{{step_1_result_toolName}}"},
+            "depends_on": ["unique_id_1"]
+          }
+        ]
+      }
+    ]
+  }
+}
+
+### Example:
+Query: "Search for Python tutorials and summarize the top result"
+Tools: [web_search, summarize_text]
+
+Response:
+{
+  "reasoning": "First search for tutorials, then summarize the best result from the search",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Search for Python tutorials",
+        "tool_calls": [
+          {"id": "search_1", "name": "web_search", "parameters": {"query": "Python tutorials"}, "depends_on": []}
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Summarize the search results",
+        "tool_calls": [
+          {"id": "summarize_1", "name": "summarize_text", "parameters": {"text": "{{step_1_result_web_search}}"}, "depends_on": ["search_1"]}
+        ]
+      }
+    ]
+  }
+}
+
+### Example with Parallel Tools:
+Query: "Get weather in NYC and SF, then compare them"
+Tools: [get_weather, compare_data]
+
+Response:
+{
+  "reasoning": "Get weather for both cities in parallel, then compare the results",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Fetch weather data for both cities simultaneously",
+        "tool_calls": [
+          {"id": "weather_nyc", "name": "get_weather", "parameters": {"city": "New York"}, "depends_on": []},
+          {"id": "weather_sf", "name": "get_weather", "parameters": {"city": "San Francisco"}, "depends_on": []}
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Compare the weather data",
+        "tool_calls": [
+          {"id": "compare_1", "name": "compare_data", "parameters": {"data1": "{{step_1_result_get_weather}}", "data2": "{{step_1_result_get_weather}}"}, "depends_on": ["weather_nyc", "weather_sf"]}
+        ]
+      }
+    ]
+  }
+}"""
+
+
+TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE = PersistentConfig(
+    "TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE",
+    "task.tools.execution_planning_prompt_template",
+    os.environ.get("TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE", ""),
+)
+
+
 DEFAULT_EMOJI_GENERATION_PROMPT_TEMPLATE = """Your task is to reflect the speaker's likely facial expression through a fitting emoji. Interpret emotions from the message and reflect their facial expression using fitting, diverse emojis (e.g., 😊, 😢, 😡, 😱).
 
 Message: ```{{prompt}}```"""
