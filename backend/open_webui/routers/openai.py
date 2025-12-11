@@ -1059,12 +1059,10 @@ async def generate_chat_completion(
 
     r = None
     session = None
-    streaming = False
     response = None
 
     # Retry logic for connection errors
     max_retries = API_CONNECTION_MAX_RETRIES
-    last_error = None
 
     for attempt in range(max_retries + 1):
         try:
@@ -1089,7 +1087,6 @@ async def generate_chat_completion(
 
             # Check if response is SSE
             if "text/event-stream" in r.headers.get("Content-Type", ""):
-                streaming = True
                 return StreamingResponse(
                     r.content,
                     status_code=r.status,
@@ -1105,6 +1102,9 @@ async def generate_chat_completion(
                     log.error(e)
                     response = await r.text()
 
+                # Clean up before returning non-streaming response
+                await cleanup_response(r, session)
+
                 if r.status >= 400:
                     if isinstance(response, (dict, list)):
                         return JSONResponse(status_code=r.status, content=response)
@@ -1114,7 +1114,6 @@ async def generate_chat_completion(
                 return response
 
         except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, ConnectionResetError, OSError) as e:
-            last_error = e
             if attempt < max_retries:
                 retry_delay = 0.5 * (2 ** attempt)  # Exponential backoff: 0.5s, 1s, 2s
                 log.warning(
@@ -1123,6 +1122,8 @@ async def generate_chat_completion(
                 await asyncio.sleep(retry_delay)
                 continue
             else:
+                # Clean up before raising exception
+                await cleanup_response(r, session)
                 log.error(f"[OpenAI API] Connection failed after {max_retries + 1} attempts: {e}")
                 raise HTTPException(
                     status_code=503,
@@ -1130,27 +1131,13 @@ async def generate_chat_completion(
                 )
 
         except Exception as e:
+            # Clean up before raising exception
+            await cleanup_response(r, session)
             log.exception(e)
             raise HTTPException(
                 status_code=r.status if r else 500,
                 detail="Open WebUI: Server Connection Error",
             )
-
-        finally:
-            # Only cleanup if we're not returning a streaming response
-            # and we're exiting the loop (not retrying)
-            pass
-
-    # If we get here, all retries failed
-    if last_error:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Open WebUI: Server Connection Error after {max_retries + 1} attempts",
-        )
-
-    # Final cleanup for non-streaming responses
-    if not streaming and session is not None:
-        await cleanup_response(r, session)
 
 
 async def embeddings(request: Request, form_data: dict, user):

@@ -1637,18 +1637,36 @@ async def chat_completion(
                 # Clean up MCP clients before potential retry
                 try:
                     if mcp_clients := metadata.get("mcp_clients"):
+                        log.info(f"[CancelledError] Cleaning up {len(mcp_clients)} MCP clients...")
                         for client in reversed(mcp_clients.values()):
-                            await asyncio.shield(client.disconnect())
+                            try:
+                                await asyncio.wait_for(
+                                    asyncio.shield(client.disconnect()),
+                                    timeout=5.0
+                                )
+                            except asyncio.TimeoutError:
+                                log.warning("[CancelledError] MCP client disconnect timed out")
+                            except Exception as e:
+                                log.debug(f"[CancelledError] MCP disconnect error: {e}")
                         # Clear mcp_clients so they get re-initialized on retry
                         metadata.pop("mcp_clients", None)
+                        log.info("[CancelledError] MCP clients cleaned up")
                 except Exception as cleanup_error:
-                    log.debug(f"Error cleaning up MCP clients during retry: {cleanup_error}")
+                    log.warning(f"[CancelledError] Error cleaning up MCP clients: {cleanup_error}")
+
+                # Also clear any tool-related state that might cause issues on retry
+                metadata.pop("tool_ids", None)
+                metadata.pop("tools", None)
 
                 # Check if we should retry
                 if cancelled_retry_count <= max_cancelled_retries:
                     log.info(f"[CancelledError] Auto-retrying chat processing (retry {cancelled_retry_count}/{max_cancelled_retries})...")
-                    # Small delay before retry to let any transient issues resolve
-                    await asyncio.sleep(0.5)
+                    # Shield the sleep from cancellation to ensure retry happens
+                    try:
+                        await asyncio.shield(asyncio.sleep(0.5))
+                    except asyncio.CancelledError:
+                        log.warning("[CancelledError] Sleep was cancelled, retrying anyway...")
+                    log.info(f"[CancelledError] Starting retry attempt {cancelled_retry_count}...")
                     continue  # Retry the loop
 
                 # Max retries exhausted, emit cancel event and re-raise
