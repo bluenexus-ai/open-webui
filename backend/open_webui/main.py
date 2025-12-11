@@ -108,7 +108,11 @@ from open_webui.internal.db import Session, engine
 from open_webui.models.functions import Functions
 from open_webui.models.models import Models
 from open_webui.models.users import UserModel, Users
-from open_webui.models.chats import Chats
+from open_webui.utils.bluenexus.chat_ops import (
+    get_chat_by_id as bluenexus_get_chat_by_id,
+    get_chat_by_id_and_user_id as bluenexus_get_chat_by_id_and_user_id,
+    upsert_message_to_chat_by_id_and_message_id as bluenexus_upsert_message,
+)
 
 from open_webui.config import (
     # Ollama
@@ -1584,7 +1588,7 @@ async def chat_completion(
 
         if metadata.get("chat_id") and (user and user.role != "admin"):
             if not metadata["chat_id"].startswith("local:"):
-                chat = Chats.get_chat_by_id_and_user_id(metadata["chat_id"], user.id)
+                chat = await bluenexus_get_chat_by_id_and_user_id(user.id, metadata["chat_id"])
                 if chat is None:
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
@@ -1615,7 +1619,8 @@ async def chat_completion(
                 if metadata.get("chat_id") and metadata.get("message_id"):
                     try:
                         if not metadata["chat_id"].startswith("local:"):
-                            Chats.upsert_message_to_chat_by_id_and_message_id(
+                            await bluenexus_upsert_message(
+                                user.id,
                                 metadata["chat_id"],
                                 metadata["message_id"],
                                 {
@@ -1687,7 +1692,8 @@ async def chat_completion(
                     # Update the chat message with the error
                     try:
                         if not metadata["chat_id"].startswith("local:"):
-                            Chats.upsert_message_to_chat_by_id_and_message_id(
+                            await bluenexus_upsert_message(
+                                user.id,
                                 metadata["chat_id"],
                                 metadata["message_id"],
                                 {
@@ -1800,8 +1806,8 @@ async def list_tasks_endpoint(request: Request, user=Depends(get_verified_user))
 async def list_tasks_by_chat_id_endpoint(
     request: Request, chat_id: str, user=Depends(get_verified_user)
 ):
-    chat = Chats.get_chat_by_id(chat_id)
-    if chat is None or chat.user_id != user.id:
+    chat = await bluenexus_get_chat_by_id(user.id, chat_id)
+    if chat is None:
         return {"task_ids": []}
 
     task_ids = await list_task_ids_by_item_id(request.app.state.redis, chat_id)

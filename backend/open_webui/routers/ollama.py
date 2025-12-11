@@ -18,7 +18,6 @@ from aiocache import cached
 import requests
 from urllib.parse import quote
 
-from open_webui.models.chats import Chats
 from open_webui.models.users import UserModel
 
 from open_webui.env import (

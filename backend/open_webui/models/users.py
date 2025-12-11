@@ -5,7 +5,6 @@ from open_webui.internal.db import Base, JSONField, get_db
 
 
 from open_webui.env import DATABASE_USER_ACTIVE_STATUS_UPDATE_INTERVAL
-from open_webui.models.chats import Chats
 from open_webui.models.groups import Groups
 from open_webui.utils.misc import throttle
 
@@ -407,11 +406,14 @@ class UsersTable:
 
     def delete_user_by_id(self, id: str) -> bool:
         try:
+            # Import inside function to avoid circular import
+            from open_webui.utils.bluenexus.chat_ops import delete_chats_by_user_id as bluenexus_delete_chats
+
             # Remove User from Groups
             Groups.remove_user_from_all_groups(id)
 
-            # Delete User Chats
-            result = Chats.delete_chats_by_user_id(id)
+            # Delete User Chats from BlueNexus
+            result = bluenexus_delete_chats(id)
             if result:
                 with get_db() as db:
                     # Delete User

@@ -9,7 +9,11 @@ import logging
 
 from open_webui.env import SRC_LOG_LEVELS, PIP_OPTIONS, PIP_PACKAGE_INDEX_OPTIONS
 from open_webui.models.functions import Functions
-from open_webui.models.tools import Tools
+from open_webui.utils.bluenexus.tool_ops import (
+    get_tool_by_id_sync as bluenexus_get_tool,
+    update_tool_by_id_sync as bluenexus_update_tool,
+    get_tools_sync as bluenexus_get_tools,
+)
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
@@ -68,17 +72,19 @@ def replace_imports(content):
     return content
 
 
-def load_tool_module_by_id(tool_id, content=None):
+def load_tool_module_by_id(tool_id, content=None, user_id=None):
 
     if content is None:
-        tool = Tools.get_tool_by_id(tool_id)
+        if not user_id:
+            raise Exception(f"user_id required to load tool from BlueNexus: {tool_id}")
+        tool = bluenexus_get_tool(user_id, tool_id)
         if not tool:
             raise Exception(f"Toolkit not found: {tool_id}")
 
-        content = tool.content
+        content = tool.get("content", "")
 
         content = replace_imports(content)
-        Tools.update_tool_by_id(tool_id, {"content": content})
+        bluenexus_update_tool(user_id, tool_id, {"content": content})
     else:
         frontmatter = extract_frontmatter(content)
         # Install required packages found within the frontmatter
@@ -166,19 +172,21 @@ def load_function_module_by_id(function_id: str, content: str | None = None):
         os.unlink(temp_file.name)
 
 
-def get_tool_module_from_cache(request, tool_id, load_from_db=True):
+def get_tool_module_from_cache(request, tool_id, load_from_db=True, user_id=None):
     if load_from_db:
+        if not user_id:
+            raise Exception(f"user_id required to load tool from BlueNexus: {tool_id}")
         # Always load from the database by default
-        tool = Tools.get_tool_by_id(tool_id)
+        tool = bluenexus_get_tool(user_id, tool_id)
         if not tool:
             raise Exception(f"Tool not found: {tool_id}")
-        content = tool.content
+        content = tool.get("content", "")
 
         new_content = replace_imports(content)
         if new_content != content:
             content = new_content
-            # Update the tool content in the database
-            Tools.update_tool_by_id(tool_id, {"content": content})
+            # Update the tool content in BlueNexus
+            bluenexus_update_tool(user_id, tool_id, {"content": content})
 
         if (
             hasattr(request.app.state, "TOOL_CONTENTS")
@@ -189,12 +197,12 @@ def get_tool_module_from_cache(request, tool_id, load_from_db=True):
             if request.app.state.TOOL_CONTENTS[tool_id] == content:
                 return request.app.state.TOOLS[tool_id], None
 
-        tool_module, frontmatter = load_tool_module_by_id(tool_id, content)
+        tool_module, frontmatter = load_tool_module_by_id(tool_id, content, user_id)
     else:
         if hasattr(request.app.state, "TOOLS") and tool_id in request.app.state.TOOLS:
             return request.app.state.TOOLS[tool_id], None
 
-        tool_module, frontmatter = load_tool_module_by_id(tool_id)
+        tool_module, frontmatter = load_tool_module_by_id(tool_id, user_id=user_id)
 
     if not hasattr(request.app.state, "TOOLS"):
         request.app.state.TOOLS = {}
@@ -283,16 +291,18 @@ def install_frontmatter_requirements(requirements: str):
         log.info("No requirements found in frontmatter.")
 
 
-def install_tool_and_function_dependencies():
+def install_tool_and_function_dependencies(user_id: str = None):
     """
-    Install all dependencies for all admin tools and active functions.
+    Install all dependencies for active functions and optionally for a user's tools.
 
-    By first collecting all dependencies from the frontmatter of each tool and function,
+    By first collecting all dependencies from the frontmatter of each function,
     and then installing them using pip. Duplicates or similar version specifications are
     handled by pip as much as possible.
+
+    Note: Tool dependencies require a user_id since tools are stored per-user in BlueNexus.
+    If user_id is not provided, only function dependencies are installed.
     """
     function_list = Functions.get_functions(active_only=True)
-    tool_list = Tools.get_tools()
 
     all_dependencies = ""
     try:
@@ -300,12 +310,19 @@ def install_tool_and_function_dependencies():
             frontmatter = extract_frontmatter(replace_imports(function.content))
             if dependencies := frontmatter.get("requirements"):
                 all_dependencies += f"{dependencies}, "
-        for tool in tool_list:
-            # Only install requirements for admin tools
-            if tool.user and tool.user.role == "admin":
-                frontmatter = extract_frontmatter(replace_imports(tool.content))
-                if dependencies := frontmatter.get("requirements"):
-                    all_dependencies += f"{dependencies}, "
+
+        # Tool dependencies require user context (BlueNexus is per-user storage)
+        if user_id:
+            tool_list = bluenexus_get_tools(user_id)
+            for tool in tool_list:
+                # Only install requirements for admin tools
+                user_data = tool.get("user", {})
+                if user_data and user_data.get("role") == "admin":
+                    frontmatter = extract_frontmatter(replace_imports(tool.get("content", "")))
+                    if dependencies := frontmatter.get("requirements"):
+                        all_dependencies += f"{dependencies}, "
+        else:
+            log.info("Tool dependencies not installed at startup (requires user context for BlueNexus)")
 
         install_frontmatter_requirements(all_dependencies.strip(", "))
     except Exception as e:

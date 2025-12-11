@@ -25,8 +25,16 @@ from starlette.responses import Response, StreamingResponse, JSONResponse
 
 
 from open_webui.models.oauth_sessions import OAuthSessions
-from open_webui.models.chats import Chats
 from open_webui.models.folders import Folders
+from open_webui.utils.bluenexus.chat_ops import (
+    get_chat_by_id_and_user_id as bluenexus_get_chat,
+    get_messages_map_by_chat_id as bluenexus_get_messages_map,
+    get_message_by_id_and_message_id as bluenexus_get_message,
+    upsert_message_to_chat_by_id_and_message_id as bluenexus_upsert_message,
+    update_chat_title_by_id as bluenexus_update_title,
+    get_chat_title_by_id as bluenexus_get_title,
+    update_chat_tags_by_id as bluenexus_update_tags,
+)
 from open_webui.models.users import Users
 from open_webui.socket.main import (
     get_event_call,
@@ -692,7 +700,9 @@ async def chat_image_generation_handler(
     if not chat_id:
         return form_data
 
-    chat = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+    chat_data = await bluenexus_get_chat(user.id, chat_id)
+    if not chat_data:
+        return form_data
 
     __event_emitter__ = extra_params["__event_emitter__"]
     await __event_emitter__(
@@ -702,8 +712,9 @@ async def chat_image_generation_handler(
         }
     )
 
-    messages_map = chat.chat.get("history", {}).get("messages", {})
-    message_id = chat.chat.get("history", {}).get("currentId")
+    chat_content = chat_data.get("chat", {})
+    messages_map = chat_content.get("history", {}).get("messages", {})
+    message_id = chat_content.get("history", {}).get("currentId")
     message_list = get_message_list(messages_map, message_id)
     user_message = get_last_user_message(message_list)
 
@@ -1095,9 +1106,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Check if the request has chat_id and is inside of a folder
     chat_id = metadata.get("chat_id", None)
     if chat_id and user:
-        chat = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
-        if chat and chat.folder_id:
-            folder = Folders.get_folder_by_id_and_user_id(chat.folder_id, user.id)
+        chat_data = await bluenexus_get_chat(user.id, chat_id)
+        folder_id = chat_data.get("folder_id") if chat_data else None
+        if folder_id:
+            folder = Folders.get_folder_by_id_and_user_id(folder_id, user.id)
 
             if folder and folder.data:
                 if "system_prompt" in folder.data:
@@ -1798,7 +1810,7 @@ async def process_chat_response(
         messages = []
 
         if "chat_id" in metadata and not metadata["chat_id"].startswith("local:"):
-            messages_map = Chats.get_messages_map_by_chat_id(metadata["chat_id"])
+            messages_map = await bluenexus_get_messages_map(user.id, metadata["chat_id"])
             message = messages_map.get(metadata["message_id"]) if messages_map else None
 
             message_list = get_message_list(messages_map, metadata["message_id"])
@@ -1888,7 +1900,8 @@ async def process_chat_response(
                             )
 
                             if not metadata.get("chat_id", "").startswith("local:"):
-                                Chats.upsert_message_to_chat_by_id_and_message_id(
+                                await bluenexus_upsert_message(
+                                    user.id,
                                     metadata["chat_id"],
                                     metadata["message_id"],
                                     {
@@ -1949,8 +1962,8 @@ async def process_chat_response(
                                 if not title:
                                     title = messages[0].get("content", user_message)
 
-                                Chats.update_chat_title_by_id(
-                                    metadata["chat_id"], title
+                                await bluenexus_update_title(
+                                    user.id, metadata["chat_id"], title
                                 )
 
                                 await event_emitter(
@@ -1963,7 +1976,7 @@ async def process_chat_response(
                         if title == None and len(messages) == 2:
                             title = messages[0].get("content", user_message)
 
-                            Chats.update_chat_title_by_id(metadata["chat_id"], title)
+                            await bluenexus_update_title(user.id, metadata["chat_id"], title)
 
                             await event_emitter(
                                 {
@@ -2001,8 +2014,8 @@ async def process_chat_response(
 
                             try:
                                 tags = json.loads(tags_string).get("tags", [])
-                                Chats.update_chat_tags_by_id(
-                                    metadata["chat_id"], tags, user
+                                await bluenexus_update_tags(
+                                    user.id, metadata["chat_id"], tags
                                 )
 
                                 await event_emitter(
@@ -2058,7 +2071,8 @@ async def process_chat_response(
                         else:
                             error = str(error)
 
-                        Chats.upsert_message_to_chat_by_id_and_message_id(
+                        await bluenexus_upsert_message(
+                            user.id,
                             metadata["chat_id"],
                             metadata["message_id"],
                             {
@@ -2074,7 +2088,8 @@ async def process_chat_response(
                             )
 
                     if "selected_model_id" in response_data:
-                        Chats.upsert_message_to_chat_by_id_and_message_id(
+                        await bluenexus_upsert_message(
+                            user.id,
                             metadata["chat_id"],
                             metadata["message_id"],
                             {
@@ -2094,7 +2109,7 @@ async def process_chat_response(
                                 }
                             )
 
-                            title = Chats.get_chat_title_by_id(metadata["chat_id"])
+                            title = await bluenexus_get_title(user.id, metadata["chat_id"])
 
                             await event_emitter(
                                 {
@@ -2108,7 +2123,8 @@ async def process_chat_response(
                             )
 
                             # Save message in the database
-                            Chats.upsert_message_to_chat_by_id_and_message_id(
+                            await bluenexus_upsert_message(
+                                user.id,
                                 metadata["chat_id"],
                                 metadata["message_id"],
                                 {
@@ -2583,8 +2599,8 @@ async def process_chat_response(
 
                 return content, content_blocks, end_flag
 
-            message = Chats.get_message_by_id_and_message_id(
-                metadata["chat_id"], metadata["message_id"]
+            message = await bluenexus_get_message(
+                user.id, metadata["chat_id"], metadata["message_id"]
             )
 
             tool_calls = []
@@ -2639,7 +2655,8 @@ async def process_chat_response(
                     )
 
                     # Save message in the database
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                    await bluenexus_upsert_message(
+                        user.id,
                         metadata["chat_id"],
                         metadata["message_id"],
                         {
@@ -2715,7 +2732,8 @@ async def process_chat_response(
 
                                 if "selected_model_id" in data:
                                     model_id = data["selected_model_id"]
-                                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                                    await bluenexus_upsert_message(
+                                        user.id,
                                         metadata["chat_id"],
                                         metadata["message_id"],
                                         {
@@ -2923,7 +2941,8 @@ async def process_chat_response(
 
                                         if ENABLE_REALTIME_CHAT_SAVE:
                                             # Save message in the database
-                                            Chats.upsert_message_to_chat_by_id_and_message_id(
+                                            await bluenexus_upsert_message(
+                                                user.id,
                                                 metadata["chat_id"],
                                                 metadata["message_id"],
                                                 {
@@ -3384,7 +3403,7 @@ async def process_chat_response(
                             log.debug(e)
                             break
 
-                title = Chats.get_chat_title_by_id(metadata["chat_id"])
+                title = await bluenexus_get_title(user.id, metadata["chat_id"])
                 data = {
                     "done": True,
                     "content": serialize_content_blocks(content_blocks),
@@ -3393,7 +3412,8 @@ async def process_chat_response(
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
                     # Save message in the database
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                    await bluenexus_upsert_message(
+                        user.id,
                         metadata["chat_id"],
                         metadata["message_id"],
                         {
@@ -3431,7 +3451,8 @@ async def process_chat_response(
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
                     # Save message in the database
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                    await bluenexus_upsert_message(
+                        user.id,
                         metadata["chat_id"],
                         metadata["message_id"],
                         {

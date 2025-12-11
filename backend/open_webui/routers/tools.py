@@ -52,11 +52,11 @@ def get_client_or_raise(user_id: str):
     return client
 
 
-def get_tool_module(request, tool_id, load_from_db=True):
+def get_tool_module(request, tool_id, load_from_db=True, user_id=None):
     """
     Get the tool module by its ID.
     """
-    tool_module, _ = get_tool_module_from_cache(request, tool_id, load_from_db)
+    tool_module, _ = get_tool_module_from_cache(request, tool_id, load_from_db, user_id=user_id)
     return tool_module
 
 
@@ -81,7 +81,7 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
                 tool_data = record.model_dump()
                 tool_id = tool_data.get("owui_id", tool_data.get("id"))
                 tool_data["id"] = tool_id
-                tool_module = get_tool_module(request, tool_id, load_from_db=False)
+                tool_module = get_tool_module(request, tool_id, load_from_db=False, user_id=user.id)
                 tools.append(
                     ToolUserResponse(
                         **{
@@ -637,7 +637,7 @@ async def get_tools_valves_spec_by_id(
         if id in request.app.state.TOOLS:
             tools_module = request.app.state.TOOLS[id]
         else:
-            tools_module, _ = load_tool_module_by_id(id)
+            tools_module, _ = load_tool_module_by_id(id, user_id=user.id)
             request.app.state.TOOLS[id] = tools_module
 
         if hasattr(tools_module, "Valves"):
@@ -692,7 +692,7 @@ async def update_tools_valves_by_id(
         if id in request.app.state.TOOLS:
             tools_module = request.app.state.TOOLS[id]
         else:
-            tools_module, _ = load_tool_module_by_id(id)
+            tools_module, _ = load_tool_module_by_id(id, user_id=user.id)
             request.app.state.TOOLS[id] = tools_module
 
         if not hasattr(tools_module, "Valves"):
@@ -781,7 +781,7 @@ async def get_tools_user_valves_spec_by_id(
         if id in request.app.state.TOOLS:
             tools_module = request.app.state.TOOLS[id]
         else:
-            tools_module, _ = load_tool_module_by_id(id)
+            tools_module, _ = load_tool_module_by_id(id, user_id=user.id)
             request.app.state.TOOLS[id] = tools_module
 
         if hasattr(tools_module, "UserValves"):
@@ -820,7 +820,7 @@ async def update_tools_user_valves_by_id(
         if id in request.app.state.TOOLS:
             tools_module = request.app.state.TOOLS[id]
         else:
-            tools_module, _ = load_tool_module_by_id(id)
+            tools_module, _ = load_tool_module_by_id(id, user_id=user.id)
             request.app.state.TOOLS[id] = tools_module
 
         if not hasattr(tools_module, "UserValves"):
