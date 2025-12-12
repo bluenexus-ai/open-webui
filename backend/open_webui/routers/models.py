@@ -180,8 +180,10 @@ async def get_models(id: Optional[str] = None, user=Depends(get_verified_user)):
         for record in records:
             model_data = _convert_bluenexus_to_model(record.model_dump())
 
-            # Apply access control
+            # Apply access control - user always has access to their own models
             if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
+                models.append(ModelUserResponse(**model_data))
+            elif model_data.get("user_id") == user.id:
                 models.append(ModelUserResponse(**model_data))
             elif has_access(user.id, "read", model_data.get("access_control")):
                 models.append(ModelUserResponse(**model_data))

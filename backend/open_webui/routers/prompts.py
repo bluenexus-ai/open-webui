@@ -119,8 +119,10 @@ async def get_prompts(user=Depends(get_verified_user)):
             # Convert BlueNexus record to PromptModel
             prompt_data = _ensure_prompt_fields(record.model_dump())
 
-            # Apply access control
+            # Apply access control - user always has access to their own prompts
             if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
+                prompts.append(PromptModel(**prompt_data))
+            elif prompt_data.get("user_id") == user.id:
                 prompts.append(PromptModel(**prompt_data))
             elif has_access(user.id, "read", prompt_data.get("access_control")):
                 prompts.append(PromptModel(**prompt_data))
@@ -151,8 +153,10 @@ async def get_prompt_list(user=Depends(get_verified_user)):
             # Convert BlueNexus record to PromptUserResponse
             prompt_data = _ensure_prompt_fields(record.model_dump())
 
-            # Apply access control for write permission
+            # Apply access control for write permission - user always has access to their own prompts
             if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
+                prompts.append(PromptUserResponse(**prompt_data))
+            elif prompt_data.get("user_id") == user.id:
                 prompts.append(PromptUserResponse(**prompt_data))
             elif has_access(user.id, "write", prompt_data.get("access_control")):
                 prompts.append(PromptUserResponse(**prompt_data))
