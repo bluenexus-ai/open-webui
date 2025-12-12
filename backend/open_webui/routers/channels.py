@@ -18,23 +18,10 @@ from open_webui.models.channels import (
     ChannelResponse,
 )
 from open_webui.models.messages import (
+    Messages,
     MessageModel,
     MessageResponse,
     MessageForm,
-)
-from open_webui.utils.bluenexus.message_ops import (
-    insert_new_message as bluenexus_insert_message,
-    get_message_by_id as bluenexus_get_message,
-    get_messages_by_channel_id as bluenexus_get_channel_messages,
-    get_messages_by_parent_id as bluenexus_get_parent_messages,
-    get_thread_replies_by_message_id as bluenexus_get_thread_replies,
-    batch_get_thread_replies as bluenexus_batch_get_thread_replies,
-    get_reactions_by_message_id as bluenexus_get_reactions,
-    update_message_by_id as bluenexus_update_message,
-    add_reaction_to_message as bluenexus_add_reaction,
-    remove_reaction_by_id_and_user_id_and_name as bluenexus_remove_reaction,
-    delete_message_by_id as bluenexus_delete_message,
-    build_message_response as bluenexus_build_response,
 )
 
 
@@ -202,51 +189,28 @@ async def get_channel_messages(
             status_code=status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.DEFAULT()
         )
 
-    message_list = await bluenexus_get_channel_messages(user.id, id, skip, limit)
+    message_list = Messages.get_messages_by_channel_id(id, skip, limit)
     users = {}
-
-    # Batch fetch thread replies for all messages to avoid N+1 queries
-    # Get all message IDs
-    message_ids = [m.get("owui_id", m.get("id")) for m in message_list]
-
-    # Fetch all thread replies in one query (messages with parent_id in message_ids)
-    all_thread_replies = {}
-    if message_ids:
-        all_replies = await bluenexus_batch_get_thread_replies(user.id, message_ids)
-        # Group replies by parent_id
-        for reply in all_replies:
-            parent_id = reply.get("parent_id")
-            if parent_id not in all_thread_replies:
-                all_thread_replies[parent_id] = []
-            all_thread_replies[parent_id].append(reply)
 
     messages = []
     for message in message_list:
-        msg_user_id = message.get("user_id")
-        msg_id = message.get("owui_id", message.get("id"))
-        if msg_user_id not in users:
-            msg_user = Users.get_user_by_id(msg_user_id)
-            users[msg_user_id] = msg_user
+        if message.user_id not in users:
+            user = Users.get_user_by_id(message.user_id)
+            users[message.user_id] = user
 
-        # Use pre-fetched thread replies instead of individual queries
-        thread_replies = all_thread_replies.get(msg_id, [])
+        thread_replies = Messages.get_thread_replies_by_message_id(message.id)
         latest_thread_reply_at = (
-            thread_replies[0].get("created_at") if thread_replies else None
+            thread_replies[0].created_at if thread_replies else None
         )
-
-        # Use inline reactions stored in message instead of separate query
-        # Reactions are already stored inline when adding/removing reactions
-        reactions = message.get("reactions", [])
 
         messages.append(
             MessageUserResponse(
                 **{
-                    **message,
-                    "id": msg_id,
+                    **message.model_dump(),
                     "reply_count": len(thread_replies),
                     "latest_reply_at": latest_thread_reply_at,
-                    "reactions": reactions,
-                    "user": UserNameResponse(**users[msg_user_id].model_dump()) if users[msg_user_id] else None,
+                    "reactions": Messages.get_reactions_by_message_id(message.id),
+                    "user": UserNameResponse(**users[message.user_id].model_dump()),
                 }
             )
         )
@@ -285,22 +249,23 @@ async def send_notification(name, webui_url, channel, message, active_user_ids):
 
 
 async def model_response_handler(request, channel, message, user):
-    """Handle model mentions in channel messages. Message is now a dict."""
     MODELS = {
         model["id"]: model
         for model in get_filtered_models(await get_all_models(request, user=user), user)
     }
 
-    msg_content = message.get("content", "")
-    mentions = extract_mentions(msg_content)
-    message_content = replace_mentions(msg_content)
+    mentions = extract_mentions(message.content)
+    message_content = replace_mentions(message.content)
 
     model_mentions = {}
 
     # check if the message is a reply to a message sent by a model
-    reply_to = message.get("reply_to_message")
-    if reply_to and reply_to.get("meta") and reply_to.get("meta", {}).get("model_id"):
-        model_id = reply_to.get("meta", {}).get("model_id")
+    if (
+        message.reply_to_message
+        and message.reply_to_message.meta
+        and message.reply_to_message.meta.get("model_id", None)
+    ):
+        model_id = message.reply_to_message.meta.get("model_id", None)
         model_mentions[model_id] = {"id": model_id, "id_type": "M"}
 
     # check if any of the mentions are models
@@ -311,9 +276,6 @@ async def model_response_handler(request, channel, message, user):
     if not model_mentions:
         return False
 
-    msg_id = message.get("owui_id", message.get("id"))
-    msg_parent_id = message.get("parent_id")
-
     for mention in model_mentions.values():
         model_id = mention["id"]
         model = MODELS.get(model_id, None)
@@ -321,19 +283,19 @@ async def model_response_handler(request, channel, message, user):
         if model:
             try:
                 # reverse to get in chronological order
-                thread_messages = await bluenexus_get_parent_messages(
-                    user.id,
+                thread_messages = Messages.get_messages_by_parent_id(
                     channel.id,
-                    msg_parent_id if msg_parent_id else msg_id,
-                )
-                thread_messages = thread_messages[::-1]
+                    message.parent_id if message.parent_id else message.id,
+                )[::-1]
 
                 response_message, channel = await new_message_handler(
                     request,
                     channel.id,
                     MessageForm(
                         **{
-                            "parent_id": msg_parent_id if msg_parent_id else msg_id,
+                            "parent_id": (
+                                message.parent_id if message.parent_id else message.id
+                            ),
                             "content": f"",
                             "data": {},
                             "meta": {
@@ -350,18 +312,18 @@ async def model_response_handler(request, channel, message, user):
                 message_users = {}
 
                 for thread_message in thread_messages:
-                    tm_user_id = thread_message.get("user_id")
                     message_user = None
-                    if tm_user_id not in message_users:
-                        message_user = Users.get_user_by_id(tm_user_id)
-                        message_users[tm_user_id] = message_user
+                    if thread_message.user_id not in message_users:
+                        message_user = Users.get_user_by_id(thread_message.user_id)
+                        message_users[thread_message.user_id] = message_user
                     else:
-                        message_user = message_users[tm_user_id]
+                        message_user = message_users[thread_message.user_id]
 
-                    tm_meta = thread_message.get("meta") or {}
-                    if tm_meta.get("model_id"):
+                    if thread_message.meta and thread_message.meta.get(
+                        "model_id", None
+                    ):
                         # If the message was sent by a model, use the model name
-                        message_model_id = tm_meta.get("model_id")
+                        message_model_id = thread_message.meta.get("model_id", None)
                         message_model = MODELS.get(message_model_id, None)
                         username = (
                             message_model.get("name", message_model_id)
@@ -372,11 +334,10 @@ async def model_response_handler(request, channel, message, user):
                         username = message_user.name if message_user else "Unknown"
 
                     thread_history.append(
-                        f"{username}: {replace_mentions(thread_message.get('content', ''))}"
+                        f"{username}: {replace_mentions(thread_message.content)}"
                     )
 
-                    thread_message_data = thread_message.get("data") or {}
-                    thread_message_files = thread_message_data.get("files", [])
+                    thread_message_files = thread_message.data.get("files", [])
                     for file in thread_message_files:
                         if file.get("type", "") == "image":
                             images.append(file.get("url", ""))
@@ -425,12 +386,11 @@ async def model_response_handler(request, channel, message, user):
                     user=user,
                 )
 
-                resp_msg_id = response_message.get("owui_id", response_message.get("id"))
                 if res:
                     if res.get("choices", []) and len(res["choices"]) > 0:
                         await update_message_by_id(
                             channel.id,
-                            resp_msg_id,
+                            response_message.id,
                             MessageForm(
                                 **{
                                     "content": res["choices"][0]["message"]["content"],
@@ -444,7 +404,7 @@ async def model_response_handler(request, channel, message, user):
                     elif res.get("error", None):
                         await update_message_by_id(
                             channel.id,
-                            resp_msg_id,
+                            response_message.id,
                             MessageForm(
                                 **{
                                     "content": f"Error: {res['error']}",
@@ -479,16 +439,15 @@ async def new_message_handler(
         )
 
     try:
-        message = await bluenexus_insert_message(user.id, form_data, channel.id)
+        message = Messages.insert_new_message(form_data, channel.id, user.id)
         if message:
-            msg_id = message.get("owui_id", message.get("id"))
-            message_response = await bluenexus_build_response(user.id, message)
+            message = Messages.get_message_by_id(message.id)
             event_data = {
                 "channel_id": channel.id,
-                "message_id": msg_id,
+                "message_id": message.id,
                 "data": {
                     "type": "message",
-                    "data": message_response,
+                    "data": message.model_dump(),
                 },
                 "user": UserNameResponse(**user.model_dump()).model_dump(),
                 "channel": channel.model_dump(),
@@ -500,21 +459,19 @@ async def new_message_handler(
                 to=f"channel:{channel.id}",
             )
 
-            parent_id = message.get("parent_id")
-            if parent_id:
+            if message.parent_id:
                 # If this message is a reply, emit to the parent message as well
-                parent_message = await bluenexus_get_message(user.id, parent_id)
+                parent_message = Messages.get_message_by_id(message.parent_id)
 
                 if parent_message:
-                    parent_response = await bluenexus_build_response(user.id, parent_message)
                     await sio.emit(
                         "events:channel",
                         {
                             "channel_id": channel.id,
-                            "message_id": parent_message.get("owui_id", parent_message.get("id")),
+                            "message_id": parent_message.id,
                             "data": {
                                 "type": "message:reply",
-                                "data": parent_response,
+                                "data": parent_message.model_dump(),
                             },
                             "user": UserNameResponse(**user.model_dump()).model_dump(),
                             "channel": channel.model_dump(),
@@ -589,23 +546,23 @@ async def get_channel_message(
             status_code=status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.DEFAULT()
         )
 
-    message = await bluenexus_get_message(user.id, message_id)
+    message = Messages.get_message_by_id(message_id)
     if not message:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND
         )
 
-    if message.get("channel_id") != id:
+    if message.channel_id != id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT()
         )
 
-    msg_user = Users.get_user_by_id(message.get("user_id"))
     return MessageUserResponse(
         **{
-            **message,
-            "id": message.get("owui_id", message.get("id")),
-            "user": UserNameResponse(**msg_user.model_dump()) if msg_user else None,
+            **message.model_dump(),
+            "user": UserNameResponse(
+                **Users.get_user_by_id(message.user_id).model_dump()
+            ),
         }
     )
 
@@ -638,28 +595,23 @@ async def get_channel_thread_messages(
             status_code=status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.DEFAULT()
         )
 
-    message_list = await bluenexus_get_parent_messages(user.id, id, message_id, skip, limit)
+    message_list = Messages.get_messages_by_parent_id(id, message_id, skip, limit)
     users = {}
 
     messages = []
     for message in message_list:
-        msg_user_id = message.get("user_id")
-        msg_id = message.get("owui_id", message.get("id"))
-        if msg_user_id not in users:
-            msg_user = Users.get_user_by_id(msg_user_id)
-            users[msg_user_id] = msg_user
-
-        reactions = await bluenexus_get_reactions(user.id, msg_id)
+        if message.user_id not in users:
+            user = Users.get_user_by_id(message.user_id)
+            users[message.user_id] = user
 
         messages.append(
             MessageUserResponse(
                 **{
-                    **message,
-                    "id": msg_id,
+                    **message.model_dump(),
                     "reply_count": 0,
                     "latest_reply_at": None,
-                    "reactions": reactions,
-                    "user": UserNameResponse(**users[msg_user_id].model_dump()) if users[msg_user_id] else None,
+                    "reactions": Messages.get_reactions_by_message_id(message.id),
+                    "user": UserNameResponse(**users[message.user_id].model_dump()),
                 }
             )
         )
@@ -675,7 +627,7 @@ async def get_channel_thread_messages(
 @router.post(
     "/{id}/messages/{message_id}/update", response_model=Optional[MessageModel]
 )
-async def update_message_by_id_endpoint(
+async def update_message_by_id(
     id: str, message_id: str, form_data: MessageForm, user=Depends(get_verified_user)
 ):
     channel = Channels.get_channel_by_id(id)
@@ -684,20 +636,20 @@ async def update_message_by_id_endpoint(
             status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND
         )
 
-    message = await bluenexus_get_message(user.id, message_id)
+    message = Messages.get_message_by_id(message_id)
     if not message:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND
         )
 
-    if message.get("channel_id") != id:
+    if message.channel_id != id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT()
         )
 
     if (
         user.role != "admin"
-        and message.get("user_id") != user.id
+        and message.user_id != user.id
         and not has_access(user.id, type="read", access_control=channel.access_control)
     ):
         raise HTTPException(
@@ -705,19 +657,18 @@ async def update_message_by_id_endpoint(
         )
 
     try:
-        message = await bluenexus_update_message(user.id, message_id, form_data)
+        message = Messages.update_message_by_id(message_id, form_data)
+        message = Messages.get_message_by_id(message_id)
 
         if message:
-            msg_id = message.get("owui_id", message.get("id"))
-            message_response = await bluenexus_build_response(user.id, message)
             await sio.emit(
                 "events:channel",
                 {
                     "channel_id": channel.id,
-                    "message_id": msg_id,
+                    "message_id": message.id,
                     "data": {
                         "type": "message:update",
-                        "data": message_response,
+                        "data": message.model_dump(),
                     },
                     "user": UserNameResponse(**user.model_dump()).model_dump(),
                     "channel": channel.model_dump(),
@@ -725,7 +676,8 @@ async def update_message_by_id_endpoint(
                 to=f"channel:{channel.id}",
             )
 
-        return MessageModel(**{**message, "id": message.get("owui_id", message.get("id"))})
+            BlueNexusSync.sync_update(Collections.MESSAGES, message)
+        return MessageModel(**message.model_dump())
     except Exception as e:
         log.exception(e)
         raise HTTPException(
@@ -743,7 +695,7 @@ class ReactionForm(BaseModel):
 
 
 @router.post("/{id}/messages/{message_id}/reactions/add", response_model=bool)
-async def add_reaction_to_message_endpoint(
+async def add_reaction_to_message(
     id: str, message_id: str, form_data: ReactionForm, user=Depends(get_verified_user)
 ):
     channel = Channels.get_channel_by_id(id)
@@ -759,32 +711,30 @@ async def add_reaction_to_message_endpoint(
             status_code=status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.DEFAULT()
         )
 
-    message = await bluenexus_get_message(user.id, message_id)
+    message = Messages.get_message_by_id(message_id)
     if not message:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND
         )
 
-    if message.get("channel_id") != id:
+    if message.channel_id != id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT()
         )
 
     try:
-        await bluenexus_add_reaction(user.id, message_id, user.id, form_data.name)
-        message = await bluenexus_get_message(user.id, message_id)
-        msg_id = message.get("owui_id", message.get("id"))
-        message_response = await bluenexus_build_response(user.id, message)
+        Messages.add_reaction_to_message(message_id, user.id, form_data.name)
+        message = Messages.get_message_by_id(message_id)
 
         await sio.emit(
             "events:channel",
             {
                 "channel_id": channel.id,
-                "message_id": msg_id,
+                "message_id": message.id,
                 "data": {
                     "type": "message:reaction:add",
                     "data": {
-                        **message_response,
+                        **message.model_dump(),
                         "name": form_data.name,
                     },
                 },
@@ -808,7 +758,7 @@ async def add_reaction_to_message_endpoint(
 
 
 @router.post("/{id}/messages/{message_id}/reactions/remove", response_model=bool)
-async def remove_reaction_endpoint(
+async def remove_reaction_by_id_and_user_id_and_name(
     id: str, message_id: str, form_data: ReactionForm, user=Depends(get_verified_user)
 ):
     channel = Channels.get_channel_by_id(id)
@@ -824,33 +774,33 @@ async def remove_reaction_endpoint(
             status_code=status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.DEFAULT()
         )
 
-    message = await bluenexus_get_message(user.id, message_id)
+    message = Messages.get_message_by_id(message_id)
     if not message:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND
         )
 
-    if message.get("channel_id") != id:
+    if message.channel_id != id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT()
         )
 
     try:
-        await bluenexus_remove_reaction(user.id, message_id, user.id, form_data.name)
+        Messages.remove_reaction_by_id_and_user_id_and_name(
+            message_id, user.id, form_data.name
+        )
 
-        message = await bluenexus_get_message(user.id, message_id)
-        msg_id = message.get("owui_id", message.get("id"))
-        message_response = await bluenexus_build_response(user.id, message)
+        message = Messages.get_message_by_id(message_id)
 
         await sio.emit(
             "events:channel",
             {
                 "channel_id": channel.id,
-                "message_id": msg_id,
+                "message_id": message.id,
                 "data": {
                     "type": "message:reaction:remove",
                     "data": {
-                        **message_response,
+                        **message.model_dump(),
                         "name": form_data.name,
                     },
                 },
@@ -874,7 +824,7 @@ async def remove_reaction_endpoint(
 
 
 @router.delete("/{id}/messages/{message_id}/delete", response_model=bool)
-async def delete_message_by_id_endpoint(
+async def delete_message_by_id(
     id: str, message_id: str, user=Depends(get_verified_user)
 ):
     channel = Channels.get_channel_by_id(id)
@@ -883,20 +833,20 @@ async def delete_message_by_id_endpoint(
             status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND
         )
 
-    message = await bluenexus_get_message(user.id, message_id)
+    message = Messages.get_message_by_id(message_id)
     if not message:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND
         )
 
-    if message.get("channel_id") != id:
+    if message.channel_id != id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT()
         )
 
     if (
         user.role != "admin"
-        and message.get("user_id") != user.id
+        and message.user_id != user.id
         and not has_access(
             user.id, type="write", access_control=channel.access_control, strict=False
         )
@@ -906,22 +856,19 @@ async def delete_message_by_id_endpoint(
         )
 
     try:
-        # Get message details before deletion
-        message_user_id = message.get("user_id")
-        msg_id = message.get("owui_id", message.get("id"))
-        msg_parent_id = message.get("parent_id")
+        # Get message details before deletion for sync
+        message_user_id = message.user_id
 
-        await bluenexus_delete_message(user.id, message_id)
+        Messages.delete_message_by_id(message_id)
         await sio.emit(
             "events:channel",
             {
                 "channel_id": channel.id,
-                "message_id": msg_id,
+                "message_id": message.id,
                 "data": {
                     "type": "message:delete",
                     "data": {
-                        **message,
-                        "id": msg_id,
+                        **message.model_dump(),
                         "user": UserNameResponse(**user.model_dump()).model_dump(),
                     },
                 },
@@ -931,20 +878,19 @@ async def delete_message_by_id_endpoint(
             to=f"channel:{channel.id}",
         )
 
-        if msg_parent_id:
+        if message.parent_id:
             # If this message is a reply, emit to the parent message as well
-            parent_message = await bluenexus_get_message(user.id, msg_parent_id)
+            parent_message = Messages.get_message_by_id(message.parent_id)
 
             if parent_message:
-                parent_response = await bluenexus_build_response(user.id, parent_message)
                 await sio.emit(
                     "events:channel",
                     {
                         "channel_id": channel.id,
-                        "message_id": parent_message.get("owui_id", parent_message.get("id")),
+                        "message_id": parent_message.id,
                         "data": {
                             "type": "message:reply",
-                            "data": parent_response,
+                            "data": parent_message.model_dump(),
                         },
                         "user": UserNameResponse(**user.model_dump()).model_dump(),
                         "channel": channel.model_dump(),
@@ -952,6 +898,7 @@ async def delete_message_by_id_endpoint(
                     to=f"channel:{channel.id}",
                 )
 
+        BlueNexusSync.sync_delete(Collections.MESSAGES, message_id, message_user_id)
         return True
     except Exception as e:
         log.exception(e)
