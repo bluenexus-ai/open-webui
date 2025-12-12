@@ -34,6 +34,8 @@ from open_webui.utils.bluenexus.chat_ops import (
     update_chat_title_by_id as bluenexus_update_title,
     get_chat_title_by_id as bluenexus_get_title,
     update_chat_tags_by_id as bluenexus_update_tags,
+    update_chat_title_and_tags as bluenexus_update_title_and_tags,
+    MessageUpdateBatcher,
 )
 from open_webui.models.users import Users
 from open_webui.socket.main import (
@@ -700,7 +702,8 @@ async def chat_image_generation_handler(
     if not chat_id:
         return form_data
 
-    chat_data = await bluenexus_get_chat(user.id, chat_id)
+    # Use cached chat data if available to avoid redundant API calls
+    chat_data = metadata.get("_cached_chat_data") or await bluenexus_get_chat(user.id, chat_id)
     if not chat_data:
         return form_data
 
@@ -1106,7 +1109,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Check if the request has chat_id and is inside of a folder
     chat_id = metadata.get("chat_id", None)
     if chat_id and user:
-        chat_data = await bluenexus_get_chat(user.id, chat_id)
+        # Use cached chat data if available to avoid redundant API calls
+        chat_data = metadata.get("_cached_chat_data") or await bluenexus_get_chat(user.id, chat_id)
         folder_id = chat_data.get("folder_id") if chat_data else None
         if folder_id:
             folder = Folders.get_folder_by_id_and_user_id(folder_id, user.id)
@@ -1810,7 +1814,13 @@ async def process_chat_response(
         messages = []
 
         if "chat_id" in metadata and not metadata["chat_id"].startswith("local:"):
-            messages_map = await bluenexus_get_messages_map(user.id, metadata["chat_id"])
+            # Use cached chat data if available to avoid redundant API calls
+            cached_chat = metadata.get("_cached_chat_data")
+            if cached_chat:
+                chat = cached_chat.get("chat", {})
+                messages_map = chat.get("history", {}).get("messages", {})
+            else:
+                messages_map = await bluenexus_get_messages_map(user.id, metadata["chat_id"])
             message = messages_map.get(metadata["message_id"]) if messages_map else None
 
             message_list = get_message_list(messages_map, metadata["message_id"])
@@ -1915,6 +1925,10 @@ async def process_chat_response(
                 if not metadata.get("chat_id", "").startswith(
                     "local:"
                 ):  # Only update titles and tags for non-temp chats
+                    # Collect title and tags for a single combined update
+                    generated_title = None
+                    generated_tags = None
+
                     if TASKS.TITLE_GENERATION in tasks:
                         user_message = get_last_user_message(messages)
                         if user_message and len(user_message) > 100:
@@ -1962,9 +1976,7 @@ async def process_chat_response(
                                 if not title:
                                     title = messages[0].get("content", user_message)
 
-                                await bluenexus_update_title(
-                                    user.id, metadata["chat_id"], title
-                                )
+                                generated_title = title
 
                                 await event_emitter(
                                     {
@@ -1975,8 +1987,7 @@ async def process_chat_response(
 
                         if title == None and len(messages) == 2:
                             title = messages[0].get("content", user_message)
-
-                            await bluenexus_update_title(user.id, metadata["chat_id"], title)
+                            generated_title = title
 
                             await event_emitter(
                                 {
@@ -2014,9 +2025,7 @@ async def process_chat_response(
 
                             try:
                                 tags = json.loads(tags_string).get("tags", [])
-                                await bluenexus_update_tags(
-                                    user.id, metadata["chat_id"], tags
-                                )
+                                generated_tags = tags
 
                                 await event_emitter(
                                     {
@@ -2026,6 +2035,12 @@ async def process_chat_response(
                                 )
                             except Exception as e:
                                 pass
+
+                    # Combined update for title and tags (1 API call instead of 2)
+                    if generated_title is not None or generated_tags is not None:
+                        await bluenexus_update_title_and_tags(
+                            user.id, metadata["chat_id"], generated_title, generated_tags
+                        )
 
     event_emitter = None
     event_caller = None
@@ -2603,6 +2618,16 @@ async def process_chat_response(
                 user.id, metadata["chat_id"], metadata["message_id"]
             )
 
+            # Create batcher for streaming message updates (reduces API calls)
+            message_batcher = None
+            if ENABLE_REALTIME_CHAT_SAVE and not metadata.get("chat_id", "").startswith("local:"):
+                message_batcher = MessageUpdateBatcher(
+                    user.id, metadata["chat_id"],
+                    flush_interval=2.0,  # Flush every 2 seconds
+                    max_pending=10  # Or after 10 pending updates
+                )
+                await message_batcher.__aenter__()
+
             tool_calls = []
 
             last_assistant_message = None
@@ -2667,6 +2692,7 @@ async def process_chat_response(
                 async def stream_body_handler(response, form_data):
                     nonlocal content
                     nonlocal content_blocks
+                    nonlocal message_batcher
 
                     response_tool_calls = []
 
@@ -2940,17 +2966,28 @@ async def process_chat_response(
                                                 break
 
                                         if ENABLE_REALTIME_CHAT_SAVE:
-                                            # Save message in the database
-                                            await bluenexus_upsert_message(
-                                                user.id,
-                                                metadata["chat_id"],
-                                                metadata["message_id"],
-                                                {
-                                                    "content": serialize_content_blocks(
-                                                        content_blocks
-                                                    ),
-                                                },
-                                            )
+                                            # Use batcher for batched saves (reduces API calls)
+                                            if message_batcher:
+                                                await message_batcher.update_message(
+                                                    metadata["message_id"],
+                                                    {
+                                                        "content": serialize_content_blocks(
+                                                            content_blocks
+                                                        ),
+                                                    },
+                                                )
+                                            else:
+                                                # Fallback for local chats
+                                                await bluenexus_upsert_message(
+                                                    user.id,
+                                                    metadata["chat_id"],
+                                                    metadata["message_id"],
+                                                    {
+                                                        "content": serialize_content_blocks(
+                                                            content_blocks
+                                                        ),
+                                                    },
+                                                )
                                         else:
                                             data = {
                                                 "content": serialize_content_blocks(
@@ -3403,6 +3440,10 @@ async def process_chat_response(
                             log.debug(e)
                             break
 
+                # Flush any pending batched updates before final save
+                if message_batcher:
+                    await message_batcher.__aexit__(None, None, None)
+
                 title = await bluenexus_get_title(user.id, metadata["chat_id"])
                 data = {
                     "done": True,
@@ -3448,6 +3489,13 @@ async def process_chat_response(
             except asyncio.CancelledError:
                 log.warning("Task was cancelled!")
                 await event_emitter({"type": "chat:tasks:cancel"})
+
+                # Flush batcher on cancellation to save any pending updates
+                if message_batcher:
+                    try:
+                        await message_batcher.__aexit__(None, None, None)
+                    except Exception as e:
+                        log.debug(f"Error flushing batcher on cancel: {e}")
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
                     # Save message in the database

@@ -1586,14 +1586,17 @@ async def chat_completion(
             },
         }
 
-        if metadata.get("chat_id") and (user and user.role != "admin"):
+        if metadata.get("chat_id") and user:
             if not metadata["chat_id"].startswith("local:"):
                 chat = await bluenexus_get_chat_by_id_and_user_id(user.id, metadata["chat_id"])
-                if chat is None:
+                if chat is None and user.role != "admin":
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
                         detail=ERROR_MESSAGES.DEFAULT(),
                     )
+                # Cache chat data in metadata to avoid redundant lookups
+                if chat:
+                    metadata["_cached_chat_data"] = chat
 
         request.state.metadata = metadata
         form_data["metadata"] = metadata

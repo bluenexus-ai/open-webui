@@ -17,6 +17,11 @@ from typing import Optional
 from open_webui.utils.bluenexus.collections import Collections
 from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
 from open_webui.utils.bluenexus.types import QueryOptions
+from open_webui.utils.bluenexus.cache import (
+    get_cached_record_id,
+    set_cached_record_id,
+    make_cache_key,
+)
 from open_webui.models.users import Users, UserNameResponse
 from open_webui.models.messages import (
     MessageModel,
@@ -28,6 +33,38 @@ from open_webui.models.messages import (
 )
 
 log = logging.getLogger(__name__)
+
+# Simple in-memory cache for message data (short TTL since messages change frequently)
+_message_cache: dict[str, tuple[dict, str, float]] = {}  # key -> (data, record_id, timestamp)
+_MESSAGE_CACHE_TTL = 30  # 30 seconds
+
+
+def _cache_message(user_id: str, message_id: str, data: dict, record_id: str) -> None:
+    """Cache message data with record ID."""
+    key = f"{user_id}:messages:{message_id}"
+    _message_cache[key] = (data, record_id, time.time())
+    set_cached_record_id(user_id, "messages", message_id, record_id)
+
+
+def _get_cached_message(user_id: str, message_id: str) -> tuple[Optional[dict], Optional[str]]:
+    """Get cached message data and record ID."""
+    key = f"{user_id}:messages:{message_id}"
+    if key in _message_cache:
+        data, record_id, ts = _message_cache[key]
+        if time.time() - ts < _MESSAGE_CACHE_TTL:
+            return data, record_id
+        else:
+            del _message_cache[key]
+    # Try to get just record ID from persistent cache
+    record_id = get_cached_record_id(user_id, "messages", message_id)
+    return None, record_id
+
+
+def _invalidate_message_cache(user_id: str, message_id: str) -> None:
+    """Invalidate message cache."""
+    key = f"{user_id}:messages:{message_id}"
+    if key in _message_cache:
+        del _message_cache[key]
 
 
 def _run_async(coro):
@@ -74,14 +111,22 @@ async def insert_new_message(
         }
 
         record = await client.create(Collections.MESSAGES, message_data)
-        return record.model_dump()
+        result = record.model_dump()
+        # Cache the record ID for future updates
+        _cache_message(user_id, msg_id, result, record.id)
+        return result
     except Exception as e:
         log.error(f"Error inserting message: {e}")
         return None
 
 
 async def get_message_by_id(user_id: str, message_id: str) -> Optional[dict]:
-    """Get a message by its ID."""
+    """Get a message by its ID. Uses cache when available."""
+    # Check cache first
+    cached_data, record_id = _get_cached_message(user_id, message_id)
+    if cached_data:
+        return cached_data
+
     client = get_bluenexus_client_for_user(user_id)
     if not client:
         log.warning(f"No BlueNexus client for user {user_id}")
@@ -95,7 +140,10 @@ async def get_message_by_id(user_id: str, message_id: str) -> Optional[dict]:
 
         if response.data and len(response.data) > 0:
             record = response.get_records()[0]
-            return record.model_dump()
+            result = record.model_dump()
+            # Cache for future operations
+            _cache_message(user_id, message_id, result, record.id)
+            return result
         return None
     except Exception as e:
         log.error(f"Error getting message {message_id}: {e}")
@@ -226,14 +274,37 @@ async def get_reactions_by_message_id(user_id: str, message_id: str) -> list[dic
 async def update_message_by_id(
     user_id: str, message_id: str, form_data: MessageForm
 ) -> Optional[dict]:
-    """Update a message."""
+    """Update a message. Optimized with record ID caching."""
     client = get_bluenexus_client_for_user(user_id)
     if not client:
         log.warning(f"No BlueNexus client for user {user_id}")
         return None
 
     try:
-        # Find the message
+        # Try to get cached data and record ID
+        cached_data, record_id = _get_cached_message(user_id, message_id)
+
+        if record_id and cached_data:
+            # FAST PATH: Use cached record ID - only 1 API call
+            log.debug(f"[BlueNexus] Fast update for message {message_id} using cached record_id")
+            message_data = cached_data.copy()
+            message_data["content"] = form_data.content
+            message_data["data"] = {
+                **(message_data.get("data") or {}),
+                **(form_data.data or {}),
+            }
+            message_data["meta"] = {
+                **(message_data.get("meta") or {}),
+                **(form_data.meta or {}),
+            }
+            message_data["updated_at"] = int(time.time_ns())
+
+            updated_record = await client.update(Collections.MESSAGES, record_id, message_data)
+            result = updated_record.model_dump()
+            _cache_message(user_id, message_id, result, record_id)
+            return result
+
+        # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
             Collections.MESSAGES,
             QueryOptions(filter={"owui_id": message_id}, limit=1)
@@ -259,7 +330,10 @@ async def update_message_by_id(
 
         # Update in BlueNexus
         updated_record = await client.update(Collections.MESSAGES, record.id, message_data)
-        return updated_record.model_dump()
+        result = updated_record.model_dump()
+        # Cache for future updates
+        _cache_message(user_id, message_id, result, record.id)
+        return result
     except Exception as e:
         log.error(f"Error updating message {message_id}: {e}")
         return None
@@ -268,13 +342,35 @@ async def update_message_by_id(
 async def add_reaction_to_message(
     user_id: str, message_id: str, reactor_user_id: str, name: str
 ) -> Optional[dict]:
-    """Add a reaction to a message."""
+    """Add a reaction to a message. Optimized with record ID caching."""
     client = get_bluenexus_client_for_user(user_id)
     if not client:
         log.warning(f"No BlueNexus client for user {user_id}")
         return None
 
     try:
+        # Try to get cached data and record ID
+        cached_data, record_id = _get_cached_message(user_id, message_id)
+
+        if record_id and cached_data:
+            # FAST PATH: Use cached record ID - only 1 API call
+            log.debug(f"[BlueNexus] Fast add reaction for message {message_id} using cached record_id")
+            message_data = cached_data.copy()
+            reactions = message_data.get("reactions", [])
+            reactions.append({
+                "id": str(uuid.uuid4()),
+                "user_id": reactor_user_id,
+                "name": name,
+                "created_at": int(time.time_ns()),
+            })
+            message_data["reactions"] = reactions
+
+            updated_record = await client.update(Collections.MESSAGES, record_id, message_data)
+            result = updated_record.model_dump()
+            _cache_message(user_id, message_id, result, record_id)
+            return result
+
+        # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
             Collections.MESSAGES,
             QueryOptions(filter={"owui_id": message_id}, limit=1)
@@ -297,7 +393,10 @@ async def add_reaction_to_message(
         message_data["reactions"] = reactions
 
         updated_record = await client.update(Collections.MESSAGES, record.id, message_data)
-        return updated_record.model_dump()
+        result = updated_record.model_dump()
+        # Cache for future updates
+        _cache_message(user_id, message_id, result, record.id)
+        return result
     except Exception as e:
         log.error(f"Error adding reaction to message {message_id}: {e}")
         return None
@@ -306,13 +405,32 @@ async def add_reaction_to_message(
 async def remove_reaction_by_id_and_user_id_and_name(
     user_id: str, message_id: str, reactor_user_id: str, name: str
 ) -> bool:
-    """Remove a reaction from a message."""
+    """Remove a reaction from a message. Optimized with record ID caching."""
     client = get_bluenexus_client_for_user(user_id)
     if not client:
         log.warning(f"No BlueNexus client for user {user_id}")
         return False
 
     try:
+        # Try to get cached data and record ID
+        cached_data, record_id = _get_cached_message(user_id, message_id)
+
+        if record_id and cached_data:
+            # FAST PATH: Use cached record ID - only 1 API call
+            log.debug(f"[BlueNexus] Fast remove reaction for message {message_id} using cached record_id")
+            message_data = cached_data.copy()
+            reactions = message_data.get("reactions", [])
+            message_data["reactions"] = [
+                r for r in reactions
+                if not (r.get("user_id") == reactor_user_id and r.get("name") == name)
+            ]
+
+            updated_record = await client.update(Collections.MESSAGES, record_id, message_data)
+            result = updated_record.model_dump()
+            _cache_message(user_id, message_id, result, record_id)
+            return True
+
+        # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
             Collections.MESSAGES,
             QueryOptions(filter={"owui_id": message_id}, limit=1)
@@ -331,7 +449,10 @@ async def remove_reaction_by_id_and_user_id_and_name(
             if not (r.get("user_id") == reactor_user_id and r.get("name") == name)
         ]
 
-        await client.update(Collections.MESSAGES, record.id, message_data)
+        updated_record = await client.update(Collections.MESSAGES, record.id, message_data)
+        result = updated_record.model_dump()
+        # Cache for future updates
+        _cache_message(user_id, message_id, result, record.id)
         return True
     except Exception as e:
         log.error(f"Error removing reaction from message {message_id}: {e}")
@@ -339,13 +460,24 @@ async def remove_reaction_by_id_and_user_id_and_name(
 
 
 async def delete_message_by_id(user_id: str, message_id: str) -> bool:
-    """Delete a message and its reactions."""
+    """Delete a message and its reactions. Optimized with record ID caching."""
     client = get_bluenexus_client_for_user(user_id)
     if not client:
         log.warning(f"No BlueNexus client for user {user_id}")
         return False
 
     try:
+        # Try to get cached record ID
+        _, record_id = _get_cached_message(user_id, message_id)
+
+        if record_id:
+            # FAST PATH: Use cached record ID - only 1 API call
+            log.debug(f"[BlueNexus] Fast delete for message {message_id} using cached record_id")
+            await client.delete(Collections.MESSAGES, record_id)
+            _invalidate_message_cache(user_id, message_id)
+            return True
+
+        # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
             Collections.MESSAGES,
             QueryOptions(filter={"owui_id": message_id}, limit=1)
@@ -356,6 +488,7 @@ async def delete_message_by_id(user_id: str, message_id: str) -> bool:
 
         record = response.get_records()[0]
         await client.delete(Collections.MESSAGES, record.id)
+        _invalidate_message_cache(user_id, message_id)
         return True
     except Exception as e:
         log.error(f"Error deleting message {message_id}: {e}")

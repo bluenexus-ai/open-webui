@@ -4,6 +4,7 @@ import base64
 import json
 import asyncio
 import logging
+import time
 
 from open_webui.models.models import (
     ModelForm,
@@ -30,11 +31,47 @@ from open_webui.utils.access_control import has_access, has_permission
 from open_webui.utils.bluenexus.collections import Collections
 from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
 from open_webui.utils.bluenexus.types import QueryOptions, BlueNexusError
+from open_webui.utils.bluenexus.cache import (
+    get_cached_record_id,
+    set_cached_record_id,
+)
 from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL, STATIC_DIR
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Simple in-memory cache for model data
+_model_cache: dict[str, tuple[dict, str, float]] = {}  # key -> (data, record_id, timestamp)
+_MODEL_CACHE_TTL = 60  # 60 seconds
+
+
+def _cache_model(user_id: str, model_id: str, data: dict, record_id: str) -> None:
+    """Cache model data with record ID."""
+    key = f"{user_id}:models:{model_id}"
+    _model_cache[key] = (data, record_id, time.time())
+    set_cached_record_id(user_id, "models", model_id, record_id)
+
+
+def _get_cached_model(user_id: str, model_id: str) -> tuple[Optional[dict], Optional[str]]:
+    """Get cached model data and record ID."""
+    key = f"{user_id}:models:{model_id}"
+    if key in _model_cache:
+        data, record_id, ts = _model_cache[key]
+        if time.time() - ts < _MODEL_CACHE_TTL:
+            return data, record_id
+        else:
+            del _model_cache[key]
+    # Try to get just record ID from persistent cache
+    record_id = get_cached_record_id(user_id, "models", model_id)
+    return None, record_id
+
+
+def _invalidate_model_cache(user_id: str, model_id: str) -> None:
+    """Invalidate model cache."""
+    key = f"{user_id}:models:{model_id}"
+    if key in _model_cache:
+        del _model_cache[key]
 
 
 def get_client_or_raise(user_id: str):
@@ -341,6 +378,23 @@ async def sync_models(
 # Note: We're not using the typical url path param here, but instead using a query parameter to allow '/' in the id
 @router.get("/model", response_model=Optional[ModelResponse])
 async def get_model_by_id(id: str, user=Depends(get_verified_user)):
+    # Check cache first
+    cached_data, record_id = _get_cached_model(user.id, id)
+    if cached_data:
+        model_data = cached_data.copy()
+        model_data["id"] = model_data.get("owui_id", model_data.get("id"))
+        if (
+            (user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL)
+            or model_data.get("user_id") == user.id
+            or has_access(user.id, "read", model_data.get("access_control"))
+        ):
+            return ModelResponse(**model_data)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
+            )
+
     client = get_client_or_raise(user.id)
 
     try:
@@ -358,6 +412,10 @@ async def get_model_by_id(id: str, user=Depends(get_verified_user)):
 
         record = response.get_records()[0]
         model_data = record.model_dump()
+
+        # Cache for future operations
+        _cache_model(user.id, id, model_data, record.id)
+
         model_data["id"] = model_data.get("owui_id", model_data.get("id"))
 
         # Check access
@@ -437,7 +495,35 @@ async def toggle_model_by_id(id: str, user=Depends(get_verified_user)):
     client = get_client_or_raise(user.id)
 
     try:
-        # Query BlueNexus for model with this ID
+        # Try to get cached data and record ID
+        cached_data, record_id = _get_cached_model(user.id, id)
+
+        if record_id and cached_data:
+            # FAST PATH: Use cached record ID - only 1 API call
+            log.debug(f"[BlueNexus] Fast toggle for model {id} using cached record_id")
+
+            # Check access first
+            if not (
+                user.role == "admin"
+                or cached_data.get("user_id") == user.id
+                or has_access(user.id, "write", cached_data.get("access_control"))
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=ERROR_MESSAGES.UNAUTHORIZED,
+                )
+
+            # Toggle is_active field
+            model_data = cached_data.copy()
+            model_data["is_active"] = not model_data.get("is_active", True)
+
+            updated = await client.update(Collections.MODELS, record_id, model_data)
+            result_data = updated.model_dump()
+            _cache_model(user.id, id, result_data, record_id)
+            result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+            return ModelResponse(**result_data)
+
+        # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
             Collections.MODELS,
             QueryOptions(filter={"owui_id": id}, limit=1)
@@ -469,6 +555,7 @@ async def toggle_model_by_id(id: str, user=Depends(get_verified_user)):
         # Update in BlueNexus
         updated = await client.update(Collections.MODELS, record.id, model_data)
         result_data = updated.model_dump()
+        _cache_model(user.id, id, result_data, record.id)
         result_data["id"] = result_data.get("owui_id", result_data.get("id"))
         return ModelResponse(**result_data)
 
@@ -493,7 +580,36 @@ async def update_model_by_id(
     client = get_client_or_raise(user.id)
 
     try:
-        # Find the model by ID
+        # Try to get cached data and record ID
+        cached_data, record_id = _get_cached_model(user.id, id)
+
+        if record_id and cached_data:
+            # FAST PATH: Use cached record ID - only 1 API call
+            log.debug(f"[BlueNexus] Fast update for model {id} using cached record_id")
+
+            # Check access first
+            if (
+                cached_data.get("user_id") != user.id
+                and not has_access(user.id, "write", cached_data.get("access_control"))
+                and user.role != "admin"
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+                )
+
+            # Update in BlueNexus
+            updated_data = form_data.model_dump()
+            updated_data["owui_id"] = id
+            updated_data["user_id"] = cached_data.get("user_id")
+
+            updated_record = await client.update(Collections.MODELS, record_id, updated_data)
+            result_data = updated_record.model_dump()
+            _cache_model(user.id, id, result_data, record_id)
+            result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+            return ModelModel(**result_data)
+
+        # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
             Collections.MODELS,
             QueryOptions(filter={"owui_id": id}, limit=1)
@@ -526,8 +642,9 @@ async def update_model_by_id(
 
         updated_record = await client.update(Collections.MODELS, record.id, updated_data)
 
-        # Convert back to ModelModel
+        # Convert back to ModelModel and cache
         result_data = updated_record.model_dump()
+        _cache_model(user.id, id, result_data, record.id)
         result_data["id"] = result_data.get("owui_id", result_data.get("id"))
         return ModelModel(**result_data)
 
@@ -548,7 +665,30 @@ async def delete_model_by_id(id: str, user=Depends(get_verified_user)):
     client = get_client_or_raise(user.id)
 
     try:
-        # Find the model by ID
+        # Try to get cached data and record ID
+        cached_data, record_id = _get_cached_model(user.id, id)
+
+        if record_id and cached_data:
+            # FAST PATH: Use cached record ID - only 1 API call
+            log.debug(f"[BlueNexus] Fast delete for model {id} using cached record_id")
+
+            # Check access first
+            if (
+                user.role != "admin"
+                and cached_data.get("user_id") != user.id
+                and not has_access(user.id, "write", cached_data.get("access_control"))
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=ERROR_MESSAGES.UNAUTHORIZED,
+                )
+
+            # Delete from BlueNexus
+            await client.delete(Collections.MODELS, record_id)
+            _invalidate_model_cache(user.id, id)
+            return True
+
+        # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
             Collections.MODELS,
             QueryOptions(filter={"owui_id": id}, limit=1)
@@ -576,6 +716,7 @@ async def delete_model_by_id(id: str, user=Depends(get_verified_user)):
 
         # Delete from BlueNexus
         await client.delete(Collections.MODELS, record.id)
+        _invalidate_model_cache(user.id, id)
         return True
 
     except BlueNexusError as e:

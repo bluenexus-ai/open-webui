@@ -2,9 +2,12 @@
 Factory functions for creating BlueNexus data clients.
 
 Provides methods to create clients from OAuth sessions and user context.
+Uses client caching to avoid recreating clients for every request.
 """
 
 import logging
+import time
+from threading import Lock
 from typing import Optional
 
 from open_webui.env import SRC_LOG_LEVELS
@@ -17,20 +20,28 @@ log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS.get("BLUENEXUS", SRC_LOG_LEVELS.get("MAIN", logging.INFO)))
 
 
+# Client cache: user_id -> (client, access_token, timestamp)
+_client_cache: dict[str, tuple[BlueNexusDataClient, str, float]] = {}
+_cache_lock = Lock()
+_CACHE_TTL = 300  # 5 minutes - refresh client if token might have changed
+
+
 def get_bluenexus_client_for_user(
     user_id: str,
     base_url: Optional[str] = None,
+    force_refresh: bool = False,
 ) -> Optional[BlueNexusDataClient]:
     """
     Get a BlueNexus data client for a user using their OAuth session.
 
-    This retrieves the user's BlueNexus OAuth session and creates a client
-    with their access token. The token must have the 'user-data' scope.
+    Uses caching to avoid recreating clients and database lookups for every request.
+    Clients are cached per user and reused until the TTL expires or token changes.
 
     Args:
         user_id: The Open WebUI user ID
         base_url: Optional BlueNexus API base URL. If not provided,
                  uses the configured BLUENEXUS_API_BASE_URL.
+        force_refresh: If True, bypass cache and create a new client
 
     Returns:
         BlueNexusDataClient if user has a valid BlueNexus session, None otherwise
@@ -40,12 +51,16 @@ def get_bluenexus_client_for_user(
         if client:
             chats = await client.query("owui-chats")
     """
+    global _client_cache
+
     # Check if BlueNexus is enabled
     if not ENABLE_BLUENEXUS.value:
         log.debug(f"[BlueNexus Factory] BlueNexus disabled, returning None for user {user_id}")
         return None
 
-    # Get BlueNexus OAuth session for user
+    now = time.time()
+
+    # Get BlueNexus OAuth session for user (always fetch to get current token)
     log.debug(f"[BlueNexus Factory] Looking up BlueNexus OAuth session for user {user_id}")
     session = OAuthSessions.get_session_by_provider_and_user_id(
         provider="bluenexus",
@@ -55,8 +70,6 @@ def get_bluenexus_client_for_user(
     if not session:
         log.debug(f"[BlueNexus Factory] No BlueNexus session found for user {user_id}")
         return None
-
-    log.debug(f"[BlueNexus Factory] Found BlueNexus session for user {user_id}")
 
     # Extract access token
     token_data = session.token
@@ -69,6 +82,18 @@ def get_bluenexus_client_for_user(
         log.warning(f"[BlueNexus Factory] No access token in session for user {user_id}")
         return None
 
+    # Check cache - must match both TTL AND current token
+    if not force_refresh:
+        with _cache_lock:
+            if user_id in _client_cache:
+                cached_client, cached_token, timestamp = _client_cache[user_id]
+                # Only reuse if token matches AND within TTL
+                if cached_token == access_token and now - timestamp < _CACHE_TTL:
+                    log.debug(f"[BlueNexus Factory] Cache HIT for user {user_id}")
+                    return cached_client
+                elif cached_token != access_token:
+                    log.info(f"[BlueNexus Factory] Token changed for user {user_id}, invalidating cache")
+
     # Get base URL from config if not provided
     if base_url is None:
         base_url = BLUENEXUS_API_BASE_URL.value
@@ -77,12 +102,36 @@ def get_bluenexus_client_for_user(
         log.error("[BlueNexus Factory] BLUENEXUS_API_BASE_URL not configured")
         return None
 
-    log.debug(f"[BlueNexus Factory] Creating BlueNexusDataClient for user {user_id}")
+    log.info(f"[BlueNexus Factory] Creating new BlueNexusDataClient for user {user_id}")
 
-    return BlueNexusDataClient(
+    client = BlueNexusDataClient(
         base_url=base_url,
         access_token=access_token,
     )
+
+    # Cache the client
+    with _cache_lock:
+        _client_cache[user_id] = (client, access_token, now)
+
+    return client
+
+
+def invalidate_client_cache(user_id: str = None) -> None:
+    """
+    Invalidate cached clients.
+
+    Args:
+        user_id: If provided, only invalidate for this user. Otherwise invalidate all.
+    """
+    global _client_cache
+    with _cache_lock:
+        if user_id:
+            if user_id in _client_cache:
+                del _client_cache[user_id]
+                log.debug(f"[BlueNexus Factory] Invalidated cache for user {user_id}")
+        else:
+            _client_cache.clear()
+            log.debug("[BlueNexus Factory] Invalidated all client caches")
 
 
 def has_bluenexus_session(user_id: str) -> bool:

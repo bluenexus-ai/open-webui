@@ -10,7 +10,7 @@ import logging
 import ssl
 from datetime import datetime
 from typing import Any, Optional, TypeVar
-from urllib.parse import urlparse, urlencode
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -49,12 +49,18 @@ log.setLevel(SRC_LOG_LEVELS.get("BLUENEXUS", SRC_LOG_LEVELS.get("MAIN", logging.
 T = TypeVar("T", bound=BlueNexusRecord)
 
 
+# Global session pool for connection reuse
+_session_pool: dict[str, aiohttp.ClientSession] = {}
+
+
 class BlueNexusDataClient:
     """
     Client for BlueNexus User-Data API.
 
     This client handles authentication, SSL configuration, and provides
     methods for CRUD operations on user data collections.
+
+    Uses connection pooling for improved performance.
 
     Usage:
         client = BlueNexusDataClient(
@@ -108,6 +114,7 @@ class BlueNexusDataClient:
             self.verify_ssl = verify_ssl
 
         self._data_api_path = "/api/v1/data"
+        self._session_key = f"{self.base_url}:{self.verify_ssl}"
 
         log.info(f"[BlueNexus Client] Initialized with base_url={self.base_url}, verify_ssl={self.verify_ssl}")
 
@@ -188,6 +195,39 @@ class BlueNexusDataClient:
         else:
             raise BlueNexusError(message, status_code=status, details=details)
 
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """
+        Get or create a shared session for connection pooling.
+
+        Sessions are pooled by base_url and SSL settings for reuse.
+        """
+        global _session_pool
+
+        # Check if we have a valid session
+        if self._session_key in _session_pool:
+            session = _session_pool[self._session_key]
+            if not session.closed:
+                return session
+
+        # Create new session with connection pooling
+        connector = aiohttp.TCPConnector(
+            limit=100,  # Max connections
+            limit_per_host=30,  # Max connections per host
+            ttl_dns_cache=300,  # DNS cache TTL
+            keepalive_timeout=30,  # Keep connections alive
+        )
+
+        session = aiohttp.ClientSession(
+            timeout=self.timeout,
+            connector=connector,
+            trust_env=True,
+        )
+
+        _session_pool[self._session_key] = session
+        log.debug(f"[BlueNexus Client] Created new session pool for {self._session_key}")
+
+        return session
+
     async def _request(
         self,
         method: str,
@@ -214,24 +254,22 @@ class BlueNexusDataClient:
         log.debug(f"[BlueNexus Client] {method} {url}")
 
         try:
-            async with aiohttp.ClientSession(
-                timeout=self.timeout,
-                trust_env=True,
-            ) as session:
-                kwargs = {
-                    "headers": self._get_headers(),
-                    "ssl": self._get_ssl_context(),
-                }
+            session = await self._get_session()
 
-                if data is not None:
-                    kwargs["json"] = _serialize_for_json(data)
+            kwargs = {
+                "headers": self._get_headers(),
+                "ssl": self._get_ssl_context(),
+            }
 
-                if params is not None:
-                    kwargs["params"] = params
+            if data is not None:
+                kwargs["json"] = _serialize_for_json(data)
 
-                async with session.request(method, url, **kwargs) as response:
-                    log.debug(f"[BlueNexus Client] Response status: {response.status}")
-                    return await self._handle_response(response)
+            if params is not None:
+                kwargs["params"] = params
+
+            async with session.request(method, url, **kwargs) as response:
+                log.debug(f"[BlueNexus Client] Response status: {response.status}")
+                return await self._handle_response(response)
 
         except aiohttp.ClientError as e:
             log.error(f"[BlueNexus Client] Connection error: {e}")
