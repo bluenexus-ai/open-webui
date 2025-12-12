@@ -8,6 +8,7 @@ from open_webui.models.prompts import (
     PromptUserResponse,
     PromptModel,
 )
+from open_webui.models.users import Users
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access, has_permission
@@ -147,11 +148,21 @@ async def get_prompt_list(user=Depends(get_verified_user)):
         )
 
         records = response.get_records()
+
+        # Collect all unique user_ids and batch fetch users
+        user_ids = list(set(record.model_dump().get("user_id") for record in records if record.model_dump().get("user_id")))
+        users = Users.get_users_by_user_ids(user_ids) if user_ids else []
+        users_dict = {u.id: u for u in users}
+
         prompts = []
 
         for record in records:
             # Convert BlueNexus record to PromptUserResponse
             prompt_data = _ensure_prompt_fields(record.model_dump())
+
+            # Get user info for this prompt
+            prompt_user = users_dict.get(prompt_data.get("user_id"))
+            prompt_data["user"] = prompt_user.model_dump() if prompt_user else None
 
             # Apply access control for write permission - user always has access to their own prompts
             if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:

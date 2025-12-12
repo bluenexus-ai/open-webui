@@ -15,6 +15,7 @@ from open_webui.models.models import (
     ModelParams,
     ModelMeta,
 )
+from open_webui.models.users import Users
 
 from pydantic import BaseModel
 from open_webui.constants import ERROR_MESSAGES
@@ -175,10 +176,20 @@ async def get_models(id: Optional[str] = None, user=Depends(get_verified_user)):
         )
 
         records = response.get_records()
+
+        # Collect all unique user_ids and batch fetch users
+        user_ids = list(set(record.model_dump().get("user_id") for record in records if record.model_dump().get("user_id")))
+        users = Users.get_users_by_user_ids(user_ids) if user_ids else []
+        users_dict = {u.id: u for u in users}
+
         models = []
 
         for record in records:
             model_data = _convert_bluenexus_to_model(record.model_dump())
+
+            # Get user info for this model
+            model_user = users_dict.get(model_data.get("user_id"))
+            model_data["user"] = model_user.model_dump() if model_user else None
 
             # Apply access control - user always has access to their own models
             if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
