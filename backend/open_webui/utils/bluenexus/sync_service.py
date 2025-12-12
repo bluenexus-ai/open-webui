@@ -222,7 +222,7 @@ class BlueNexusSyncService:
 
         Args:
             collection: Collection name (e.g., Collections.CHATS)
-            model_instance: Model instance with user_id and model_dump() method
+            model_instance: Model instance with user_id and model_dump() method, or a dict
             record_id: Optional explicit record ID (uses model_instance.id if not provided)
 
         Example:
@@ -232,19 +232,37 @@ class BlueNexusSyncService:
             # For models with different ID fields:
             prompt = Prompts.insert_new_prompt(user.id, form_data)
             BlueNexusSync.sync_create(Collections.PROMPTS, prompt, prompt.command)
+
+            # For dict data (e.g., from BlueNexus responses):
+            message = await bluenexus_insert_message(...)
+            BlueNexusSync.sync_create(Collections.MESSAGES, message)
         """
+        # Handle both dict and model instances
+        is_dict = isinstance(model_instance, dict)
+
         # Use explicit record_id if provided, otherwise try to get 'id' attribute
         if record_id is None:
-            record_id = getattr(model_instance, 'id', None)
-            if record_id is None:
-                # Try 'command' for prompts
-                record_id = getattr(model_instance, 'command', None)
+            if is_dict:
+                record_id = model_instance.get('id') or model_instance.get('owui_id')
+            else:
+                record_id = getattr(model_instance, 'id', None)
+                if record_id is None:
+                    # Try 'command' for prompts
+                    record_id = getattr(model_instance, 'command', None)
+
+        # Get user_id and data based on type
+        if is_dict:
+            user_id = model_instance.get('user_id')
+            data = model_instance
+        else:
+            user_id = model_instance.user_id
+            data = model_instance.model_dump()
 
         self.sync_model_to_bluenexus_background(
             collection,
             record_id,
-            model_instance.user_id,
-            model_instance.model_dump(),
+            user_id,
+            data,
             operation="create"
         )
 
@@ -259,7 +277,7 @@ class BlueNexusSyncService:
 
         Args:
             collection: Collection name (e.g., Collections.NOTES)
-            model_instance: Model instance with user_id and model_dump() method
+            model_instance: Model instance with user_id and model_dump() method, or a dict
             record_id: Optional explicit record ID (uses model_instance.id if not provided)
 
         Example:
@@ -269,19 +287,37 @@ class BlueNexusSyncService:
             # For models with different ID fields:
             prompt = Prompts.update_prompt_by_command(command, form_data)
             BlueNexusSync.sync_update(Collections.PROMPTS, prompt, prompt.command)
+
+            # For dict data (e.g., from BlueNexus responses):
+            message = await bluenexus_update_message(...)
+            BlueNexusSync.sync_update(Collections.MESSAGES, message)
         """
+        # Handle both dict and model instances
+        is_dict = isinstance(model_instance, dict)
+
         # Use explicit record_id if provided, otherwise try to get 'id' attribute
         if record_id is None:
-            record_id = getattr(model_instance, 'id', None)
-            if record_id is None:
-                # Try 'command' for prompts
-                record_id = getattr(model_instance, 'command', None)
+            if is_dict:
+                record_id = model_instance.get('id') or model_instance.get('owui_id')
+            else:
+                record_id = getattr(model_instance, 'id', None)
+                if record_id is None:
+                    # Try 'command' for prompts
+                    record_id = getattr(model_instance, 'command', None)
+
+        # Get user_id and data based on type
+        if is_dict:
+            user_id = model_instance.get('user_id')
+            data = model_instance
+        else:
+            user_id = model_instance.user_id
+            data = model_instance.model_dump()
 
         self.sync_model_to_bluenexus_background(
             collection,
             record_id,
-            model_instance.user_id,
-            model_instance.model_dump(),
+            user_id,
+            data,
             operation="update"
         )
 

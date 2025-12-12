@@ -28,6 +28,7 @@ from open_webui.utils.bluenexus.message_ops import (
     get_messages_by_channel_id as bluenexus_get_channel_messages,
     get_messages_by_parent_id as bluenexus_get_parent_messages,
     get_thread_replies_by_message_id as bluenexus_get_thread_replies,
+    batch_get_thread_replies as bluenexus_batch_get_thread_replies,
     get_reactions_by_message_id as bluenexus_get_reactions,
     update_message_by_id as bluenexus_update_message,
     add_reaction_to_message as bluenexus_add_reaction,
@@ -204,6 +205,21 @@ async def get_channel_messages(
     message_list = await bluenexus_get_channel_messages(user.id, id, skip, limit)
     users = {}
 
+    # Batch fetch thread replies for all messages to avoid N+1 queries
+    # Get all message IDs
+    message_ids = [m.get("owui_id", m.get("id")) for m in message_list]
+
+    # Fetch all thread replies in one query (messages with parent_id in message_ids)
+    all_thread_replies = {}
+    if message_ids:
+        all_replies = await bluenexus_batch_get_thread_replies(user.id, message_ids)
+        # Group replies by parent_id
+        for reply in all_replies:
+            parent_id = reply.get("parent_id")
+            if parent_id not in all_thread_replies:
+                all_thread_replies[parent_id] = []
+            all_thread_replies[parent_id].append(reply)
+
     messages = []
     for message in message_list:
         msg_user_id = message.get("user_id")
@@ -212,12 +228,15 @@ async def get_channel_messages(
             msg_user = Users.get_user_by_id(msg_user_id)
             users[msg_user_id] = msg_user
 
-        thread_replies = await bluenexus_get_thread_replies(user.id, msg_id)
+        # Use pre-fetched thread replies instead of individual queries
+        thread_replies = all_thread_replies.get(msg_id, [])
         latest_thread_reply_at = (
             thread_replies[0].get("created_at") if thread_replies else None
         )
 
-        reactions = await bluenexus_get_reactions(user.id, msg_id)
+        # Use inline reactions stored in message instead of separate query
+        # Reactions are already stored inline when adding/removing reactions
+        reactions = message.get("reactions", [])
 
         messages.append(
             MessageUserResponse(

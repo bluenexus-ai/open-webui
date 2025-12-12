@@ -16,7 +16,7 @@ from typing import Optional
 
 from open_webui.utils.bluenexus.collections import Collections
 from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
-from open_webui.utils.bluenexus.types import QueryOptions
+from open_webui.utils.bluenexus.types import QueryOptions, SortBy, SortOrder
 from open_webui.utils.bluenexus.cache import (
     get_cached_record_id,
     set_cached_record_id,
@@ -247,6 +247,41 @@ async def get_thread_replies_by_message_id(user_id: str, message_id: str) -> lis
         return []
     except Exception as e:
         log.error(f"Error getting thread replies for {message_id}: {e}")
+        return []
+
+
+async def batch_get_thread_replies(user_id: str, message_ids: list[str]) -> list[dict]:
+    """
+    Get all thread replies for multiple messages in a single query.
+
+    This avoids the N+1 query problem when loading channel messages.
+    Returns all replies for messages where parent_id is in the given list.
+    """
+    if not message_ids:
+        return []
+
+    client = get_bluenexus_client_for_user(user_id)
+    if not client:
+        log.warning(f"No BlueNexus client for user {user_id}")
+        return []
+
+    try:
+        # Use $in operator to get all replies in one query
+        response = await client.query(
+            Collections.MESSAGES,
+            QueryOptions(
+                filter={"parent_id": {"$in": message_ids}},
+                sort_by=SortBy.CREATED_AT,
+                sort_order=SortOrder.DESC,
+                limit=100  # Reasonable limit for batch
+            )
+        )
+
+        if response.data:
+            return [r.model_dump() for r in response.get_records()]
+        return []
+    except Exception as e:
+        log.error(f"Error batch getting thread replies: {e}")
         return []
 
 

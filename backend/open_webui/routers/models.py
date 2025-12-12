@@ -5,12 +5,15 @@ import json
 import asyncio
 import logging
 import time
+from datetime import datetime
 
 from open_webui.models.models import (
     ModelForm,
     ModelModel,
     ModelResponse,
     ModelUserResponse,
+    ModelParams,
+    ModelMeta,
 )
 
 from pydantic import BaseModel
@@ -89,6 +92,70 @@ def validate_model_id(model_id: str) -> bool:
     return model_id and len(model_id) <= 256
 
 
+def _convert_bluenexus_to_model(data: dict) -> dict:
+    """
+    Convert BlueNexus record data to ModelModel format.
+
+    Handles:
+    - createdAt/updatedAt (ISO string) → created_at/updated_at (epoch ns)
+    - owui_id → id
+    - Ensures params and meta have defaults if missing
+    """
+    result = dict(data)
+
+    # Map owui_id to id
+    if "owui_id" in result:
+        result["id"] = result["owui_id"]
+
+    # Convert timestamps from ISO string to epoch nanoseconds
+    if "createdAt" in result:
+        created_at = result.pop("createdAt")
+        if isinstance(created_at, str):
+            # Parse ISO string to datetime, then to epoch ns
+            try:
+                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                result["created_at"] = int(dt.timestamp() * 1_000_000_000)
+            except (ValueError, AttributeError):
+                result["created_at"] = int(time.time_ns())
+        elif isinstance(created_at, (int, float)):
+            result["created_at"] = int(created_at)
+        else:
+            result["created_at"] = int(time.time_ns())
+
+    if "updatedAt" in result:
+        updated_at = result.pop("updatedAt")
+        if isinstance(updated_at, str):
+            try:
+                dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                result["updated_at"] = int(dt.timestamp() * 1_000_000_000)
+            except (ValueError, AttributeError):
+                result["updated_at"] = int(time.time_ns())
+        elif isinstance(updated_at, (int, float)):
+            result["updated_at"] = int(updated_at)
+        else:
+            result["updated_at"] = int(time.time_ns())
+
+    # Ensure created_at and updated_at exist
+    if "created_at" not in result:
+        result["created_at"] = int(time.time_ns())
+    if "updated_at" not in result:
+        result["updated_at"] = int(time.time_ns())
+
+    # Ensure params has default value
+    if "params" not in result or result["params"] is None:
+        result["params"] = ModelParams().model_dump()
+
+    # Ensure meta has default value
+    if "meta" not in result or result["meta"] is None:
+        result["meta"] = ModelMeta(description="").model_dump()
+
+    # Ensure is_active has default
+    if "is_active" not in result:
+        result["is_active"] = True
+
+    return result
+
+
 ###########################
 # GetModels
 ###########################
@@ -111,8 +178,7 @@ async def get_models(id: Optional[str] = None, user=Depends(get_verified_user)):
         models = []
 
         for record in records:
-            model_data = record.model_dump()
-            model_data["id"] = model_data.get("owui_id", model_data.get("id"))
+            model_data = _convert_bluenexus_to_model(record.model_dump())
 
             # Apply access control
             if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
@@ -147,8 +213,7 @@ async def get_base_models(user=Depends(get_admin_user)):
 
         base_models = []
         for record in response.get_records():
-            model_data = record.model_dump()
-            model_data["id"] = model_data.get("owui_id", model_data.get("id"))
+            model_data = _convert_bluenexus_to_model(record.model_dump())
             # Filter for base models (those with base_model_id set)
             if model_data.get("base_model_id"):
                 base_models.append(ModelResponse(**model_data))
@@ -209,9 +274,8 @@ async def create_new_model(
 
         record = await client.create(Collections.MODELS, model_data)
 
-        # Convert back to ModelModel
-        result_data = record.model_dump()
-        result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+        # Convert BlueNexus response to ModelModel format
+        result_data = _convert_bluenexus_to_model(record.model_dump())
         return ModelModel(**result_data)
 
     except BlueNexusError as e:
@@ -239,8 +303,7 @@ async def export_models(user=Depends(get_admin_user)):
 
         models = []
         for record in response.get_records():
-            model_data = record.model_dump()
-            model_data["id"] = model_data.get("owui_id", model_data.get("id"))
+            model_data = _convert_bluenexus_to_model(record.model_dump())
             models.append(ModelModel(**model_data))
 
         return models
@@ -351,14 +414,12 @@ async def sync_models(
                 # Update existing model
                 record = existing.get_records()[0]
                 updated = await client.update(Collections.MODELS, record.id, model_data)
-                result_data = updated.model_dump()
-                result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+                result_data = _convert_bluenexus_to_model(updated.model_dump())
                 synced_models.append(ModelModel(**result_data))
             else:
                 # Create new model
                 created = await client.create(Collections.MODELS, model_data)
-                result_data = created.model_dump()
-                result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+                result_data = _convert_bluenexus_to_model(created.model_dump())
                 synced_models.append(ModelModel(**result_data))
 
         return synced_models
@@ -381,8 +442,7 @@ async def get_model_by_id(id: str, user=Depends(get_verified_user)):
     # Check cache first
     cached_data, record_id = _get_cached_model(user.id, id)
     if cached_data:
-        model_data = cached_data.copy()
-        model_data["id"] = model_data.get("owui_id", model_data.get("id"))
+        model_data = _convert_bluenexus_to_model(cached_data)
         if (
             (user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL)
             or model_data.get("user_id") == user.id
@@ -411,12 +471,12 @@ async def get_model_by_id(id: str, user=Depends(get_verified_user)):
             )
 
         record = response.get_records()[0]
-        model_data = record.model_dump()
+        raw_data = record.model_dump()
 
         # Cache for future operations
-        _cache_model(user.id, id, model_data, record.id)
+        _cache_model(user.id, id, raw_data, record.id)
 
-        model_data["id"] = model_data.get("owui_id", model_data.get("id"))
+        model_data = _convert_bluenexus_to_model(raw_data)
 
         # Check access
         if (
@@ -518,9 +578,9 @@ async def toggle_model_by_id(id: str, user=Depends(get_verified_user)):
             model_data["is_active"] = not model_data.get("is_active", True)
 
             updated = await client.update(Collections.MODELS, record_id, model_data)
-            result_data = updated.model_dump()
-            _cache_model(user.id, id, result_data, record_id)
-            result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+            raw_data = updated.model_dump()
+            _cache_model(user.id, id, raw_data, record_id)
+            result_data = _convert_bluenexus_to_model(raw_data)
             return ModelResponse(**result_data)
 
         # SLOW PATH: Need to query for record ID first - 2 API calls
@@ -554,9 +614,9 @@ async def toggle_model_by_id(id: str, user=Depends(get_verified_user)):
 
         # Update in BlueNexus
         updated = await client.update(Collections.MODELS, record.id, model_data)
-        result_data = updated.model_dump()
-        _cache_model(user.id, id, result_data, record.id)
-        result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+        raw_data = updated.model_dump()
+        _cache_model(user.id, id, raw_data, record.id)
+        result_data = _convert_bluenexus_to_model(raw_data)
         return ModelResponse(**result_data)
 
     except BlueNexusError as e:
@@ -604,9 +664,9 @@ async def update_model_by_id(
             updated_data["user_id"] = cached_data.get("user_id")
 
             updated_record = await client.update(Collections.MODELS, record_id, updated_data)
-            result_data = updated_record.model_dump()
-            _cache_model(user.id, id, result_data, record_id)
-            result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+            raw_data = updated_record.model_dump()
+            _cache_model(user.id, id, raw_data, record_id)
+            result_data = _convert_bluenexus_to_model(raw_data)
             return ModelModel(**result_data)
 
         # SLOW PATH: Need to query for record ID first - 2 API calls
@@ -643,9 +703,9 @@ async def update_model_by_id(
         updated_record = await client.update(Collections.MODELS, record.id, updated_data)
 
         # Convert back to ModelModel and cache
-        result_data = updated_record.model_dump()
-        _cache_model(user.id, id, result_data, record.id)
-        result_data["id"] = result_data.get("owui_id", result_data.get("id"))
+        raw_data = updated_record.model_dump()
+        _cache_model(user.id, id, raw_data, record.id)
+        result_data = _convert_bluenexus_to_model(raw_data)
         return ModelModel(**result_data)
 
     except BlueNexusError as e:

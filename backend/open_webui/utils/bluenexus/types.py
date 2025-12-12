@@ -57,6 +57,18 @@ class BlueNexusRecord(BaseModel):
     class Config:
         extra = "allow"
 
+    def model_dump(self, **kwargs) -> dict[str, Any]:
+        """
+        Override model_dump to default to JSON-serializable output.
+
+        This ensures datetime fields are converted to ISO strings,
+        preventing JSON serialization errors in socket.io and other contexts.
+        """
+        # Default to mode="json" for JSON-safe output (datetime → ISO string)
+        if "mode" not in kwargs:
+            kwargs["mode"] = "json"
+        return super().model_dump(**kwargs)
+
     def to_dict(self) -> dict[str, Any]:
         """Convert record to dictionary including extra fields"""
         return self.model_dump(mode="json")
