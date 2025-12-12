@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       AWS_REGION: us-west-2
-      ECR_REPOSITORY: 664307504928.dkr.ecr.us-west-2.amazonaws.com/custom/open-webui
+      ECR_REPOSITORY: custom/open-webui
 
     steps:
       - uses: actions/checkout@v5
