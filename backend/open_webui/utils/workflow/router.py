@@ -29,6 +29,7 @@ class RouteType(Enum):
     SIMPLE_LLM = "simple_llm"
     PREDEFINED_WORKFLOW = "predefined_workflow"
     AUTO_PLANNED_WORKFLOW = "auto_planned_workflow"
+    REACT_WORKFLOW = "react_workflow"  # ReAct: iterative reasoning and acting
 
 
 @dataclass
@@ -40,6 +41,10 @@ class WorkflowStep:
     use_llm_compose: bool = False
     compose_prompt: str = ""
     compose_output_key: str = "content"
+    # Critique/Review step configuration
+    use_llm_critique: bool = False
+    critique_criteria: List[str] = field(default_factory=list)
+    critique_action: str = "revise"  # "revise" | "halt" | "warn"
 
 
 @dataclass
@@ -74,6 +79,56 @@ class RouteDecision:
     workflow: Optional[PredefinedWorkflow] = None
     confidence: float = 0.0
     reasoning: str = ""
+    use_react: bool = False  # Whether to use ReAct for this task
+
+
+# ReAct is better for tasks that require:
+# - Dynamic adaptation based on intermediate results
+# - Exploratory research with unknown number of steps
+# - Tasks where the next step depends heavily on previous results
+REACT_TRIGGER_KEYWORDS = [
+    "research",
+    "investigate",
+    "explore",
+    "look into",
+    "analyze",
+    "compare",
+    "step by step",
+    "step-by-step",
+    "one by one",
+    "one-by-one",
+    "iteratively",
+    "find out",
+    "find information",
+    "dig into",
+    "deep dive",
+]
+
+
+def should_use_react(query: str, num_tools: int = 0) -> bool:
+    """
+    Determine if a task should use ReAct instead of plan-and-execute.
+
+    ReAct is preferred when:
+    - Task involves exploration or research
+    - Next steps depend on previous results
+    - Task requires dynamic adaptation
+    """
+    query_lower = query.lower()
+
+    # Check for ReAct trigger keywords
+    for keyword in REACT_TRIGGER_KEYWORDS:
+        if keyword in query_lower:
+            return True
+
+    # If many tools available and query is open-ended, prefer ReAct
+    open_ended_indicators = ["what", "how", "why", "tell me about", "help me"]
+    has_open_ended = any(ind in query_lower for ind in open_ended_indicators)
+
+    if has_open_ended and num_tools > 5:
+        return True
+
+    return False
 
 
 # Registry of predefined workflows
@@ -139,13 +194,38 @@ FIREFLIES_TO_EMAIL = PredefinedWorkflow(
             },
             use_llm_compose=True,
         ),
+        # Critique step: Review email before sending
+        WorkflowStep(
+            tool_name="__llm_critique__",
+            description="Review email content before sending",
+            parameters_template={
+                "content": "{{step_2_result___llm_compose__.email_body}}",
+                "criteria": [
+                    "Professional and appropriate tone",
+                    "No sensitive or confidential information exposed",
+                    "Clear and well-structured content",
+                    "No grammatical errors",
+                    "Action items are clearly stated",
+                ],
+                "action_on_issues": "revise",
+            },
+            use_llm_critique=True,
+            critique_criteria=[
+                "Professional tone",
+                "No sensitive data",
+                "Clear structure",
+                "Grammar",
+                "Action items clarity",
+            ],
+            critique_action="revise",
+        ),
         WorkflowStep(
             tool_name="google-workspace_gmail_send_message",
             description="Send the composed email",
             parameters_template={
                 "to": "{{USER_EMAIL}}",
                 "subject": "{{step_3_result___llm_compose__.subject}}",
-                "body": "{{step_2_result___llm_compose__.email_body}}",
+                "body": "{{step_4_result___llm_critique__.final_content}}",
             },
         ),
     ],
@@ -180,12 +260,37 @@ FIREFLIES_TO_SLACK = PredefinedWorkflow(
             },
             use_llm_compose=True,
         ),
+        # Critique step: Review Slack message before posting
+        WorkflowStep(
+            tool_name="__llm_critique__",
+            description="Review Slack message before posting",
+            parameters_template={
+                "content": "{{step_2_result___llm_compose__.message}}",
+                "criteria": [
+                    "Appropriate for team channel",
+                    "No sensitive or confidential information",
+                    "Concise and scannable",
+                    "Uses proper Slack formatting",
+                    "Professional tone",
+                ],
+                "action_on_issues": "revise",
+            },
+            use_llm_critique=True,
+            critique_criteria=[
+                "Team appropriate",
+                "No sensitive data",
+                "Concise",
+                "Slack formatting",
+                "Professional",
+            ],
+            critique_action="revise",
+        ),
         WorkflowStep(
             tool_name="slack_slack_send_message",
             description="Post to Slack",
             parameters_template={
                 "channel": "{{SLACK_CHANNEL}}",
-                "text": "{{step_2_result___llm_compose__.message}}",
+                "text": "{{step_3_result___llm_critique__.final_content}}",
             },
         ),
     ],
@@ -220,13 +325,38 @@ CALENDAR_TO_EMAIL = PredefinedWorkflow(
             },
             use_llm_compose=True,
         ),
+        # Critique step: Review email before sending
+        WorkflowStep(
+            tool_name="__llm_critique__",
+            description="Review email content before sending",
+            parameters_template={
+                "content": "{{step_2_result___llm_compose__.email_body}}",
+                "criteria": [
+                    "Professional and helpful tone",
+                    "Clear date and time formatting",
+                    "All events properly listed",
+                    "No formatting errors",
+                    "Easy to read at a glance",
+                ],
+                "action_on_issues": "revise",
+            },
+            use_llm_critique=True,
+            critique_criteria=[
+                "Professional tone",
+                "Date/time formatting",
+                "Complete listing",
+                "No errors",
+                "Readability",
+            ],
+            critique_action="revise",
+        ),
         WorkflowStep(
             tool_name="google-workspace_gmail_send_message",
             description="Send reminder email",
             parameters_template={
                 "to": "{{USER_EMAIL}}",
                 "subject": "Your Upcoming Schedule",
-                "body": "{{step_2_result___llm_compose__.email_body}}",
+                "body": "{{step_3_result___llm_critique__.final_content}}",
             },
         ),
     ],
@@ -339,9 +469,15 @@ async def classify_task(
 def classify_task_by_pattern(
     query: str,
     available_tools: List[str],
+    enable_react: bool = False,
 ) -> RouteDecision:
     """
     Fallback classification using pattern matching (no LLM call).
+
+    Args:
+        query: The user's query
+        available_tools: List of available tool names
+        enable_react: Whether to allow routing to ReAct workflow
     """
     # Check for tool-related keywords
     tool_keywords = [
@@ -373,7 +509,19 @@ def classify_task_by_pattern(
                 reasoning=f"Matched predefined workflow: {workflow.name}",
             )
 
-    # Complex task without predefined workflow
+    # Check if ReAct should be used
+    use_react = enable_react and should_use_react(query, len(available_tools))
+
+    if use_react:
+        return RouteDecision(
+            route_type=RouteType.REACT_WORKFLOW,
+            complexity=TaskComplexity.COMPLEX,
+            confidence=0.7,
+            reasoning="Task requires iterative reasoning and acting",
+            use_react=True,
+        )
+
+    # Complex task without predefined workflow - use plan-and-execute
     return RouteDecision(
         route_type=RouteType.AUTO_PLANNED_WORKFLOW,
         complexity=TaskComplexity.COMPLEX,

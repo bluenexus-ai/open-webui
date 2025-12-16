@@ -104,6 +104,73 @@ class BaseChatRepository(ABC):
         """Search chats by title or content."""
         pass
 
+    # Additional methods for full endpoint support
+
+    @abstractmethod
+    async def get_all(self) -> List[dict]:
+        """Get all chats (admin only)."""
+        pass
+
+    @abstractmethod
+    async def get_by_user_id_admin(self, user_id: str, page: int = 1, limit: int = 60, query: str = None) -> List[dict]:
+        """Get chats for a specific user (admin only)."""
+        pass
+
+    @abstractmethod
+    async def get_by_folder_id(self, user_id: str, folder_id: str, page: int = 1, limit: int = 60) -> List[dict]:
+        """Get chats in a specific folder."""
+        pass
+
+    @abstractmethod
+    async def get_by_folder_ids(self, user_id: str, folder_ids: List[str]) -> List[dict]:
+        """Get chats in multiple folders."""
+        pass
+
+    @abstractmethod
+    async def archive_all(self, user_id: str) -> bool:
+        """Archive all chats for a user."""
+        pass
+
+    @abstractmethod
+    async def unarchive_all(self, user_id: str) -> bool:
+        """Unarchive all chats for a user."""
+        pass
+
+    @abstractmethod
+    async def get_by_tag(self, user_id: str, tag_name: str, skip: int = 0, limit: int = 50) -> List[dict]:
+        """Get chats with a specific tag."""
+        pass
+
+    @abstractmethod
+    async def update_folder_id(self, chat_id: str, user_id: str, folder_id: str) -> Optional[dict]:
+        """Update chat folder."""
+        pass
+
+    @abstractmethod
+    async def get_tags(self, chat_id: str, user_id: str) -> List[str]:
+        """Get tags for a chat."""
+        pass
+
+    @abstractmethod
+    async def add_tag(self, chat_id: str, user_id: str, tag_name: str) -> List[str]:
+        """Add a tag to a chat."""
+        pass
+
+    @abstractmethod
+    async def remove_tag(self, chat_id: str, user_id: str, tag_name: str) -> List[str]:
+        """Remove a tag from a chat."""
+        pass
+
+    @abstractmethod
+    async def clear_tags(self, chat_id: str, user_id: str) -> bool:
+        """Clear all tags from a chat."""
+        pass
+
+    @abstractmethod
+    async def update_message(self, chat_id: str, user_id: str, message_id: str, content: str) -> Optional[dict]:
+        """Update a message in a chat."""
+        pass
+
 
 class BasePromptRepository(ABC):
     """Abstract base class for prompt data operations."""

@@ -122,6 +122,7 @@ from open_webui.config import (
     CODE_INTERPRETER_BLOCKED_MODULES,
 )
 from open_webui.utils.workflow.executor import ParallelToolExecutor, parse_execution_plan
+from open_webui.utils.workflow.react import ReActAgent, ReActConfig, ReActStatus
 from open_webui.env import (
     SRC_LOG_LEVELS,
     GLOBAL_LOG_LEVEL,
@@ -383,6 +384,91 @@ async def chat_completion_tools_handler(
         # Simple task - skip tools, let regular LLM handle it
         log.info("[Tools Handler] Simple task detected, skipping tool execution")
         return body, {}
+
+    # Check if we should use ReAct (iterative reasoning and acting)
+    # This can be enabled via config or detected from query patterns
+    enable_react = getattr(request.app.state.config, "ENABLE_REACT_AGENT", False)
+
+    if enable_react or route_decision.route_type == RouteType.REACT_WORKFLOW:
+        # Use ReAct agent for iterative reasoning and acting
+        log.info("[Tools Handler] Using ReAct agent for iterative execution")
+
+        async def generate_completion_for_react(system_prompt: str, user_prompt: str) -> str:
+            """Generate LLM completion for ReAct agent."""
+            react_payload = {
+                "model": task_model_id,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "stream": False,
+                "metadata": {"task": "react"},
+            }
+            response = await generate_chat_completion(request, form_data=react_payload, user=user)
+            content = await get_content_from_response(response)
+            return content or ""
+
+        # Configure ReAct agent
+        react_config = ReActConfig(
+            max_iterations=getattr(request.app.state.config, "REACT_MAX_ITERATIONS", 10),
+            tool_timeout=getattr(request.app.state.config, "REACT_TOOL_TIMEOUT", 60.0),
+            continue_on_failure=True,
+        )
+
+        # Create and run ReAct agent
+        react_agent = ReActAgent(
+            tools_dict=tools,
+            generate_completion_fn=generate_completion_for_react,
+            event_emitter=event_emitter,
+            event_caller=event_caller,
+            metadata=metadata,
+            process_tool_result_fn=process_tool_result,
+            request=request,
+            user=user,
+            config=react_config,
+        )
+
+        try:
+            if event_emitter:
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "react_start",
+                            "description": "Starting ReAct agent...",
+                            "done": False,
+                        },
+                    }
+                )
+
+            react_result = await react_agent.run(user_query)
+
+            if event_emitter:
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "react_complete",
+                            "description": f"ReAct completed ({react_result.total_iterations} iterations)",
+                            "done": True,
+                        },
+                    }
+                )
+
+            # Add ReAct result to messages
+            if react_result.final_answer:
+                body["messages"] = add_or_update_user_message(
+                    f"\n[ReAct Agent Result]\n{react_result.final_answer}",
+                    body["messages"],
+                )
+
+            log.info(f"[Tools Handler] ReAct completed: status={react_result.status.value}, iterations={react_result.total_iterations}")
+            return body, {"sources": react_result.sources}
+
+        except Exception as e:
+            log.error(f"[Tools Handler] ReAct error: {e}")
+            # Fall back to regular execution on error
+            pass
 
     execution_plan = None
 
@@ -1369,25 +1455,27 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if tool_ids:
         log.info(f"[MCP] Processing {len(tool_ids)} tool_ids: {tool_ids}")
+
+        # Count MCP servers to load
+        mcp_server_ids = [tid for tid in tool_ids if tid.startswith("bluenexus_mcp:") or tid.startswith("server:mcp:")]
+        if mcp_server_ids and event_emitter:
+            await event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "action": "mcp_connect",
+                        "description": f"Loading MCP servers...",
+                        "done": False,
+                    },
+                }
+            )
+
         for tool_id in tool_ids:
             # Handle BlueNexus MCP servers (user-specific, fetched from BlueNexus API)
             if tool_id.startswith("bluenexus_mcp:"):
                 try:
                     server_slug = tool_id[len("bluenexus_mcp:"):]
                     log.info(f"[BlueNexus MCP] Processing server slug: {server_slug}")
-
-                    # Send status update to keep the connection alive
-                    if event_emitter:
-                        await event_emitter(
-                            {
-                                "type": "status",
-                                "data": {
-                                    "action": "mcp_connect",
-                                    "description": f"Connecting to MCP server: {server_slug}",
-                                    "done": False,
-                                },
-                            }
-                        )
 
                     # Fetch user's BlueNexus MCP servers
                     from open_webui.utils.bluenexus.mcp import get_bluenexus_mcp_servers, get_bluenexus_mcp_oauth_token
@@ -1478,32 +1566,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     if not connected:
                         raise last_error if last_error else Exception("MCP connection failed")
 
-                    # Send status update - connection succeeded, now listing tools
-                    if event_emitter:
-                        await event_emitter(
-                            {
-                                "type": "status",
-                                "data": {
-                                    "action": "mcp_connect",
-                                    "description": f"Loading tools from {server_slug}...",
-                                    "done": False,
-                                },
-                            }
-                        )
-
                     # List and register tools with heartbeat to prevent timeout
-                    # Send immediate status event before starting list_tools (prevents early timeout)
-                    if event_emitter:
-                        await event_emitter(
-                            {
-                                "type": "status",
-                                "data": {
-                                    "action": "mcp_connect",
-                                    "description": f"Fetching tools from {server_slug}...",
-                                    "done": False,
-                                },
-                            }
-                        )
 
                     # Create task for list_tool_specs
                     list_tools_task = asyncio.create_task(mcp_clients[server_slug].list_tool_specs())
@@ -1516,14 +1579,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             tool_specs = await asyncio.wait_for(asyncio.shield(list_tools_task), timeout=heartbeat_interval)
                             break
                         except asyncio.TimeoutError:
-                            # Task not done yet, send heartbeat
+                            # Task not done yet, send silent heartbeat to keep connection alive
                             if event_emitter:
                                 await event_emitter(
                                     {
                                         "type": "status",
                                         "data": {
                                             "action": "mcp_connect",
-                                            "description": f"Loading tools from {server_slug}...",
+                                            "description": f"Loading MCP servers...",
                                             "done": False,
                                         },
                                     }
@@ -1570,19 +1633,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         }
 
                     log.info(f"[BlueNexus MCP] Registered {len(tool_specs) if tool_specs else 0} tools from {server_slug}")
-
-                    # Send status update - tools loaded successfully
-                    if event_emitter:
-                        await event_emitter(
-                            {
-                                "type": "status",
-                                "data": {
-                                    "action": "mcp_connect",
-                                    "description": f"MCP server {server_slug} ready ({len(tool_specs) if tool_specs else 0} tools)",
-                                    "done": True,
-                                },
-                            }
-                        )
 
                 except Exception as e:
                     log.error(f"[BlueNexus MCP] Failed to process server {tool_id}: {e}")
@@ -1787,6 +1837,19 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if mcp_tools_dict:
             log.info(f"[MCP] Merging {len(mcp_tools_dict)} MCP tools into tools_dict (existing: {len(tools_dict)})")
             tools_dict = {**tools_dict, **mcp_tools_dict}
+
+            # Send final summary message for MCP loading
+            if event_emitter:
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "mcp_connect",
+                            "description": f"MCP servers ready ({len(mcp_tools_dict)} tools)",
+                            "done": True,
+                        },
+                    }
+                )
 
     if direct_tool_servers:
         for tool_server in direct_tool_servers:

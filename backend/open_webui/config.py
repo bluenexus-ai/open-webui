@@ -1925,6 +1925,37 @@ use the built-in `__llm_compose__` tool. This tool lets the LLM see the actual d
 
 **DO NOT** pass raw JSON data directly to email bodies or user-facing content. Always use __llm_compose__ first!
 
+### Built-in Tool: __llm_critique__
+Use `__llm_critique__` to review and validate content before sending it to external services (email, Slack, etc.).
+This tool ensures quality control by checking content against specified criteria.
+
+**__llm_critique__ Parameters:**
+- `content`: The content to review (usually a reference like "{{step_2_result___llm_compose__.email_body}}")
+- `criteria`: List of criteria to check (e.g., ["Professional tone", "No sensitive data", "Clear structure"])
+- `action_on_issues`: What to do if issues found: "revise" | "halt" | "warn"
+  - "revise": Automatically fix issues and return revised content
+  - "halt": Stop execution if major/critical issues found
+  - "warn": Continue with warnings logged
+- `revision_instructions`: Optional custom instructions for revision
+
+**__llm_critique__ Output:**
+- `status`: "approved" | "revised" | "warned" | "halted"
+- `final_content`: The content to use (original if approved, revised if issues fixed)
+- `issues`: List of issues found (empty if approved)
+- `severity`: "none" | "minor" | "major" | "critical"
+
+**IMPORTANT: When to use __llm_critique__:**
+- ALWAYS before sending emails to external recipients
+- ALWAYS before posting to public Slack channels
+- Before any action that cannot be easily undone
+- When content quality and professionalism are critical
+
+**Example workflow with critique:**
+1. Fetch data (e.g., meeting transcripts)
+2. Use __llm_compose__ to generate email content
+3. Use __llm_critique__ to review the email (action_on_issues: "revise")
+4. Send email using {{step_3_result___llm_critique__.final_content}} as the body
+
 ### Referencing Previous Step Results:
 Use these EXACT formats to reference outputs from previous steps:
 - {{step_N_result_toolName}} - Get the FULL result from toolName in step N
@@ -2109,7 +2140,54 @@ Response:
 Note: When composing emails or user-facing content:
 - ALWAYS use __llm_compose__ to generate human-readable content from raw data
 - The LLM will see the actual data and create beautiful, formatted text
-- This ensures professional quality output instead of raw JSON dumps"""
+- This ensures professional quality output instead of raw JSON dumps
+
+### Example with Critique/Review Step (BEST PRACTICE):
+Query: "Get my recent meeting transcript and send me a summary email to user@example.com"
+Tools: [get_transcripts, send_email]
+
+Response:
+{
+  "reasoning": "Fetch meeting data, compose email with __llm_compose__, review with __llm_critique__, then send",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Fetch recent meeting transcripts",
+        "tool_calls": [
+          {"id": "transcripts_1", "name": "get_transcripts", "parameters": {"limit": 1}, "depends_on": []}
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Generate professional email content",
+        "tool_calls": [
+          {"id": "compose_1", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Write a professional email summarizing this meeting. Include meeting title, date, key discussion points, and action items.", "output_key": "email_body"}, "depends_on": ["transcripts_1"]}
+        ]
+      },
+      {
+        "step_number": 3,
+        "description": "Review email content before sending",
+        "tool_calls": [
+          {"id": "critique_1", "name": "__llm_critique__", "parameters": {"content": "{{step_2_result___llm_compose__.email_body}}", "criteria": ["Professional tone", "No sensitive information exposed", "Clear and well-structured", "Action items clearly stated"], "action_on_issues": "revise"}, "depends_on": ["compose_1"]}
+        ]
+      },
+      {
+        "step_number": 4,
+        "description": "Send the reviewed email",
+        "tool_calls": [
+          {"id": "email_1", "name": "send_email", "parameters": {"to": "user@example.com", "subject": "Meeting Summary", "body": "{{step_3_result___llm_critique__.final_content}}"}, "depends_on": ["critique_1"]}
+        ]
+      }
+    ]
+  }
+}
+
+Note: The __llm_critique__ tool:
+- Reviews content before sensitive actions (sending emails, posting messages)
+- Can auto-revise content if issues are found (action_on_issues: "revise")
+- Can halt execution for critical issues (action_on_issues: "halt")
+- Returns final_content which is either the approved original or revised version"""
 
 
 TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE = PersistentConfig(
