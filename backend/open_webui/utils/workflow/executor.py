@@ -570,6 +570,16 @@ Your job is to ensure the content meets quality standards and doesn't contain is
 
 Be strict but fair. Only flag genuine issues that would negatively impact the communication.
 
+CRITICAL AUTOMATIC CHECKS (always apply these):
+1. If content includes a "Subject:" line:
+   - FAIL if subject contains JSON (starts with { or [, or contains "body": or "content":)
+   - FAIL if subject is longer than 100 characters
+   - FAIL if subject contains newlines or the full email body
+   - WARN if subject is generic like "Meeting Summary" when it should be specific
+2. If content looks like JSON being sent as message body:
+   - FAIL if the content is raw JSON that should be human-readable text
+   - FAIL if the content starts with { and contains keys like "body", "subject", "content"
+
 Respond in JSON format:
 {
   "approved": true/false,

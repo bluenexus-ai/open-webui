@@ -542,6 +542,42 @@ async def create_new_chat(form_data: ChatForm, user=Depends(get_verified_user)):
 
 
 ############################
+# ImportChat (simplified)
+############################
+
+
+@router.post("/import", response_model=Optional[ChatResponse])
+async def import_chat(form_data: ChatImportForm, user=Depends(get_verified_user)):
+    try:
+        repo = get_chat_repository(user.id)
+
+        chat_data = {
+            "chat": form_data.chat,
+            "folder_id": form_data.folder_id,
+            "meta": form_data.meta,
+            "pinned": form_data.pinned,
+        }
+
+        chat = await repo.create(user.id, chat_data)
+
+        if chat:
+            return ChatResponse(**chat)
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(e)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT()
+        )
+
+
+############################
 # UpdateChatById
 ############################
 
@@ -861,42 +897,6 @@ async def delete_shared_chat_by_id(id: str, user=Depends(get_verified_user)):
         result = await repo.unshare(id, user.id)
         return result
 
-    except Exception as e:
-        log.exception(e)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.DEFAULT()
-        )
-
-
-############################
-# ImportChat (simplified)
-############################
-
-
-@router.post("/import", response_model=Optional[ChatResponse])
-async def import_chat(form_data: ChatImportForm, user=Depends(get_verified_user)):
-    try:
-        repo = get_chat_repository(user.id)
-
-        chat_data = {
-            "chat": form_data.chat,
-            "folder_id": form_data.folder_id,
-            "meta": form_data.meta,
-            "pinned": form_data.pinned,
-        }
-
-        chat = await repo.create(user.id, chat_data)
-
-        if chat:
-            return ChatResponse(**chat)
-
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ERROR_MESSAGES.DEFAULT(),
-        )
-
-    except HTTPException:
-        raise
     except Exception as e:
         log.exception(e)
         raise HTTPException(

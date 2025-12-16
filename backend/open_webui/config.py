@@ -1952,9 +1952,38 @@ This tool ensures quality control by checking content against specified criteria
 
 **Example workflow with critique:**
 1. Fetch data (e.g., meeting transcripts)
-2. Use __llm_compose__ to generate email content
+2. Use __llm_compose__ to generate email content (BOTH subject and body)
 3. Use __llm_critique__ to review the email (action_on_issues: "revise")
-4. Send email using {{step_3_result___llm_critique__.final_content}} as the body
+4. Send email using the generated subject and body
+
+### CRITICAL: Email Composition Rules
+**When sending emails, you MUST generate BOTH subject AND body separately:**
+
+1. **Subject Line Requirements:**
+   - MUST be generated dynamically (never use generic placeholders like "Meeting Summary")
+   - MUST be short, descriptive, and summarize the email content (max 100 characters)
+   - MUST NOT contain JSON, curly braces, or raw data
+   - MUST NOT contain the email body or any long text
+   - Should be specific to the content (e.g., "Q4 Planning Meeting - Action Items" not just "Meeting Summary")
+
+2. **Body Requirements:**
+   - MUST be human-readable, well-formatted text
+   - MUST NOT be raw JSON or data dumps
+   - Should include proper greeting, content, and signature
+
+3. **Critique Criteria for Emails MUST Include:**
+   - "Subject line is short, descriptive, and NOT JSON or raw data"
+   - "Subject line accurately summarizes the email content"
+   - "Body is properly formatted and human-readable"
+
+**WRONG approach (DO NOT DO):**
+```json
+{"subject": "Meeting Summary", "body": "{{step_2_result___llm_compose__.email}}"}
+```
+This uses a hardcoded subject instead of generating one from the data.
+
+**CORRECT approach:**
+Generate subject and body as separate output_keys, then use both:
 
 ### Referencing Previous Step Results:
 Use these EXACT formats to reference outputs from previous steps:
@@ -2109,7 +2138,7 @@ Tools: [get_transcripts, send_email]
 
 Response:
 {
-  "reasoning": "First fetch meeting data, then use __llm_compose__ to generate a beautiful email, then send it",
+  "reasoning": "Fetch meeting data, generate SUBJECT and BODY separately using __llm_compose__, then send",
   "execution_plan": {
     "steps": [
       {
@@ -2121,16 +2150,23 @@ Response:
       },
       {
         "step_number": 2,
-        "description": "Generate beautiful email content from meeting data",
+        "description": "Generate specific email subject line",
         "tool_calls": [
-          {"id": "compose_1", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Write a professional, well-formatted email summarizing this meeting. Include the meeting title, date, a clear summary of discussion points, and any action items. Use proper email formatting with greeting and signature.", "output_key": "email"}, "depends_on": ["transcripts_1"]}
+          {"id": "compose_subject", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Generate a SHORT email subject line (max 80 chars) that summarizes this meeting. Include meeting name/topic. Output ONLY the subject text.", "output_key": "subject"}, "depends_on": ["transcripts_1"]}
         ]
       },
       {
         "step_number": 3,
+        "description": "Generate professional email body",
+        "tool_calls": [
+          {"id": "compose_body", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Write a professional email body summarizing this meeting. Include meeting title, date, key discussion points, and action items. Use proper greeting and signature. Do NOT include a subject line.", "output_key": "body"}, "depends_on": ["transcripts_1"]}
+        ]
+      },
+      {
+        "step_number": 4,
         "description": "Send the composed email",
         "tool_calls": [
-          {"id": "email_1", "name": "send_email", "parameters": {"to": "user@example.com", "subject": "Your Recent Meeting Summary", "body": "{{step_2_result___llm_compose__.email}}"}, "depends_on": ["compose_1"]}
+          {"id": "email_1", "name": "send_email", "parameters": {"to": "user@example.com", "subject": "{{step_2_result___llm_compose__.subject}}", "body": "{{step_3_result___llm_compose__.body}}"}, "depends_on": ["compose_subject", "compose_body"]}
         ]
       }
     ]
@@ -2138,17 +2174,18 @@ Response:
 }
 
 Note: When composing emails or user-facing content:
-- ALWAYS use __llm_compose__ to generate human-readable content from raw data
-- The LLM will see the actual data and create beautiful, formatted text
-- This ensures professional quality output instead of raw JSON dumps
+- ALWAYS generate subject and body SEPARATELY using __llm_compose__
+- NEVER use hardcoded subjects like "Meeting Summary" - generate them from the data
+- The LLM will see the actual data and create specific, relevant content
+- This ensures professional quality output instead of generic or malformed content
 
-### Example with Critique/Review Step (BEST PRACTICE):
+### Example with Critique/Review Step (BEST PRACTICE for Emails):
 Query: "Get my recent meeting transcript and send me a summary email to user@example.com"
 Tools: [get_transcripts, send_email]
 
 Response:
 {
-  "reasoning": "Fetch meeting data, compose email with __llm_compose__, review with __llm_critique__, then send",
+  "reasoning": "Fetch meeting data, generate subject and body separately with __llm_compose__, review with __llm_critique__, then send",
   "execution_plan": {
     "steps": [
       {
@@ -2160,23 +2197,30 @@ Response:
       },
       {
         "step_number": 2,
-        "description": "Generate professional email content",
+        "description": "Generate email subject line from meeting data",
         "tool_calls": [
-          {"id": "compose_1", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Write a professional email summarizing this meeting. Include meeting title, date, key discussion points, and action items.", "output_key": "email_body"}, "depends_on": ["transcripts_1"]}
+          {"id": "compose_subject", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Generate a SHORT, specific email subject line (max 80 characters) that summarizes this meeting. Include the meeting name/topic if available. Output ONLY the subject line text, nothing else.", "output_key": "subject"}, "depends_on": ["transcripts_1"]}
         ]
       },
       {
         "step_number": 3,
-        "description": "Review email content before sending",
+        "description": "Generate professional email body",
         "tool_calls": [
-          {"id": "critique_1", "name": "__llm_critique__", "parameters": {"content": "{{step_2_result___llm_compose__.email_body}}", "criteria": ["Professional tone", "No sensitive information exposed", "Clear and well-structured", "Action items clearly stated"], "action_on_issues": "revise"}, "depends_on": ["compose_1"]}
+          {"id": "compose_body", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Write a professional email body summarizing this meeting. Include: greeting, meeting date/time, key discussion points, action items, and professional closing. Do NOT include a subject line.", "output_key": "body"}, "depends_on": ["transcripts_1"]}
         ]
       },
       {
         "step_number": 4,
-        "description": "Send the reviewed email",
+        "description": "Review email content before sending",
         "tool_calls": [
-          {"id": "email_1", "name": "send_email", "parameters": {"to": "user@example.com", "subject": "Meeting Summary", "body": "{{step_3_result___llm_critique__.final_content}}"}, "depends_on": ["critique_1"]}
+          {"id": "critique_1", "name": "__llm_critique__", "parameters": {"content": "Subject: {{step_2_result___llm_compose__.subject}}\n\nBody: {{step_3_result___llm_compose__.body}}", "criteria": ["Subject line is short (under 100 chars), descriptive, and NOT JSON", "Subject line accurately reflects the meeting content", "Body is well-formatted with proper greeting and closing", "No sensitive information exposed", "Professional tone throughout"], "action_on_issues": "revise"}, "depends_on": ["compose_subject", "compose_body"]}
+        ]
+      },
+      {
+        "step_number": 5,
+        "description": "Send the reviewed email with generated subject",
+        "tool_calls": [
+          {"id": "email_1", "name": "send_email", "parameters": {"to": "user@example.com", "subject": "{{step_2_result___llm_compose__.subject}}", "body": "{{step_4_result___llm_critique__.final_content}}"}, "depends_on": ["critique_1"]}
         ]
       }
     ]
@@ -2187,7 +2231,8 @@ Note: The __llm_critique__ tool:
 - Reviews content before sensitive actions (sending emails, posting messages)
 - Can auto-revise content if issues are found (action_on_issues: "revise")
 - Can halt execution for critical issues (action_on_issues: "halt")
-- Returns final_content which is either the approved original or revised version"""
+- Returns final_content which is either the approved original or revised version
+- For emails, ALWAYS include subject line validation in the criteria"""
 
 
 TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE = PersistentConfig(
