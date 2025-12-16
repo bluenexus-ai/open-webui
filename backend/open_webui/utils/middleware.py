@@ -37,6 +37,8 @@ from open_webui.utils.bluenexus.chat_ops import (
     update_chat_title_and_tags as bluenexus_update_title_and_tags,
     MessageUpdateBatcher,
 )
+from open_webui.utils.bluenexus.config import is_bluenexus_data_storage_enabled
+from open_webui.models.chats import Chats
 from open_webui.models.users import Users
 from open_webui.socket.main import (
     get_event_call,
@@ -309,9 +311,18 @@ async def chat_completion_tools_handler(
     request: Request, body: dict, extra_params: dict, user: UserModel, models, tools
 ) -> tuple[dict, dict]:
     """
-    Enhanced tool handler with execution planning and parallel execution.
-    Supports both legacy tool_calls format and new execution_plan format.
+    Enhanced tool handler with intelligent routing, execution planning and parallel execution.
+
+    Routes:
+    1. Simple tasks → Skip tools, return to regular LLM
+    2. Complex tasks with predefined patterns → Use template workflows
+    3. Complex tasks without patterns → Auto-plan with LLM
     """
+    from open_webui.utils.workflow.router import (
+        RouteType,
+        classify_task_by_pattern,
+        build_execution_plan_from_workflow,
+    )
 
     async def get_content_from_response(response) -> Optional[str]:
         content = None
@@ -359,27 +370,81 @@ async def chat_completion_tools_handler(
         models,
     )
 
-    specs = [tool["spec"] for tool in tools.values()]
-    tools_specs = json.dumps(specs)
+    # Get user query for routing
+    user_query = get_last_user_message(body["messages"]) or ""
+    available_tool_names = list(tools.keys())
 
-    # Use execution planning template if available, otherwise fall back to legacy
-    if hasattr(request.app.state.config, "TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE") and \
-       request.app.state.config.TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE != "":
-        template = request.app.state.config.TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE
-    elif request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE != "":
-        template = request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
-    else:
-        # Use the new execution planning template by default
-        template = DEFAULT_TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE
+    # Step 1: Route the task (fast pattern matching, no LLM call)
+    route_decision = classify_task_by_pattern(user_query, available_tool_names)
+    log.info(f"[Tools Handler] Route decision: {route_decision.route_type.value} - {route_decision.reasoning}")
 
-    tools_function_calling_prompt = tools_function_calling_generation_template(
-        template, tools_specs
-    )
-    payload = get_tools_function_calling_payload(
-        body["messages"], task_model_id, tools_function_calling_prompt
-    )
+    # Step 2: Handle based on route type
+    if route_decision.route_type == RouteType.SIMPLE_LLM:
+        # Simple task - skip tools, let regular LLM handle it
+        log.info("[Tools Handler] Simple task detected, skipping tool execution")
+        return body, {}
 
-    try:
+    execution_plan = None
+
+    if route_decision.route_type == RouteType.PREDEFINED_WORKFLOW and route_decision.workflow:
+        # Use predefined workflow template
+        log.info(f"[Tools Handler] Using predefined workflow: {route_decision.workflow.name}")
+
+        # Build user context for variable substitution
+        user_context = {
+            "USER_EMAIL": user.email if hasattr(user, "email") else "",
+            "USER_NAME": user.name if hasattr(user, "name") else "",
+            "USER_ID": user.id if hasattr(user, "id") else "",
+        }
+
+        # Extract email address from query if present
+        email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_query)
+        if email_match:
+            user_context["USER_EMAIL"] = email_match.group()
+
+        # Build execution plan from template
+        plan_data = build_execution_plan_from_workflow(route_decision.workflow, user_context)
+
+        # Emit status about using predefined workflow
+        if event_emitter:
+            await event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "action": "workflow_routing",
+                        "description": f"Using optimized workflow: {route_decision.workflow.name}",
+                        "done": True,
+                    },
+                }
+            )
+
+        # Parse the template-generated plan
+        execution_plan = parse_execution_plan(json.dumps(plan_data), tools)
+
+    if execution_plan is None:
+        # AUTO_PLANNED_WORKFLOW: Use LLM to generate execution plan
+        log.info("[Tools Handler] Using LLM to generate execution plan")
+
+        specs = [tool["spec"] for tool in tools.values()]
+        tools_specs = json.dumps(specs)
+
+        # Use execution planning template if available, otherwise fall back to legacy
+        if hasattr(request.app.state.config, "TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE") and \
+           request.app.state.config.TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE != "":
+            template = request.app.state.config.TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE
+        elif request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE != "":
+            template = request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+        else:
+            # Use the new execution planning template by default
+            template = DEFAULT_TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE
+
+        tools_function_calling_prompt = tools_function_calling_generation_template(
+            template, tools_specs
+        )
+        payload = get_tools_function_calling_payload(
+            body["messages"], task_model_id, tools_function_calling_prompt
+        )
+
         response = await generate_chat_completion(request, form_data=payload, user=user)
         log.debug(f"{response=}")
         content = await get_content_from_response(response)
@@ -391,16 +456,34 @@ async def chat_completion_tools_handler(
         # Parse the execution plan from LLM response
         execution_plan = parse_execution_plan(content, tools)
 
-        if not execution_plan or not execution_plan.steps:
-            log.debug("[Tools Handler] No valid execution plan parsed from response")
-            return body, {}
+    # At this point, execution_plan is either from predefined workflow or LLM planning
+    if not execution_plan or not execution_plan.steps:
+        log.debug("[Tools Handler] No valid execution plan parsed from response")
+        return body, {}
 
+    try:
         log.info(
             f"[Tools Handler] Execution plan: {execution_plan.total_tools} tools in "
             f"{len(execution_plan.steps)} steps"
         )
         if execution_plan.reasoning:
             log.info(f"[Tools Handler] Plan reasoning: {execution_plan.reasoning}")
+
+        # Create a completion function for LLM compose steps
+        async def generate_completion_for_compose(system_prompt: str, user_prompt: str) -> str:
+            """Generate LLM completion for __llm_compose__ tool."""
+            compose_payload = {
+                "model": task_model_id,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "stream": False,
+                "metadata": {"task": "compose"},
+            }
+            response = await generate_chat_completion(request, form_data=compose_payload, user=user)
+            content = await get_content_from_response(response)
+            return content or ""
 
         # Create parallel executor
         executor = ParallelToolExecutor(
@@ -411,6 +494,7 @@ async def chat_completion_tools_handler(
             process_tool_result_fn=process_tool_result,
             request=request,
             user=user,
+            generate_completion_fn=generate_completion_for_compose,
         )
 
         # Execute the plan (steps run sequentially, tools within steps run in parallel)
@@ -703,7 +787,13 @@ async def chat_image_generation_handler(
         return form_data
 
     # Use cached chat data if available to avoid redundant API calls
-    chat_data = metadata.get("_cached_chat_data") or await bluenexus_get_chat(user.id, chat_id)
+    chat_data = metadata.get("_cached_chat_data")
+    if not chat_data:
+        if is_bluenexus_data_storage_enabled():
+            chat_data = await bluenexus_get_chat(user.id, chat_id)
+        else:
+            chat_model = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+            chat_data = chat_model.model_dump() if chat_model else None
     if not chat_data:
         return form_data
 
@@ -1110,7 +1200,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     chat_id = metadata.get("chat_id", None)
     if chat_id and user:
         # Use cached chat data if available to avoid redundant API calls
-        chat_data = metadata.get("_cached_chat_data") or await bluenexus_get_chat(user.id, chat_id)
+        chat_data = metadata.get("_cached_chat_data")
+        if not chat_data:
+            if is_bluenexus_data_storage_enabled():
+                chat_data = await bluenexus_get_chat(user.id, chat_id)
+            else:
+                chat_model = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+                chat_data = chat_model.model_dump() if chat_model else None
         folder_id = chat_data.get("folder_id") if chat_data else None
         if folder_id:
             folder = Folders.get_folder_by_id_and_user_id(folder_id, user.id)
@@ -1820,7 +1916,10 @@ async def process_chat_response(
                 chat = cached_chat.get("chat", {})
                 messages_map = chat.get("history", {}).get("messages", {})
             else:
-                messages_map = await bluenexus_get_messages_map(user.id, metadata["chat_id"])
+                if is_bluenexus_data_storage_enabled():
+                    messages_map = await bluenexus_get_messages_map(user.id, metadata["chat_id"])
+                else:
+                    messages_map = Chats.get_messages_map_by_chat_id(metadata["chat_id"])
             message = messages_map.get(metadata["message_id"]) if messages_map else None
 
             message_list = get_message_list(messages_map, metadata["message_id"])
@@ -1910,14 +2009,21 @@ async def process_chat_response(
                             )
 
                             if not metadata.get("chat_id", "").startswith("local:"):
-                                await bluenexus_upsert_message(
-                                    user.id,
-                                    metadata["chat_id"],
-                                    metadata["message_id"],
-                                    {
-                                        "followUps": follow_ups,
-                                    },
-                                )
+                                if is_bluenexus_data_storage_enabled():
+                                    await bluenexus_upsert_message(
+                                        user.id,
+                                        metadata["chat_id"],
+                                        metadata["message_id"],
+                                        {
+                                            "followUps": follow_ups,
+                                        },
+                                    )
+                                else:
+                                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                                        metadata["chat_id"],
+                                        metadata["message_id"],
+                                        {"followUps": follow_ups},
+                                    )
 
                         except Exception as e:
                             pass
@@ -2038,9 +2144,16 @@ async def process_chat_response(
 
                     # Combined update for title and tags (1 API call instead of 2)
                     if generated_title is not None or generated_tags is not None:
-                        await bluenexus_update_title_and_tags(
-                            user.id, metadata["chat_id"], generated_title, generated_tags
-                        )
+                        if is_bluenexus_data_storage_enabled():
+                            await bluenexus_update_title_and_tags(
+                                user.id, metadata["chat_id"], generated_title, generated_tags
+                            )
+                        else:
+                            # Use PostgreSQL for title/tags update
+                            if generated_title is not None:
+                                Chats.update_chat_title_by_id(metadata["chat_id"], generated_title)
+                            if generated_tags is not None:
+                                Chats.update_chat_tags_by_id(metadata["chat_id"], generated_tags, user)
 
     event_emitter = None
     event_caller = None
@@ -2086,14 +2199,21 @@ async def process_chat_response(
                         else:
                             error = str(error)
 
-                        await bluenexus_upsert_message(
-                            user.id,
-                            metadata["chat_id"],
-                            metadata["message_id"],
-                            {
-                                "error": {"content": error},
-                            },
-                        )
+                        if is_bluenexus_data_storage_enabled():
+                            await bluenexus_upsert_message(
+                                user.id,
+                                metadata["chat_id"],
+                                metadata["message_id"],
+                                {
+                                    "error": {"content": error},
+                                },
+                            )
+                        else:
+                            Chats.upsert_message_to_chat_by_id_and_message_id(
+                                metadata["chat_id"],
+                                metadata["message_id"],
+                                {"error": {"content": error}},
+                            )
                         if isinstance(error, str) or isinstance(error, dict):
                             await event_emitter(
                                 {
@@ -2103,14 +2223,21 @@ async def process_chat_response(
                             )
 
                     if "selected_model_id" in response_data:
-                        await bluenexus_upsert_message(
-                            user.id,
-                            metadata["chat_id"],
-                            metadata["message_id"],
-                            {
-                                "selectedModelId": response_data["selected_model_id"],
-                            },
-                        )
+                        if is_bluenexus_data_storage_enabled():
+                            await bluenexus_upsert_message(
+                                user.id,
+                                metadata["chat_id"],
+                                metadata["message_id"],
+                                {
+                                    "selectedModelId": response_data["selected_model_id"],
+                                },
+                            )
+                        else:
+                            Chats.upsert_message_to_chat_by_id_and_message_id(
+                                metadata["chat_id"],
+                                metadata["message_id"],
+                                {"selectedModelId": response_data["selected_model_id"]},
+                            )
 
                     choices = response_data.get("choices", [])
                     if choices and choices[0].get("message", {}).get("content"):
@@ -2124,7 +2251,10 @@ async def process_chat_response(
                                 }
                             )
 
-                            title = await bluenexus_get_title(user.id, metadata["chat_id"])
+                            if is_bluenexus_data_storage_enabled():
+                                title = await bluenexus_get_title(user.id, metadata["chat_id"])
+                            else:
+                                title = Chats.get_chat_title_by_id(metadata["chat_id"])
 
                             await event_emitter(
                                 {
@@ -2138,15 +2268,22 @@ async def process_chat_response(
                             )
 
                             # Save message in the database
-                            await bluenexus_upsert_message(
-                                user.id,
-                                metadata["chat_id"],
-                                metadata["message_id"],
-                                {
-                                    "role": "assistant",
-                                    "content": content,
-                                },
-                            )
+                            if is_bluenexus_data_storage_enabled():
+                                await bluenexus_upsert_message(
+                                    user.id,
+                                    metadata["chat_id"],
+                                    metadata["message_id"],
+                                    {
+                                        "role": "assistant",
+                                        "content": content,
+                                    },
+                                )
+                            else:
+                                Chats.upsert_message_to_chat_by_id_and_message_id(
+                                    metadata["chat_id"],
+                                    metadata["message_id"],
+                                    {"role": "assistant", "content": content},
+                                )
 
                             # Send a webhook notification if the user is not active
                             if not get_active_status_by_user_id(user.id):
@@ -2614,9 +2751,12 @@ async def process_chat_response(
 
                 return content, content_blocks, end_flag
 
-            message = await bluenexus_get_message(
-                user.id, metadata["chat_id"], metadata["message_id"]
-            )
+            if is_bluenexus_data_storage_enabled():
+                message = await bluenexus_get_message(
+                    user.id, metadata["chat_id"], metadata["message_id"]
+                )
+            else:
+                message = Chats.get_message_by_id_and_message_id(metadata["chat_id"], metadata["message_id"])
 
             # Create batcher for streaming message updates (reduces API calls)
             message_batcher = None
@@ -2680,14 +2820,21 @@ async def process_chat_response(
                     )
 
                     # Save message in the database
-                    await bluenexus_upsert_message(
-                        user.id,
-                        metadata["chat_id"],
-                        metadata["message_id"],
-                        {
-                            **event,
-                        },
-                    )
+                    if is_bluenexus_data_storage_enabled():
+                        await bluenexus_upsert_message(
+                            user.id,
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {
+                                **event,
+                            },
+                        )
+                    else:
+                        Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {**event},
+                        )
 
                 async def stream_body_handler(response, form_data):
                     nonlocal content
@@ -2758,14 +2905,21 @@ async def process_chat_response(
 
                                 if "selected_model_id" in data:
                                     model_id = data["selected_model_id"]
-                                    await bluenexus_upsert_message(
-                                        user.id,
-                                        metadata["chat_id"],
-                                        metadata["message_id"],
-                                        {
-                                            "selectedModelId": model_id,
-                                        },
-                                    )
+                                    if is_bluenexus_data_storage_enabled():
+                                        await bluenexus_upsert_message(
+                                            user.id,
+                                            metadata["chat_id"],
+                                            metadata["message_id"],
+                                            {
+                                                "selectedModelId": model_id,
+                                            },
+                                        )
+                                    else:
+                                        Chats.upsert_message_to_chat_by_id_and_message_id(
+                                            metadata["chat_id"],
+                                            metadata["message_id"],
+                                            {"selectedModelId": model_id},
+                                        )
                                     await event_emitter(
                                         {
                                             "type": "chat:completion",
@@ -2978,16 +3132,23 @@ async def process_chat_response(
                                                 )
                                             else:
                                                 # Fallback for local chats
-                                                await bluenexus_upsert_message(
-                                                    user.id,
-                                                    metadata["chat_id"],
-                                                    metadata["message_id"],
-                                                    {
-                                                        "content": serialize_content_blocks(
-                                                            content_blocks
-                                                        ),
-                                                    },
-                                                )
+                                                if is_bluenexus_data_storage_enabled():
+                                                    await bluenexus_upsert_message(
+                                                        user.id,
+                                                        metadata["chat_id"],
+                                                        metadata["message_id"],
+                                                        {
+                                                            "content": serialize_content_blocks(
+                                                                content_blocks
+                                                            ),
+                                                        },
+                                                    )
+                                                else:
+                                                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                                                        metadata["chat_id"],
+                                                        metadata["message_id"],
+                                                        {"content": serialize_content_blocks(content_blocks)},
+                                                    )
                                         else:
                                             data = {
                                                 "content": serialize_content_blocks(
@@ -3444,7 +3605,10 @@ async def process_chat_response(
                 if message_batcher:
                     await message_batcher.__aexit__(None, None, None)
 
-                title = await bluenexus_get_title(user.id, metadata["chat_id"])
+                if is_bluenexus_data_storage_enabled():
+                    title = await bluenexus_get_title(user.id, metadata["chat_id"])
+                else:
+                    title = Chats.get_chat_title_by_id(metadata["chat_id"])
                 data = {
                     "done": True,
                     "content": serialize_content_blocks(content_blocks),
@@ -3453,14 +3617,21 @@ async def process_chat_response(
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
                     # Save message in the database
-                    await bluenexus_upsert_message(
-                        user.id,
-                        metadata["chat_id"],
-                        metadata["message_id"],
-                        {
-                            "content": serialize_content_blocks(content_blocks),
-                        },
-                    )
+                    if is_bluenexus_data_storage_enabled():
+                        await bluenexus_upsert_message(
+                            user.id,
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {
+                                "content": serialize_content_blocks(content_blocks),
+                            },
+                        )
+                    else:
+                        Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {"content": serialize_content_blocks(content_blocks)},
+                        )
 
                 # Send a webhook notification if the user is not active
                 if not get_active_status_by_user_id(user.id):
@@ -3499,14 +3670,21 @@ async def process_chat_response(
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
                     # Save message in the database
-                    await bluenexus_upsert_message(
-                        user.id,
-                        metadata["chat_id"],
-                        metadata["message_id"],
-                        {
-                            "content": serialize_content_blocks(content_blocks),
-                        },
-                    )
+                    if is_bluenexus_data_storage_enabled():
+                        await bluenexus_upsert_message(
+                            user.id,
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {
+                                "content": serialize_content_blocks(content_blocks),
+                            },
+                        )
+                    else:
+                        Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {"content": serialize_content_blocks(content_blocks)},
+                        )
 
             if response.background is not None:
                 await response.background()

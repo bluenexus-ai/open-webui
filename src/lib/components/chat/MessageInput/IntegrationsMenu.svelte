@@ -8,6 +8,7 @@
 
 	import { getOAuthClientAuthorizationUrl } from '$lib/apis/configs';
 	import { getTools } from '$lib/apis/tools';
+	import { updateUserSettings } from '$lib/apis/users';
 
 	import Knobs from '$lib/components/icons/Knobs.svelte';
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
@@ -48,6 +49,16 @@
 	let tab = '';
 
 	let tools = null;
+
+	// Save selected tools to user settings for persistence across sessions
+	const saveDefaultTools = async (toolIds: string[]) => {
+		try {
+			await updateUserSettings(localStorage.token, { defaultToolIds: toolIds });
+			settings.update((s) => ({ ...s, defaultToolIds: toolIds }));
+		} catch (e) {
+			console.error('Failed to save default tools:', e);
+		}
+	};
 
 	$: if (show) {
 		init();
@@ -364,6 +375,9 @@
 									} else {
 										selectedToolIds = selectedToolIds.filter((id) => id !== toolId);
 									}
+
+									// Save selection to persist across chat sessions
+									saveDefaultTools(selectedToolIds);
 								}
 							}}
 						>

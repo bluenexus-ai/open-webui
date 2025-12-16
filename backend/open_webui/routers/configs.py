@@ -384,7 +384,10 @@ async def get_bluenexus_mcp_servers(
     Get available BlueNexus MCP servers for the authenticated user.
     Requires BlueNexus OAuth connection with mcp-proxy scope.
     """
-    return await _get_bluenexus_mcp_servers_impl(user.id)
+    log.info(f"[BlueNexus MCP] Request received for user {user.id} (role={user.role})")
+    result = await _get_bluenexus_mcp_servers_impl(user.id)
+    log.info(f"[BlueNexus MCP] Returning {len(result.data)} servers for user {user.id}")
+    return result
 
 
 ############################

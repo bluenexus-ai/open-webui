@@ -134,6 +134,11 @@
 	let webSearchEnabled = false;
 	let codeInterpreterEnabled = false;
 
+	// Sync selectedToolIds with global settings (applies to ALL chats)
+	$: if ($settings?.defaultToolIds) {
+		selectedToolIds = [...$settings.defaultToolIds];
+	}
+
 	let showCommands = false;
 
 	let generating = false;
@@ -166,7 +171,7 @@
 		messageInput?.setText('');
 
 		files = [];
-		selectedToolIds = [];
+		// selectedToolIds is now global - don't clear it per chat
 		selectedFilterIds = [];
 		webSearchEnabled = false;
 		imageGenerationEnabled = false;
@@ -189,7 +194,7 @@
 					if (!$temporaryChatEnabled) {
 						messageInput?.setText(input.prompt);
 						files = input.files;
-						selectedToolIds = input.selectedToolIds;
+						// selectedToolIds is now global - don't restore per chat
 						selectedFilterIds = input.selectedFilterIds;
 						webSearchEnabled = input.webSearchEnabled;
 						imageGenerationEnabled = input.imageGenerationEnabled;
@@ -251,7 +256,7 @@
 	};
 
 	const resetInput = () => {
-		selectedToolIds = [];
+		// selectedToolIds is now global and synced via reactive statement
 		selectedFilterIds = [];
 		webSearchEnabled = false;
 		imageGenerationEnabled = false;
@@ -273,14 +278,8 @@
 
 		const model = atSelectedModel ?? $models.find((m) => m.id === selectedModels[0]);
 		if (model) {
-			// Set Default Tools
-			if (model?.info?.meta?.toolIds) {
-				selectedToolIds = [
-					...new Set(
-						[...(model?.info?.meta?.toolIds ?? [])].filter((id) => $tools.find((t) => t.id === id))
-					)
-				];
-			}
+			// Note: selectedToolIds is now global and synced from settings
+			// Model-specific toolIds are no longer merged automatically
 
 			// Set Default Filters (Toggleable only)
 			if (model?.info?.meta?.defaultFilterIds) {
@@ -571,7 +570,7 @@
 			messageInput?.setText('');
 
 			files = [];
-			selectedToolIds = [];
+			// selectedToolIds is now global - don't clear or restore per chat
 			selectedFilterIds = [];
 			webSearchEnabled = false;
 			imageGenerationEnabled = false;
@@ -583,7 +582,7 @@
 				if (!$temporaryChatEnabled) {
 					messageInput?.setText(input.prompt);
 					files = input.files;
-					selectedToolIds = input.selectedToolIds;
+					// selectedToolIds is now global - don't restore per chat
 					selectedFilterIds = input.selectedFilterIds;
 					webSearchEnabled = input.webSearchEnabled;
 					imageGenerationEnabled = input.imageGenerationEnabled;

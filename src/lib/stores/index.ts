@@ -149,6 +149,7 @@ type OllamaModelDetails = {
 type Settings = {
 	pinnedModels?: never[];
 	toolServers?: never[];
+	defaultToolIds?: string[];
 	detectArtifacts?: boolean;
 	showUpdateToast?: boolean;
 	showChangelog?: boolean;

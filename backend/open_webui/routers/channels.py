@@ -251,7 +251,7 @@ async def send_notification(name, webui_url, channel, message, active_user_ids):
 async def model_response_handler(request, channel, message, user):
     MODELS = {
         model["id"]: model
-        for model in get_filtered_models(await get_all_models(request, user=user), user)
+        for model in await get_filtered_models(await get_all_models(request, user=user), user)
     }
 
     mentions = extract_mentions(message.content)

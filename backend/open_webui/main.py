@@ -113,6 +113,8 @@ from open_webui.utils.bluenexus.chat_ops import (
     get_chat_by_id_and_user_id as bluenexus_get_chat_by_id_and_user_id,
     upsert_message_to_chat_by_id_and_message_id as bluenexus_upsert_message,
 )
+from open_webui.utils.bluenexus.config import is_bluenexus_data_storage_enabled
+from open_webui.models.chats import Chats
 
 from open_webui.config import (
     # Ollama
@@ -1457,7 +1459,7 @@ async def get_models(
             )
         )
 
-    models = get_filtered_models(models, user)
+    models = await get_filtered_models(models, user)
 
     log.debug(
         f"/api/models returned filtered models accessible to the user: {json.dumps([model.get('id') for model in models])}"
@@ -1588,7 +1590,11 @@ async def chat_completion(
 
         if metadata.get("chat_id") and user:
             if not metadata["chat_id"].startswith("local:"):
-                chat = await bluenexus_get_chat_by_id_and_user_id(user.id, metadata["chat_id"])
+                # Use appropriate storage based on config
+                if is_bluenexus_data_storage_enabled():
+                    chat = await bluenexus_get_chat_by_id_and_user_id(user.id, metadata["chat_id"])
+                else:
+                    chat = Chats.get_chat_by_id_and_user_id(metadata["chat_id"], user.id)
                 if chat is None and user.role != "admin":
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
@@ -1596,7 +1602,11 @@ async def chat_completion(
                     )
                 # Cache chat data in metadata to avoid redundant lookups
                 if chat:
-                    metadata["_cached_chat_data"] = chat
+                    # Convert ChatModel to dict if needed for consistent access
+                    if hasattr(chat, 'model_dump'):
+                        metadata["_cached_chat_data"] = chat.model_dump()
+                    else:
+                        metadata["_cached_chat_data"] = chat
 
         request.state.metadata = metadata
         form_data["metadata"] = metadata
@@ -1622,14 +1632,16 @@ async def chat_completion(
                 if metadata.get("chat_id") and metadata.get("message_id"):
                     try:
                         if not metadata["chat_id"].startswith("local:"):
-                            await bluenexus_upsert_message(
-                                user.id,
-                                metadata["chat_id"],
-                                metadata["message_id"],
-                                {
-                                    "model": model_id,
-                                },
-                            )
+                            # Only upsert to BlueNexus if data storage is enabled
+                            if is_bluenexus_data_storage_enabled():
+                                await bluenexus_upsert_message(
+                                    user.id,
+                                    metadata["chat_id"],
+                                    metadata["message_id"],
+                                    {
+                                        "model": model_id,
+                                    },
+                                )
                     except:
                         pass
 
@@ -1695,14 +1707,16 @@ async def chat_completion(
                     # Update the chat message with the error
                     try:
                         if not metadata["chat_id"].startswith("local:"):
-                            await bluenexus_upsert_message(
-                                user.id,
-                                metadata["chat_id"],
-                                metadata["message_id"],
-                                {
-                                    "error": {"content": str(e)},
-                                },
-                            )
+                            # Only upsert to BlueNexus if data storage is enabled
+                            if is_bluenexus_data_storage_enabled():
+                                await bluenexus_upsert_message(
+                                    user.id,
+                                    metadata["chat_id"],
+                                    metadata["message_id"],
+                                    {
+                                        "error": {"content": str(e)},
+                                    },
+                                )
 
                         event_emitter = get_event_emitter(metadata)
                         await event_emitter(
@@ -1809,7 +1823,11 @@ async def list_tasks_endpoint(request: Request, user=Depends(get_verified_user))
 async def list_tasks_by_chat_id_endpoint(
     request: Request, chat_id: str, user=Depends(get_verified_user)
 ):
-    chat = await bluenexus_get_chat_by_id(user.id, chat_id)
+    # Use appropriate storage based on config
+    if is_bluenexus_data_storage_enabled():
+        chat = await bluenexus_get_chat_by_id(user.id, chat_id)
+    else:
+        chat = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
     if chat is None:
         return {"task_ids": []}
 

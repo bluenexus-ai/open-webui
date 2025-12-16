@@ -113,6 +113,19 @@ ENABLE_BLUENEXUS_SYNC = PersistentConfig(
     os.environ.get("ENABLE_BLUENEXUS_SYNC", "False").lower() == "true",
 )
 
+####################################
+# BlueNexus Data Storage
+####################################
+
+# Controls where user data (chats, prompts, models, tools) is stored
+# True: Store in BlueNexus (requires ENABLE_BLUENEXUS=true)
+# False: Store in PostgreSQL (default)
+BLUENEXUS_DATA_STORAGE = PersistentConfig(
+    "BLUENEXUS_DATA_STORAGE",
+    "bluenexus.data_storage",
+    os.environ.get("BLUENEXUS_DATA_STORAGE", "False").lower() == "true",
+)
+
 
 def is_bluenexus_enabled() -> bool:
     """Check if BlueNexus is enabled."""
@@ -122,6 +135,11 @@ def is_bluenexus_enabled() -> bool:
 def is_bluenexus_sync_enabled() -> bool:
     """Check if BlueNexus sync is enabled."""
     return ENABLE_BLUENEXUS.value and ENABLE_BLUENEXUS_SYNC.value
+
+
+def is_bluenexus_data_storage_enabled() -> bool:
+    """Check if BlueNexus data storage is enabled."""
+    return ENABLE_BLUENEXUS.value and BLUENEXUS_DATA_STORAGE.value
 
 
 def is_bluenexus_configured() -> bool:

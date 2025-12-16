@@ -1906,8 +1906,56 @@ You are an expert tool orchestrator. Analyze the user's query and create an exec
 ### Rules:
 - Tools with no dependencies on each other can run in the same step (parallel execution)
 - Tools that depend on another tool's output must be in a later step
-- Use tool output references like {{step_N_result_toolName}} for dependent parameters
 - Return ONLY the JSON, no explanation text before or after
+
+### Built-in Tool: __llm_compose__
+When you need to generate human-readable content (like email bodies, summaries, reports) from tool results,
+use the built-in `__llm_compose__` tool. This tool lets the LLM see the actual data and compose beautiful content.
+
+**__llm_compose__ Parameters:**
+- `data`: Reference to previous step data (e.g., "{{step_1_result_get_transcripts}}")
+- `prompt`: Instructions for what to generate (e.g., "write a professional email summarizing this meeting")
+- `output_key`: Name for the output field (default: "content")
+
+**IMPORTANT: When to use __llm_compose__:**
+- When sending emails - use __llm_compose__ to generate the email body and subject
+- When creating reports or summaries from raw data
+- When the output needs to be human-readable, not raw JSON
+- When you need to format or transform data into a different structure
+
+**DO NOT** pass raw JSON data directly to email bodies or user-facing content. Always use __llm_compose__ first!
+
+### Referencing Previous Step Results:
+Use these EXACT formats to reference outputs from previous steps:
+- {{step_N_result_toolName}} - Get the FULL result from toolName in step N
+- {{step_N_result_toolName.property}} - Get a specific property from the result
+- {{step_N_result_toolName.nested.path}} - Get a nested property
+- {{step_N_result_toolName.array.0}} - Get first item from an array result
+
+IMPORTANT: Always use the exact format above. The pattern MUST be:
+- Start with "step_" followed by the step number
+- Then "_result_"
+- Then the exact tool name
+- Optionally followed by ".property.path"
+
+**CRITICAL: Use property access to extract specific fields!**
+- When a tool returns structured data (JSON), extract ONLY the fields you need
+- DO NOT pass entire JSON objects as email bodies, messages, or user-facing content
+- Always use .property.path notation to get human-readable text fields
+- For arrays, use .0, .1, etc. to access specific items
+
+Examples of CORRECT references:
+- {{step_1_result_web_search}} - Full result (only use when you need everything)
+- {{step_1_result_get_user.id}} - Get "id" property from get_user result
+- {{step_1_result_get_user.email}} - Get just the email field
+- {{step_2_result_fetch_data.items.0.name}} - Get name of first item
+- {{step_1_result_get_meeting.results.0.summary.short_summary}} - Get readable summary text
+
+Examples of WRONG approaches (DO NOT DO):
+- Using {{step_1_result_get_data}} as email body when it returns JSON - WRONG! Extract the text field
+- {{search_result}} - Missing step number and _result_ format
+- {{step1_web_search}} - Missing _result_ between step number and tool name
+- {{result.id}} - Missing step number and tool name
 
 ### Output Format:
 {
@@ -1995,7 +2043,73 @@ Response:
       }
     ]
   }
-}"""
+}
+
+### Example with Property Access:
+Query: "Get user info and send them a welcome email"
+Tools: [get_user, send_email]
+
+Response:
+{
+  "reasoning": "First get user details, then use their email to send welcome message",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Fetch user information",
+        "tool_calls": [
+          {"id": "user_1", "name": "get_user", "parameters": {"user_id": "123"}, "depends_on": []}
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Send welcome email using user's email address",
+        "tool_calls": [
+          {"id": "email_1", "name": "send_email", "parameters": {"to": "{{step_1_result_get_user.email}}", "subject": "Welcome!", "body": "Hello {{step_1_result_get_user.name}}!"}, "depends_on": ["user_1"]}
+        ]
+      }
+    ]
+  }
+}
+
+### Example with Email Composition using __llm_compose__ (RECOMMENDED):
+Query: "Get my recent meeting transcript and send me a summary email to user@example.com"
+Tools: [get_transcripts, send_email]
+
+Response:
+{
+  "reasoning": "First fetch meeting data, then use __llm_compose__ to generate a beautiful email, then send it",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Fetch recent meeting transcripts",
+        "tool_calls": [
+          {"id": "transcripts_1", "name": "get_transcripts", "parameters": {"limit": 1}, "depends_on": []}
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Generate beautiful email content from meeting data",
+        "tool_calls": [
+          {"id": "compose_1", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Write a professional, well-formatted email summarizing this meeting. Include the meeting title, date, a clear summary of discussion points, and any action items. Use proper email formatting with greeting and signature.", "output_key": "email"}, "depends_on": ["transcripts_1"]}
+        ]
+      },
+      {
+        "step_number": 3,
+        "description": "Send the composed email",
+        "tool_calls": [
+          {"id": "email_1", "name": "send_email", "parameters": {"to": "user@example.com", "subject": "Your Recent Meeting Summary", "body": "{{step_2_result___llm_compose__.email}}"}, "depends_on": ["compose_1"]}
+        ]
+      }
+    ]
+  }
+}
+
+Note: When composing emails or user-facing content:
+- ALWAYS use __llm_compose__ to generate human-readable content from raw data
+- The LLM will see the actual data and create beautiful, formatted text
+- This ensures professional quality output instead of raw JSON dumps"""
 
 
 TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE = PersistentConfig(
