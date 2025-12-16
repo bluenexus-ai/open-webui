@@ -130,7 +130,9 @@
 	const cloneSharedChat = async () => {
 		if (!chat) return;
 
-		const res = await cloneSharedChatById(localStorage.token, chat.id).catch((error) => {
+		// Use share_id (from URL or chat object) for cloning, not owui_id
+		const shareId = $page.params.id;
+		const res = await cloneSharedChatById(localStorage.token, shareId).catch((error) => {
 			toast.error(`${error}`);
 			return null;
 		});

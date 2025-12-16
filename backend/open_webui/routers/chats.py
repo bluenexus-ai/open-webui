@@ -8,6 +8,7 @@ from open_webui.models.chats import (
     ChatImportForm,
     ChatResponse,
     ChatTitleIdResponse,
+    SharedChatMappings,
 )
 from open_webui.models.tags import TagModel
 
@@ -836,18 +837,34 @@ async def get_shared_chat_by_id(share_id: str, user=Depends(get_verified_user)):
             status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.NOT_FOUND
         )
 
-    client = get_client_or_raise(user.id)
+    # Look up the owner of the shared chat from local mapping
+    owner_user_id = SharedChatMappings.get_owner_user_id(share_id)
+
+    # Use owner's BlueNexus session if available, otherwise fall back to current user's
+    if owner_user_id:
+        client = get_bluenexus_client_for_user(owner_user_id)
+        if not client:
+            # Fall back to current user's session
+            client = get_bluenexus_client_for_user(user.id)
+    else:
+        # No mapping found, try current user's session (for admin access or legacy)
+        client = get_bluenexus_client_for_user(user.id)
+
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to access shared content. Please try again later.",
+        )
 
     try:
-        # Build query based on user role
-        if user.role == "user" or (user.role == "admin" and not ENABLE_ADMIN_CHAT_ACCESS):
-            # Query by share_id
-            response = await client.query(
-                Collections.CHATS,
-                QueryOptions(filter={"share_id": share_id}, limit=1)
-            )
-        elif user.role == "admin" and ENABLE_ADMIN_CHAT_ACCESS:
-            # Admin can query by owui_id directly
+        # Always query by share_id first
+        response = await client.query(
+            Collections.CHATS,
+            QueryOptions(filter={"share_id": share_id}, limit=1)
+        )
+
+        # If not found and admin has special access, try querying by owui_id as fallback
+        if (not response.data or len(response.data) == 0) and user.role == "admin" and ENABLE_ADMIN_CHAT_ACCESS:
             response = await client.query(
                 Collections.CHATS,
                 QueryOptions(filter={"owui_id": share_id}, limit=1)
@@ -1376,19 +1393,38 @@ async def clone_chat_by_id(
 async def clone_shared_chat_by_id(id: str, user=Depends(get_verified_user)):
     import uuid
 
-    client = get_client_or_raise(user.id)
+    # Look up the owner of the shared chat from local mapping
+    owner_user_id = SharedChatMappings.get_owner_user_id(id)
+
+    # Use owner's BlueNexus session to READ the shared chat
+    if owner_user_id:
+        read_client = get_bluenexus_client_for_user(owner_user_id)
+        if not read_client:
+            read_client = get_bluenexus_client_for_user(user.id)
+    else:
+        read_client = get_bluenexus_client_for_user(user.id)
+
+    if not read_client:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to access shared content. Please try again later.",
+        )
+
+    # User's own client is required to CREATE the cloned chat
+    write_client = get_client_or_raise(user.id)
 
     try:
-        # Build query based on role
-        if user.role == "admin":
-            response = await client.query(
+        # Query by share_id first (this is what the URL parameter should be)
+        response = await read_client.query(
+            Collections.CHATS,
+            QueryOptions(filter={"share_id": id}, limit=1)
+        )
+
+        # If not found and admin has special access, try querying by owui_id as fallback
+        if (not response.data or len(response.data) == 0) and user.role == "admin" and ENABLE_ADMIN_CHAT_ACCESS:
+            response = await read_client.query(
                 Collections.CHATS,
                 QueryOptions(filter={"owui_id": id}, limit=1)
-            )
-        else:
-            response = await client.query(
-                Collections.CHATS,
-                QueryOptions(filter={"share_id": id}, limit=1)
             )
 
         if not response.data or len(response.data) == 0:
@@ -1409,7 +1445,7 @@ async def clone_shared_chat_by_id(id: str, user=Depends(get_verified_user)):
             "title": f"Clone of {original_chat.get('title', 'Chat')}",
         }
 
-        # Create new chat for the current user
+        # Create new chat for the current user (using their own client)
         new_chat_id = str(uuid.uuid4())
         new_chat_data = {
             "owui_id": new_chat_id,
@@ -1423,7 +1459,7 @@ async def clone_shared_chat_by_id(id: str, user=Depends(get_verified_user)):
             "share_id": None,
         }
 
-        new_record = await client.create(Collections.CHATS, new_chat_data)
+        new_record = await write_client.create(Collections.CHATS, new_chat_data)
 
         # Convert back to ChatResponse
         result_data = new_record.model_dump()
@@ -1556,6 +1592,14 @@ async def share_chat_by_id(request: Request, id: str, user=Depends(get_verified_
         # Update in BlueNexus
         updated_record = await client.update(Collections.CHATS, record.id, chat_data)
 
+        # Create mapping in local DB so other users can look up the owner
+        share_id = chat_data["share_id"]
+        SharedChatMappings.create_mapping(
+            share_id=share_id,
+            owner_user_id=user.id,
+            chat_id=id,
+        )
+
         # Convert back to ChatResponse
         result_data = updated_record.model_dump()
         normalize_chat_data(result_data)
@@ -1592,7 +1636,8 @@ async def delete_shared_chat_by_id(id: str, user=Depends(get_verified_user)):
         record = response.get_records()[0]
         chat_data = record.model_dump()
 
-        if not chat_data.get("share_id"):
+        old_share_id = chat_data.get("share_id")
+        if not old_share_id:
             return False
 
         # Remove share_id
@@ -1600,6 +1645,10 @@ async def delete_shared_chat_by_id(id: str, user=Depends(get_verified_user)):
 
         # Update in BlueNexus
         await client.update(Collections.CHATS, record.id, chat_data)
+
+        # Delete mapping from local DB
+        SharedChatMappings.delete_mapping(old_share_id)
+
         return True
 
     except BlueNexusError as e:
