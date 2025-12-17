@@ -681,20 +681,20 @@ Analyze the content and provide your assessment."""
 
         except Exception as e:
             log.error(f"[Executor] LLM critique failed: {e}")
-            # On critique failure, default to warning and continue
+            # On critique failure, fail-safe: do NOT auto-approve (security)
             return {
                 "tool_call_id": tool_call.id,
                 "name": tool_name,
-                "status": "success",
+                "status": "error",
                 "result": {
-                    "status": "error_fallback",
+                    "status": "critique_error",
                     "original_content": content,
-                    "final_content": content,
-                    "approved": True,
-                    "issues": [],
+                    "final_content": None,
+                    "approved": False,  # Fail-safe: don't approve on error
+                    "issues": ["Critique system failed - content not approved for safety"],
                     "error": str(e),
                 },
-                "error": None,
+                "error": f"Critique failed: {e}",
                 "files": [],
                 "embeds": [],
             }

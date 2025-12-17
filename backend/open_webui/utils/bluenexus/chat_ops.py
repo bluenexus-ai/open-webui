@@ -48,21 +48,41 @@ def _get_cached_chat(user_id: str, chat_id: str) -> tuple[Optional[dict], Option
     return None, None
 
 
-def _run_async(coro):
-    """Run an async coroutine from sync code."""
+def _run_async(coro, timeout: float = 30.0):
+    """
+    Run an async coroutine from sync code.
+
+    WARNING: This pattern can cause issues if called from within an async context.
+    Prefer using the async versions of functions directly when possible.
+
+    Args:
+        coro: The coroutine to run
+        timeout: Maximum time to wait for the coroutine (default: 30s)
+
+    Returns:
+        The result of the coroutine
+    """
+    import concurrent.futures
+
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If there's already a running loop, create a new one
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Check if we're already in an async context
+        try:
+            running_loop = asyncio.get_running_loop()
+            # We're in an async context - use thread pool to avoid blocking
+            log.debug("[_run_async] Running loop detected, using thread pool")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(asyncio.run, coro)
-                return future.result()
-        else:
-            return loop.run_until_complete(coro)
-    except RuntimeError:
-        # No event loop exists, create one
-        return asyncio.run(coro)
+                try:
+                    return future.result(timeout=timeout)
+                except concurrent.futures.TimeoutError:
+                    log.error(f"[_run_async] Timeout after {timeout}s waiting for coroutine")
+                    raise TimeoutError(f"Coroutine timed out after {timeout}s")
+        except RuntimeError:
+            # No running loop - we can use asyncio.run directly
+            return asyncio.run(coro)
+    except Exception as e:
+        log.error(f"[_run_async] Error running coroutine: {e}")
+        raise
 
 
 async def get_chat_by_id(user_id: str, chat_id: str, use_cache: bool = True) -> Optional[dict]:

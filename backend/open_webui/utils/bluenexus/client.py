@@ -54,6 +54,46 @@ T = TypeVar("T", bound=BlueNexusRecord)
 _session_pool: dict[str, aiohttp.ClientSession] = {}
 
 
+async def cleanup_session_pool() -> int:
+    """
+    Close all sessions in the pool and clear it.
+    Returns the number of sessions closed.
+    Should be called during application shutdown.
+    """
+    global _session_pool
+    closed_count = 0
+    for session_key, session in list(_session_pool.items()):
+        try:
+            if not session.closed:
+                await session.close()
+                closed_count += 1
+                log.debug(f"[BlueNexus Client] Closed session {session_key}")
+        except Exception as e:
+            log.warning(f"[BlueNexus Client] Error closing session {session_key}: {e}")
+    _session_pool.clear()
+    log.info(f"[BlueNexus Client] Session pool cleanup complete, closed {closed_count} sessions")
+    return closed_count
+
+
+def cleanup_session_pool_sync() -> int:
+    """
+    Synchronous version - closes sessions without awaiting.
+    Use only when async cleanup is not possible (e.g., atexit).
+    """
+    global _session_pool
+    closed_count = 0
+    for session_key, session in list(_session_pool.items()):
+        try:
+            if not session.closed:
+                # Schedule close without waiting
+                asyncio.get_event_loop().create_task(session.close())
+                closed_count += 1
+        except Exception:
+            pass
+    _session_pool.clear()
+    return closed_count
+
+
 class BlueNexusDataClient:
     """
     Client for BlueNexus User-Data API.

@@ -6,6 +6,7 @@ This module handles OAuth provider registration and authentication for BlueNexus
 
 import httpx
 import ssl
+import warnings
 import urllib3
 from urllib.parse import urlparse
 from authlib.integrations.starlette_client import OAuth
@@ -78,8 +79,13 @@ def register_bluenexus_oauth(oauth: OAuth, oauth_timeout: str = ""):
     disable_ssl = _should_disable_ssl_for_bluenexus()
 
     if disable_ssl:
-        # Disable SSL warnings only for localhost development
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        # Filter SSL warnings for localhost development only (module-scoped, not global)
+        warnings.filterwarnings(
+            "ignore",
+            message="Unverified HTTPS request",
+            category=urllib3.exceptions.InsecureRequestWarning,
+            module="urllib3"
+        )
 
     # Create httpx client with SSL verification based on environment
     httpx_client = httpx.AsyncClient(

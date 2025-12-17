@@ -61,6 +61,7 @@ from open_webui.utils import logger
 from open_webui.utils.audit import AuditLevel, AuditLoggingMiddleware
 from open_webui.utils.logger import start_logger
 from open_webui.utils.mcp.pool import init_mcp_pool, shutdown_mcp_pool
+from open_webui.utils.bluenexus.client import cleanup_session_pool as cleanup_bluenexus_sessions
 from open_webui.socket.main import (
     app as socket_app,
     periodic_usage_pool_cleanup,
@@ -636,6 +637,10 @@ async def lifespan(app: FastAPI):
     # Shutdown MCP connection pool
     log.info("Shutting down MCP connection pool...")
     await shutdown_mcp_pool()
+
+    # Cleanup BlueNexus HTTP session pool
+    log.info("Cleaning up BlueNexus session pool...")
+    await cleanup_bluenexus_sessions()
 
     if hasattr(app.state, "redis_task_command_listener"):
         app.state.redis_task_command_listener.cancel()
@@ -1512,8 +1517,11 @@ async def chat_completion(
     form_data: dict,
     user=Depends(get_verified_user),
 ):
-    # Always refresh models for the current user to ensure BlueNexus models are loaded
-    await get_all_models(request, user=user)
+    # Only refresh models if cache is empty (relies on get_all_models internal caching)
+    # This avoids expensive model refresh on every chat request
+    if not request.app.state.MODELS or not request.app.state.BASE_MODELS:
+        log.debug(f"[chat_completion] Models cache empty, refreshing for user {user.id}")
+        await get_all_models(request, user=user)
 
     model_id = form_data.get("model", None)
     model_item = form_data.pop("model_item", {})
