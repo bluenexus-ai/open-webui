@@ -253,8 +253,14 @@ class ChatTable:
         try:
             with get_db() as db:
                 chat_item = db.get(Chat, id)
-                chat_item.chat = chat
-                chat_item.title = chat["title"] if "title" in chat else "New Chat"
+                if not chat_item:
+                    return None
+                # Merge incoming chat data with existing chat data
+                # This preserves existing fields (history, messages, etc.) when only updating title
+                existing_chat = chat_item.chat or {}
+                merged_chat = {**existing_chat, **chat}
+                chat_item.chat = merged_chat
+                chat_item.title = merged_chat.get("title", chat_item.title or "New Chat")
                 chat_item.updated_at = int(time.time())
                 db.commit()
                 db.refresh(chat_item)
