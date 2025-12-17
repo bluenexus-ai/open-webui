@@ -358,8 +358,10 @@ try:
         get_bluenexus_mcp_servers as _get_bluenexus_mcp_servers_impl,
         BlueNexusMCPServer,
         BlueNexusMCPServersResponse,
+        invalidate_all_mcp_caches,
     )
 except ImportError:
+    invalidate_all_mcp_caches = None
     # Fallback models if bluenexus module is not available
     class BlueNexusMCPServer(BaseModel):
         model_config = ConfigDict(extra="allow")
@@ -387,6 +389,26 @@ async def get_bluenexus_mcp_servers(
     log.info(f"[BlueNexus MCP] Request received for user {user.id} (role={user.role})")
     result = await _get_bluenexus_mcp_servers_impl(user.id)
     log.info(f"[BlueNexus MCP] Returning {len(result.data)} servers for user {user.id}")
+    return result
+
+
+@router.post("/bluenexus/mcp_servers/refresh", response_model=BlueNexusMCPServersResponse)
+async def refresh_bluenexus_mcp_servers(
+    request: Request, user=Depends(get_verified_user)
+):
+    """
+    Refresh BlueNexus MCP server list and tool specs cache.
+    Call this when MCP servers are enabled/disabled or after token refresh.
+    """
+    log.info(f"[BlueNexus MCP] Refresh requested for user {user.id}")
+
+    # Invalidate caches for this user
+    if invalidate_all_mcp_caches:
+        invalidate_all_mcp_caches(user.id)
+
+    # Fetch fresh data
+    result = await _get_bluenexus_mcp_servers_impl(user.id, force_refresh=True)
+    log.info(f"[BlueNexus MCP] Refreshed and returning {len(result.data)} servers for user {user.id}")
     return result
 
 

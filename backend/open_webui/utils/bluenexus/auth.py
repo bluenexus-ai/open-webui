@@ -15,6 +15,7 @@ from open_webui.models.users import UserModel
 from open_webui.models.oauth_sessions import OAuthSessions
 
 from open_webui.utils.bluenexus.config import is_bluenexus_enabled
+from open_webui.utils.bluenexus.mcp import invalidate_mcp_servers_cache
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +94,11 @@ async def refresh_oauth_token(request: Request, user: UserModel) -> OAuthTokenSt
                 provider = session.provider if session else "bluenexus"
 
                 log.info(f"OAuth token valid for user {user.id}, provider: {provider}, expires_in: {expires_in}s")
+
+                # Invalidate MCP cache when token was refreshed (new token = new capabilities)
+                if attempt > 0:
+                    log.info(f"Token was refreshed, invalidating MCP cache for user {user.id}")
+                    invalidate_mcp_servers_cache(user.id)
 
                 return OAuthTokenStatusResponse(
                     has_session=True,

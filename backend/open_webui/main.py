@@ -1657,19 +1657,33 @@ async def chat_completion(
                 # Clean up MCP clients before potential retry
                 try:
                     if mcp_clients := metadata.get("mcp_clients"):
-                        log.info(f"[CancelledError] Cleaning up {len(mcp_clients)} MCP clients...")
-                        for client in reversed(mcp_clients.values()):
-                            try:
-                                await asyncio.wait_for(
-                                    asyncio.shield(client.disconnect()),
-                                    timeout=5.0
-                                )
-                            except asyncio.TimeoutError:
-                                log.warning("[CancelledError] MCP client disconnect timed out")
-                            except Exception as e:
-                                log.debug(f"[CancelledError] MCP disconnect error: {e}")
+                        use_pool = metadata.get("mcp_use_pool", False)
+                        log.info(f"[CancelledError] Cleaning up {len(mcp_clients)} MCP clients (use_pool={use_pool})...")
+                        if use_pool:
+                            # Release connections back to pool for reuse
+                            from open_webui.utils.mcp.pool import get_mcp_pool
+                            pool = get_mcp_pool()
+                            for server_id, client in mcp_clients.items():
+                                try:
+                                    await pool.release(server_id, client)
+                                    log.debug(f"[CancelledError] Released MCP client {server_id} back to pool")
+                                except Exception as e:
+                                    log.debug(f"[CancelledError] MCP pool release error: {e}")
+                        else:
+                            # Legacy: disconnect clients directly
+                            for client in reversed(mcp_clients.values()):
+                                try:
+                                    await asyncio.wait_for(
+                                        asyncio.shield(client.disconnect()),
+                                        timeout=5.0
+                                    )
+                                except asyncio.TimeoutError:
+                                    log.warning("[CancelledError] MCP client disconnect timed out")
+                                except Exception as e:
+                                    log.debug(f"[CancelledError] MCP disconnect error: {e}")
                         # Clear mcp_clients so they get re-initialized on retry
                         metadata.pop("mcp_clients", None)
+                        metadata.pop("mcp_use_pool", None)
                         log.info("[CancelledError] MCP clients cleaned up")
                 except Exception as cleanup_error:
                     log.warning(f"[CancelledError] Error cleaning up MCP clients: {cleanup_error}")
@@ -1738,8 +1752,20 @@ async def chat_completion(
                 if cancelled_retry_count == 0 or cancelled_retry_count > max_cancelled_retries:
                     try:
                         if mcp_clients := metadata.get("mcp_clients"):
-                            for client in reversed(mcp_clients.values()):
-                                await client.disconnect()
+                            use_pool = metadata.get("mcp_use_pool", False)
+                            if use_pool:
+                                # Release connections back to pool for reuse
+                                from open_webui.utils.mcp.pool import get_mcp_pool
+                                pool = get_mcp_pool()
+                                for server_id, client in mcp_clients.items():
+                                    try:
+                                        await pool.release(server_id, client)
+                                    except Exception as e:
+                                        log.debug(f"MCP pool release error: {e}")
+                            else:
+                                # Legacy: disconnect clients directly
+                                for client in reversed(mcp_clients.values()):
+                                    await client.disconnect()
                     except Exception as e:
                         log.debug(f"Error cleaning up: {e}")
                         pass
