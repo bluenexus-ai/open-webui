@@ -41,8 +41,6 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access, get_users_with_access
 from open_webui.utils.webhook import post_webhook
 from open_webui.utils.channels import extract_mentions, replace_mentions
-from open_webui.utils.bluenexus.sync_service import BlueNexusSync
-from open_webui.utils.bluenexus.collections import Collections
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
@@ -251,7 +249,7 @@ async def send_notification(name, webui_url, channel, message, active_user_ids):
 async def model_response_handler(request, channel, message, user):
     MODELS = {
         model["id"]: model
-        for model in await get_filtered_models(await get_all_models(request, user=user), user)
+        for model in get_filtered_models(await get_all_models(request, user=user), user)
     }
 
     mentions = extract_mentions(message.content)
@@ -512,7 +510,7 @@ async def post_new_message(
             )
 
         background_tasks.add_task(background_handler)
-        BlueNexusSync.sync_create(Collections.MESSAGES, message)
+
         return message
 
     except HTTPException as e:
@@ -676,7 +674,6 @@ async def update_message_by_id(
                 to=f"channel:{channel.id}",
             )
 
-            BlueNexusSync.sync_update(Collections.MESSAGES, message)
         return MessageModel(**message.model_dump())
     except Exception as e:
         log.exception(e)
@@ -856,9 +853,6 @@ async def delete_message_by_id(
         )
 
     try:
-        # Get message details before deletion for sync
-        message_user_id = message.user_id
-
         Messages.delete_message_by_id(message_id)
         await sio.emit(
             "events:channel",
@@ -898,7 +892,6 @@ async def delete_message_by_id(
                     to=f"channel:{channel.id}",
                 )
 
-        BlueNexusSync.sync_delete(Collections.MESSAGES, message_id, message_user_id)
         return True
     except Exception as e:
         log.exception(e)

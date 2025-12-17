@@ -12,8 +12,6 @@ import pycrdt as Y
 from open_webui.models.users import Users, UserNameResponse
 from open_webui.models.channels import Channels
 from open_webui.models.notes import Notes, NoteUpdateForm
-from open_webui.utils.bluenexus.sync_service import BlueNexusSync
-from open_webui.utils.bluenexus.collections import Collections
 from open_webui.utils.bluenexus.chat_ops import (
     get_message_by_id_and_message_id,
     upsert_message_to_chat_by_id_and_message_id,
@@ -493,9 +491,7 @@ async def document_save_handler(document_id, data, user):
             log.error(f"User {user.get('id')} does not have access to note {note_id}")
             return
 
-        updated_note = Notes.update_note_by_id(note_id, NoteUpdateForm(data=data))
-        if updated_note:
-            BlueNexusSync.sync_update(Collections.NOTES, updated_note)
+        Notes.update_note_by_id(note_id, NoteUpdateForm(data=data))
 
 
 @sio.on("ydoc:document:state")

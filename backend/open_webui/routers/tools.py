@@ -9,6 +9,7 @@ from pydantic import BaseModel, HttpUrl
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 
+from open_webui.models.oauth_sessions import OAuthSessions
 from open_webui.models.tools import (
     ToolForm,
     ToolModel,
@@ -25,8 +26,6 @@ from open_webui.utils.tools import get_tool_specs
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access, has_permission
 from open_webui.utils.tools import get_tool_servers
-from open_webui.utils.bluenexus.config import is_bluenexus_data_storage_enabled
-from open_webui.repositories import get_tool_repository
 
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.config import CACHE_DIR, BYPASS_ADMIN_ACCESS_CONTROL
@@ -40,11 +39,11 @@ log.setLevel(SRC_LOG_LEVELS["MAIN"])
 router = APIRouter()
 
 
-def get_tool_module(request, tool_id, load_from_db=True, user_id=None):
+def get_tool_module(request, tool_id, load_from_db=True):
     """
     Get the tool module by its ID.
     """
-    tool_module, _ = get_tool_module_from_cache(request, tool_id, load_from_db, user_id=user_id)
+    tool_module, _ = get_tool_module_from_cache(request, tool_id, load_from_db)
     return tool_module
 
 
@@ -57,52 +56,17 @@ def get_tool_module(request, tool_id, load_from_db=True, user_id=None):
 async def get_tools(request: Request, user=Depends(get_verified_user)):
     tools = []
 
-    # Get user's group IDs for access control check
-    user_group_ids = []
-    groups = Groups.get_groups_by_member_id(user.id) if hasattr(Groups, 'get_groups_by_member_id') else []
-    user_group_ids = [g.id for g in groups] if groups else []
-
     # Local Tools
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-
-        # Get all tools and filter by access
-        if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
-            tools_data = await repo.get_all()
-        else:
-            # Get all tools to check access control (user's own + shared)
-            tools_data = await repo.get_all()
-
-        for tool_data in tools_data:
-            # Check access: owner or has read access
-            if (
-                user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL
-                or tool_data.get("user_id") == user.id
-                or has_access(user.id, "read", tool_data.get("access_control"), user_group_ids)
-            ):
-                tool_id = tool_data.get("id")
-                tool_module = get_tool_module(request, tool_id, load_from_db=False, user_id=user.id)
-                tools.append(
-                    ToolUserResponse(
-                        **{
-                            **tool_data,
-                            "has_user_valves": hasattr(tool_module, "UserValves") if tool_module else False,
-                        }
-                    )
-                )
-    else:
-        # PostgreSQL path - get all tools and filter by access
-        all_tools = Tools.get_tools()
-        for tool in all_tools:
-            if (
-                user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL
-                or tool.user_id == user.id
-                or has_access(user.id, "read", tool.access_control, user_group_ids)
-            ):
-                tool_module = get_tool_module(request, tool.id, load_from_db=False, user_id=user.id)
-                tool_data = tool.model_dump()
-                tool_data["has_user_valves"] = hasattr(tool_module, "UserValves") if tool_module else False
-                tools.append(ToolUserResponse(**tool_data))
+    for tool in Tools.get_tools():
+        tool_module = get_tool_module(request, tool.id)
+        tools.append(
+            ToolUserResponse(
+                **{
+                    **tool.model_dump(),
+                    "has_user_valves": hasattr(tool_module, "UserValves"),
+                }
+            )
+        )
 
     # OpenAPI Tool Servers
     for server in await get_tool_servers(request):
@@ -195,37 +159,11 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
 
 @router.get("/list", response_model=list[ToolUserResponse])
 async def get_tool_list(user=Depends(get_verified_user)):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-
-        # Admins with bypass get all tools, others get their own
-        if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
-            tools_data = await repo.get_all()
-        else:
-            tools_data = await repo.get_list(user.id)
-
-        tools = []
-        for tool_data in tools_data:
-            # Apply access control for write permission
-            if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
-                tools.append(ToolUserResponse(**tool_data))
-            elif tool_data.get("user_id") == user.id or has_access(user.id, "write", tool_data.get("access_control")):
-                tools.append(ToolUserResponse(**tool_data))
-
-        return tools
+    if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
+        tools = Tools.get_tools()
     else:
-        # PostgreSQL path
-        if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
-            tools = Tools.get_tools()
-        else:
-            tools = Tools.get_tools_by_user_id(user.id)
-
-        result = []
-        for tool in tools:
-            if has_access(user.id, "write", tool.access_control):
-                result.append(ToolUserResponse(**tool.model_dump()))
-
-        return result
+        tools = Tools.get_tools_by_user_id(user.id, "write")
+    return tools
 
 
 ############################
@@ -310,18 +248,8 @@ async def load_tool_from_url(
 
 @router.get("/export", response_model=list[ToolModel])
 async def export_tools(user=Depends(get_admin_user)):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-        tools_data = await repo.get_all()
-
-        tools = []
-        for tool_data in tools_data:
-            tools.append(ToolModel(**tool_data))
-
-        return tools
-    else:
-        # PostgreSQL path
-        return Tools.get_tools()
+    tools = Tools.get_tools()
+    return tools
 
 
 ############################
@@ -351,65 +279,42 @@ async def create_new_tools(
 
     form_data.id = form_data.id.lower()
 
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
+    tools = Tools.get_tool_by_id(form_data.id)
+    if tools is None:
+        try:
+            form_data.content = replace_imports(form_data.content)
+            tool_module, frontmatter = load_tool_module_by_id(
+                form_data.id, content=form_data.content
+            )
+            form_data.meta.manifest = frontmatter
 
-        # Check if tool with this ID already exists
-        existing = await repo.get_by_id(form_data.id)
-        if existing:
+            TOOLS = request.app.state.TOOLS
+            TOOLS[form_data.id] = tool_module
+
+            specs = get_tool_specs(TOOLS[form_data.id])
+            tools = Tools.insert_new_tool(user.id, form_data, specs)
+
+            tool_cache_dir = CACHE_DIR / "tools" / form_data.id
+            tool_cache_dir.mkdir(parents=True, exist_ok=True)
+
+            if tools:
+                return tools
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ERROR_MESSAGES.DEFAULT("Error creating tools"),
+                )
+        except Exception as e:
+            log.exception(f"Failed to load the tool by id {form_data.id}: {e}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.ID_TAKEN,
+                detail=ERROR_MESSAGES.DEFAULT(str(e)),
             )
-
-        # Process tool module
-        form_data.content = replace_imports(form_data.content)
-        tool_module, frontmatter = load_tool_module_by_id(
-            form_data.id, content=form_data.content
-        )
-        form_data.meta.manifest = frontmatter
-
-        TOOLS = request.app.state.TOOLS
-        TOOLS[form_data.id] = tool_module
-
-        specs = get_tool_specs(TOOLS[form_data.id])
-
-        tool_cache_dir = CACHE_DIR / "tools" / form_data.id
-        tool_cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # Create tool
-        tool_data = form_data.model_dump()
-        tool_data["specs"] = specs
-
-        result = await repo.create(user.id, tool_data)
-        return ToolResponse(**result) if result else None
     else:
-        # PostgreSQL path
-        tool = Tools.get_tool_by_id(form_data.id)
-        if tool:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.ID_TAKEN,
-            )
-
-        form_data.content = replace_imports(form_data.content)
-        tool_module, frontmatter = load_tool_module_by_id(
-            form_data.id, content=form_data.content
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.ID_TAKEN,
         )
-        form_data.meta.manifest = frontmatter
-
-        TOOLS = request.app.state.TOOLS
-        TOOLS[form_data.id] = tool_module
-
-        specs = get_tool_specs(TOOLS[form_data.id])
-
-        tool_cache_dir = CACHE_DIR / "tools" / form_data.id
-        tool_cache_dir.mkdir(parents=True, exist_ok=True)
-
-        tool = Tools.insert_new_tool(user.id, form_data, specs)
-        if tool:
-            return ToolResponse(**tool.model_dump())
-        return None
 
 
 ############################
@@ -419,48 +324,20 @@ async def create_new_tools(
 
 @router.get("/id/{id}", response_model=Optional[ToolModel])
 async def get_tools_by_id(id: str, user=Depends(get_verified_user)):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-        tool_data = await repo.get_by_id(id)
+    tools = Tools.get_tool_by_id(id)
 
-        if not tool_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        # Check access
+    if tools:
         if (
             user.role == "admin"
-            or tool_data.get("user_id") == user.id
-            or has_access(user.id, "read", tool_data.get("access_control"))
+            or tools.user_id == user.id
+            or has_access(user.id, "read", tools.access_control)
         ):
-            return ToolModel(**tool_data)
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+            return tools
     else:
-        # PostgreSQL path
-        tool = Tools.get_tool_by_id(id)
-        if not tool:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        if (
-            user.role == "admin"
-            or tool.user_id == user.id
-            or has_access(user.id, "read", tool.access_control)
-        ):
-            return tool
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
 
 ############################
@@ -475,28 +352,25 @@ async def update_tools_by_id(
     form_data: ToolForm,
     user=Depends(get_verified_user),
 ):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-        tool_data = await repo.get_by_id(id)
+    tools = Tools.get_tool_by_id(id)
+    if not tools:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
-        if not tool_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+    # Is the user the original creator, in a group with write access, or an admin
+    if (
+        tools.user_id != user.id
+        and not has_access(user.id, "write", tools.access_control)
+        and user.role != "admin"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.UNAUTHORIZED,
+        )
 
-        # Check access
-        if (
-            tool_data.get("user_id") != user.id
-            and not has_access(user.id, "write", tool_data.get("access_control"))
-            and user.role != "admin"
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.UNAUTHORIZED,
-            )
-
-        # Process tool module
+    try:
         form_data.content = replace_imports(form_data.content)
         tool_module, frontmatter = load_tool_module_by_id(id, content=form_data.content)
         form_data.meta.manifest = frontmatter
@@ -506,42 +380,27 @@ async def update_tools_by_id(
 
         specs = get_tool_specs(TOOLS[id])
 
-        # Update tool
-        update_data = form_data.model_dump(exclude={"id"})
-        update_data["specs"] = specs
+        updated = {
+            **form_data.model_dump(exclude={"id"}),
+            "specs": specs,
+        }
 
-        result = await repo.update(id, update_data)
-        return ToolModel(**result) if result else None
-    else:
-        # PostgreSQL path
-        tool = Tools.get_tool_by_id(id)
-        if not tool:
+        log.debug(updated)
+        tools = Tools.update_tool_by_id(id, updated)
+
+        if tools:
+            return tools
+        else:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ERROR_MESSAGES.DEFAULT("Error updating tools"),
             )
 
-        if (
-            tool.user_id != user.id
-            and not has_access(user.id, "write", tool.access_control)
-            and user.role != "admin"
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.UNAUTHORIZED,
-            )
-
-        form_data.content = replace_imports(form_data.content)
-        tool_module, frontmatter = load_tool_module_by_id(id, content=form_data.content)
-        form_data.meta.manifest = frontmatter
-
-        TOOLS = request.app.state.TOOLS
-        TOOLS[id] = tool_module
-
-        specs = get_tool_specs(TOOLS[id])
-
-        tool = Tools.update_tool_by_id(id, {**form_data.model_dump(exclude={"id"}), "specs": specs})
-        return tool
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(str(e)),
+        )
 
 
 ############################
@@ -553,62 +412,30 @@ async def update_tools_by_id(
 async def delete_tools_by_id(
     request: Request, id: str, user=Depends(get_verified_user)
 ):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-        tool_data = await repo.get_by_id(id)
+    tools = Tools.get_tool_by_id(id)
+    if not tools:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
-        if not tool_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+    if (
+        tools.user_id != user.id
+        and not has_access(user.id, "write", tools.access_control)
+        and user.role != "admin"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.UNAUTHORIZED,
+        )
 
-        # Check access
-        if (
-            tool_data.get("user_id") != user.id
-            and not has_access(user.id, "write", tool_data.get("access_control"))
-            and user.role != "admin"
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.UNAUTHORIZED,
-            )
-
-        # Delete tool
-        result = await repo.delete(id)
-
-        # Clean up from app state
+    result = Tools.delete_tool_by_id(id)
+    if result:
         TOOLS = request.app.state.TOOLS
         if id in TOOLS:
             del TOOLS[id]
 
-        return result
-    else:
-        # PostgreSQL path
-        tool = Tools.get_tool_by_id(id)
-        if not tool:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        if (
-            tool.user_id != user.id
-            and not has_access(user.id, "write", tool.access_control)
-            and user.role != "admin"
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.UNAUTHORIZED,
-            )
-
-        result = Tools.delete_tool_by_id(id)
-
-        TOOLS = request.app.state.TOOLS
-        if id in TOOLS:
-            del TOOLS[id]
-
-        return result
+    return result
 
 
 ############################
@@ -618,27 +445,21 @@ async def delete_tools_by_id(
 
 @router.get("/id/{id}/valves", response_model=Optional[dict])
 async def get_tools_valves_by_id(id: str, user=Depends(get_verified_user)):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-        tool_data = await repo.get_by_id(id)
-
-        if not tool_data:
+    tools = Tools.get_tool_by_id(id)
+    if tools:
+        try:
+            valves = Tools.get_tool_valves_by_id(id)
+            return valves
+        except Exception as e:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ERROR_MESSAGES.DEFAULT(str(e)),
             )
-
-        return tool_data.get("valves", {})
     else:
-        # PostgreSQL path
-        tool = Tools.get_tool_by_id(id)
-        if not tool:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        return tool.valves if tool.valves else {}
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
 
 ############################
@@ -650,33 +471,23 @@ async def get_tools_valves_by_id(id: str, user=Depends(get_verified_user)):
 async def get_tools_valves_spec_by_id(
     request: Request, id: str, user=Depends(get_verified_user)
 ):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-        tool_data = await repo.get_by_id(id)
+    tools = Tools.get_tool_by_id(id)
+    if tools:
+        if id in request.app.state.TOOLS:
+            tools_module = request.app.state.TOOLS[id]
+        else:
+            tools_module, _ = load_tool_module_by_id(id)
+            request.app.state.TOOLS[id] = tools_module
 
-        if not tool_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+        if hasattr(tools_module, "Valves"):
+            Valves = tools_module.Valves
+            return Valves.schema()
+        return None
     else:
-        tool = Tools.get_tool_by_id(id)
-        if not tool:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-    if id in request.app.state.TOOLS:
-        tools_module = request.app.state.TOOLS[id]
-    else:
-        tools_module, _ = load_tool_module_by_id(id, user_id=user.id)
-        request.app.state.TOOLS[id] = tools_module
-
-    if hasattr(tools_module, "Valves"):
-        Valves = tools_module.Valves
-        return Valves.schema()
-    return None
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
 
 ############################
@@ -688,89 +499,48 @@ async def get_tools_valves_spec_by_id(
 async def update_tools_valves_by_id(
     request: Request, id: str, form_data: dict, user=Depends(get_verified_user)
 ):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-        tool_data = await repo.get_by_id(id)
+    tools = Tools.get_tool_by_id(id)
+    if not tools:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
-        if not tool_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+    if (
+        tools.user_id != user.id
+        and not has_access(user.id, "write", tools.access_control)
+        and user.role != "admin"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
 
-        # Check access
-        if (
-            tool_data.get("user_id") != user.id
-            and not has_access(user.id, "write", tool_data.get("access_control"))
-            and user.role != "admin"
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
-            )
-
-        if id in request.app.state.TOOLS:
-            tools_module = request.app.state.TOOLS[id]
-        else:
-            tools_module, _ = load_tool_module_by_id(id, user_id=user.id)
-            request.app.state.TOOLS[id] = tools_module
-
-        if not hasattr(tools_module, "Valves"):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-        Valves = tools_module.Valves
-
-        # Validate and update valves
-        form_data = {k: v for k, v in form_data.items() if v is not None}
-        valves = Valves(**form_data)
-        valves_dict = valves.model_dump(exclude_unset=True)
-
-        # Update tool with new valves
-        tool_data["valves"] = valves_dict
-        await repo.update(id, {"valves": valves_dict})
-
-        return valves_dict
+    if id in request.app.state.TOOLS:
+        tools_module = request.app.state.TOOLS[id]
     else:
-        # PostgreSQL path
-        tool = Tools.get_tool_by_id(id)
-        if not tool:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+        tools_module, _ = load_tool_module_by_id(id)
+        request.app.state.TOOLS[id] = tools_module
 
-        if (
-            tool.user_id != user.id
-            and not has_access(user.id, "write", tool.access_control)
-            and user.role != "admin"
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
-            )
+    if not hasattr(tools_module, "Valves"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+    Valves = tools_module.Valves
 
-        if id in request.app.state.TOOLS:
-            tools_module = request.app.state.TOOLS[id]
-        else:
-            tools_module, _ = load_tool_module_by_id(id, user_id=user.id)
-            request.app.state.TOOLS[id] = tools_module
-
-        if not hasattr(tools_module, "Valves"):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-        Valves = tools_module.Valves
-
+    try:
         form_data = {k: v for k, v in form_data.items() if v is not None}
         valves = Valves(**form_data)
         valves_dict = valves.model_dump(exclude_unset=True)
-
-        Tools.update_tool_by_id(id, {"valves": valves_dict})
-
+        Tools.update_tool_valves_by_id(id, valves_dict)
         return valves_dict
+    except Exception as e:
+        log.exception(f"Failed to update tool valves by id {id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(str(e)),
+        )
 
 
 ############################
@@ -780,132 +550,83 @@ async def update_tools_valves_by_id(
 
 @router.get("/id/{id}/valves/user", response_model=Optional[dict])
 async def get_tools_user_valves_by_id(id: str, user=Depends(get_verified_user)):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-        tool_data = await repo.get_by_id(id)
-
-        if not tool_data:
+    tools = Tools.get_tool_by_id(id)
+    if tools:
+        try:
+            user_valves = Tools.get_user_valves_by_id_and_user_id(id, user.id)
+            return user_valves
+        except Exception as e:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ERROR_MESSAGES.DEFAULT(str(e)),
             )
-
-        user_valves_all = tool_data.get("user_valves", {})
-        return user_valves_all.get(user.id, {})
     else:
-        # PostgreSQL path
-        tool = Tools.get_tool_by_id(id)
-        if not tool:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        user_valves = tool.user_valves if tool.user_valves else {}
-        return user_valves.get(user.id, {})
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
 
 @router.get("/id/{id}/valves/user/spec", response_model=Optional[dict])
 async def get_tools_user_valves_spec_by_id(
     request: Request, id: str, user=Depends(get_verified_user)
 ):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-        tool_data = await repo.get_by_id(id)
+    tools = Tools.get_tool_by_id(id)
+    if tools:
+        if id in request.app.state.TOOLS:
+            tools_module = request.app.state.TOOLS[id]
+        else:
+            tools_module, _ = load_tool_module_by_id(id)
+            request.app.state.TOOLS[id] = tools_module
 
-        if not tool_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+        if hasattr(tools_module, "UserValves"):
+            UserValves = tools_module.UserValves
+            return UserValves.schema()
+        return None
     else:
-        tool = Tools.get_tool_by_id(id)
-        if not tool:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-    if id in request.app.state.TOOLS:
-        tools_module = request.app.state.TOOLS[id]
-    else:
-        tools_module, _ = load_tool_module_by_id(id, user_id=user.id)
-        request.app.state.TOOLS[id] = tools_module
-
-    if hasattr(tools_module, "UserValves"):
-        UserValves = tools_module.UserValves
-        return UserValves.schema()
-    return None
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
 
 @router.post("/id/{id}/valves/user/update", response_model=Optional[dict])
 async def update_tools_user_valves_by_id(
     request: Request, id: str, form_data: dict, user=Depends(get_verified_user)
 ):
-    if is_bluenexus_data_storage_enabled():
-        repo = get_tool_repository(user.id)
-        tool_data = await repo.get_by_id(id)
+    tools = Tools.get_tool_by_id(id)
 
-        if not tool_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
+    if tools:
         if id in request.app.state.TOOLS:
             tools_module = request.app.state.TOOLS[id]
         else:
-            tools_module, _ = load_tool_module_by_id(id, user_id=user.id)
+            tools_module, _ = load_tool_module_by_id(id)
             request.app.state.TOOLS[id] = tools_module
 
-        if not hasattr(tools_module, "UserValves"):
+        if hasattr(tools_module, "UserValves"):
+            UserValves = tools_module.UserValves
+
+            try:
+                form_data = {k: v for k, v in form_data.items() if v is not None}
+                user_valves = UserValves(**form_data)
+                user_valves_dict = user_valves.model_dump(exclude_unset=True)
+                Tools.update_user_valves_by_id_and_user_id(
+                    id, user.id, user_valves_dict
+                )
+                return user_valves_dict
+            except Exception as e:
+                log.exception(f"Failed to update user valves by id {id}: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ERROR_MESSAGES.DEFAULT(str(e)),
+                )
+        else:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=ERROR_MESSAGES.NOT_FOUND,
             )
-
-        UserValves = tools_module.UserValves
-
-        # Validate and update user valves
-        form_data = {k: v for k, v in form_data.items() if v is not None}
-        user_valves = UserValves(**form_data)
-        user_valves_dict = user_valves.model_dump(exclude_unset=True)
-
-        # Update tool with user valves
-        user_valves_all = tool_data.get("user_valves", {})
-        user_valves_all[user.id] = user_valves_dict
-        await repo.update(id, {"user_valves": user_valves_all})
-
-        return user_valves_dict
     else:
-        # PostgreSQL path
-        tool = Tools.get_tool_by_id(id)
-        if not tool:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        if id in request.app.state.TOOLS:
-            tools_module = request.app.state.TOOLS[id]
-        else:
-            tools_module, _ = load_tool_module_by_id(id, user_id=user.id)
-            request.app.state.TOOLS[id] = tools_module
-
-        if not hasattr(tools_module, "UserValves"):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        UserValves = tools_module.UserValves
-
-        form_data = {k: v for k, v in form_data.items() if v is not None}
-        user_valves = UserValves(**form_data)
-        user_valves_dict = user_valves.model_dump(exclude_unset=True)
-
-        user_valves_all = tool.user_valves if tool.user_valves else {}
-        user_valves_all[user.id] = user_valves_dict
-        Tools.update_tool_by_id(id, {"user_valves": user_valves_all})
-
-        return user_valves_dict
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
