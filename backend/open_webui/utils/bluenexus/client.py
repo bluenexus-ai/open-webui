@@ -5,6 +5,7 @@ This client provides methods for interacting with the BlueNexus User-Data API
 to store and retrieve user data for Open WebUI.
 """
 
+import asyncio
 import json
 import logging
 import ssl
@@ -199,13 +200,23 @@ class BlueNexusDataClient:
         """
         Get or create a shared session for connection pooling.
 
-        Sessions are pooled by base_url and SSL settings for reuse.
+        Sessions are pooled by base_url, SSL settings, and event loop for reuse.
+        Each event loop gets its own session to avoid "Future attached to different loop" errors.
         """
         global _session_pool
 
-        # Check if we have a valid session
-        if self._session_key in _session_pool:
-            session = _session_pool[self._session_key]
+        # Include event loop id in session key to avoid cross-loop issues
+        try:
+            loop = asyncio.get_running_loop()
+            loop_id = id(loop)
+        except RuntimeError:
+            loop_id = 0
+
+        session_key = f"{self._session_key}:{loop_id}"
+
+        # Check if we have a valid session for this loop
+        if session_key in _session_pool:
+            session = _session_pool[session_key]
             if not session.closed:
                 return session
 
@@ -223,8 +234,8 @@ class BlueNexusDataClient:
             trust_env=True,
         )
 
-        _session_pool[self._session_key] = session
-        log.debug(f"[BlueNexus Client] Created new session pool for {self._session_key}")
+        _session_pool[session_key] = session
+        log.debug(f"[BlueNexus Client] Created new session pool for {session_key}")
 
         return session
 
