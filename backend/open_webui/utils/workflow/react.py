@@ -68,6 +68,9 @@ class ReActConfig:
     # If set, only these tools can be used (allowlist)
     allowed_tools: Optional[Set[str]] = None
 
+    # Maximum recent messages to include from conversation history
+    max_history_messages: int = 6
+
 
 # Default configuration
 DEFAULT_REACT_CONFIG = ReActConfig()
@@ -143,12 +146,21 @@ IMPORTANT RULES:
 - Only use tools that are available to you
 - Do NOT make up tool results - always use tools to get real data
 
+CONVERSATION CONTEXT (IMPORTANT):
+- Use the conversation history below to understand what the user is referring to
+- If the user says "retry", "again", "planA", "yes", etc., refer back to the history
+- Previous messages may contain context needed to understand the current request
+- Example: If history shows "What's the weather in Tokyo?" and user says "And New York?", this is a weather query for New York
+
+{conversation_history}
+
 ERROR HANDLING (CRITICAL):
 - If a tool fails due to parameter validation (e.g., "String must contain at least 1 character"), you MUST retry with corrected parameters
 - Read the error message carefully to understand what parameter was wrong and fix it
 - For search tools: always provide a non-empty query string (e.g., use "*" or a specific search term)
 - Do NOT give up after a single failure - retry with different parameters or try alternative tools
 - Only consider a subtask failed after 2-3 retry attempts with different approaches
+- MCP Server errors often include specific field names - fix those exact fields
 
 TASK COMPLETION (CRITICAL):
 - Break down complex requests into subtasks (e.g., "search Notion AND Google Drive AND send email" = 3 subtasks)
@@ -200,6 +212,8 @@ class ReActAgent:
         request: Any = None,
         user: Any = None,
         config: Optional[ReActConfig] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        tools_refresh_fn: Optional[Callable] = None,
     ):
         self.tools = tools_dict
         self.generate_completion_fn = generate_completion_fn
@@ -210,6 +224,8 @@ class ReActAgent:
         self.request = request
         self.user = user
         self.config = config or DEFAULT_REACT_CONFIG
+        self.conversation_history = conversation_history or []
+        self.tools_refresh_fn = tools_refresh_fn
 
     def _get_available_tools(self) -> List[Dict[str, Any]]:
         """Get list of available tools with their descriptions."""
@@ -316,7 +332,16 @@ Your response:"""
                 log.info("[ReAct] Verification passed: Answer is consistent with tool executions")
                 return None
             elif response_clean.startswith("INVALID"):
-                reason = response.strip()[8:].strip() if len(response.strip()) > 8 else "Answer claims actions that were not performed"
+                # Extract reason after "INVALID:" or "INVALID"
+                response_stripped = response.strip()
+                if ":" in response_stripped:
+                    reason = response_stripped.split(":", 1)[1].strip()
+                else:
+                    reason = response_stripped[7:].strip()  # Skip "INVALID"
+
+                if not reason:
+                    reason = "Answer claims actions that were not performed"
+
                 log.warning(f"[ReAct] Verification FAILED: {reason}")
                 return (
                     f"STOP! Your answer was verified and found to be INCORRECT. "
@@ -345,7 +370,7 @@ Your response:"""
         """
         # Always verify if no tools were called but answer claims success
         has_tool_calls = any(s.step_type == ReActStepType.ACTION for s in steps)
-        success_indicators = ["successfully", "done", "completed", "added", "sent", "i've", "has been"]
+        success_indicators = ["successfully", "done", "completed", "added", "sent", "posted", "i've", "has been"]
         claims_success = any(ind in final_answer.lower() for ind in success_indicators)
 
         if not has_tool_calls and claims_success:
@@ -380,6 +405,48 @@ Your response:"""
         # Run LLM-based verification
         return await self._verify_answer_with_llm(query, final_answer, steps)
 
+    def _format_conversation_history(self) -> str:
+        """Format recent conversation history for context."""
+        if not self.conversation_history:
+            return ""
+
+        # Get recent messages (configured limit)
+        recent = self.conversation_history[-self.config.max_history_messages:]
+
+        lines = []
+        for msg in recent:
+            role = msg.get("role", "unknown").upper()
+            content = msg.get("content")
+
+            # Handle None or empty content
+            if content is None:
+                continue
+
+            # Handle content that may be a list (multimodal)
+            if isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                content = " ".join(text_parts)
+            elif not isinstance(content, str):
+                # Convert other types to string
+                content = str(content)
+
+            # Skip empty content
+            if not content.strip():
+                continue
+
+            # Truncate long messages
+            if len(content) > 500:
+                content = content[:500] + "..."
+
+            lines.append(f"{role}: {content}")
+
+        return "\n".join(lines)
+
     def _format_tools_for_prompt(self) -> str:
         """Format available tools for the system prompt."""
         tools = self._get_available_tools()
@@ -409,19 +476,20 @@ Your response:"""
         lines = []
         for step in steps:
             if step.step_type == ReActStepType.THOUGHT:
-                lines.append(f"Thought: {step.content}")
+                lines.append(f"Thought: {step.content or ''}")
             elif step.step_type == ReActStepType.ACTION:
-                lines.append(f"Action: {step.tool_name}")
-                lines.append(f"Action Input: {json.dumps(step.tool_parameters, ensure_ascii=False)}")
+                lines.append(f"Action: {step.tool_name or 'unknown'}")
+                params = step.tool_parameters if step.tool_parameters else {}
+                lines.append(f"Action Input: {json.dumps(params, ensure_ascii=False)}")
             elif step.step_type == ReActStepType.OBSERVATION:
                 # Truncate long observations
-                content = step.content
+                content = step.content or ""
                 if len(content) > 2000:
                     content = content[:2000] + "... (truncated)"
                 lines.append(f"Observation: {content}")
             elif step.step_type == ReActStepType.VERIFICATION:
                 # Show verification failures to guide the agent
-                lines.append(f"Verification: {step.content}")
+                lines.append(f"Verification: {step.content or ''}")
 
         return "\n".join(lines)
 
@@ -459,15 +527,33 @@ Your response:"""
 
             # Parse parameters as JSON
             try:
-                # Try to find JSON object in the params string
-                json_match = re.search(r'\{.*\}', params_str, re.DOTALL)
-                if json_match:
-                    tool_parameters = json.loads(json_match.group())
-                else:
-                    # If no JSON found, treat as simple string parameter
-                    tool_parameters = {"input": params_str}
+                # Try to parse the entire params_str as JSON first
+                tool_parameters = json.loads(params_str)
             except json.JSONDecodeError:
-                tool_parameters = {"input": params_str}
+                # If that fails, try to find a JSON object (non-greedy match for balanced braces)
+                try:
+                    # Find first { and try to parse from there
+                    brace_start = params_str.find('{')
+                    if brace_start != -1:
+                        # Find matching closing brace by counting
+                        depth = 0
+                        for i, char in enumerate(params_str[brace_start:], brace_start):
+                            if char == '{':
+                                depth += 1
+                            elif char == '}':
+                                depth -= 1
+                                if depth == 0:
+                                    json_str = params_str[brace_start:i+1]
+                                    tool_parameters = json.loads(json_str)
+                                    break
+                        else:
+                            # No matching brace found
+                            tool_parameters = {"input": params_str}
+                    else:
+                        # No JSON found, treat as simple string parameter
+                        tool_parameters = {"input": params_str}
+                except (json.JSONDecodeError, ValueError):
+                    tool_parameters = {"input": params_str}
 
             # Extract thought if present before action
             thought_match = re.search(r"Thought:\s*(.+?)(?=\nAction:)", response, re.DOTALL | re.IGNORECASE)
@@ -494,18 +580,93 @@ Your response:"""
             "content": response,
         }
 
+    def _parse_mcp_error(self, result: Any) -> Optional[str]:
+        """
+        Parse MCP-style error responses.
+        MCP errors are indicated by isError=True in the response.
+        Returns error message if found, None otherwise.
+        """
+        if not result:
+            return None
+
+        # Check for MCP content with isError
+        if isinstance(result, dict):
+            # Direct isError in result
+            if result.get("isError"):
+                content = result.get("content", [])
+                if isinstance(content, list):
+                    error_texts = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            error_texts.append(item.get("text", ""))
+                    return " ".join(error_texts) if error_texts else "MCP tool returned error"
+                return str(content) if content else "MCP tool returned error"
+
+            # Check for error in results array
+            if "results" in result:
+                for item in result.get("results", []):
+                    if isinstance(item, dict) and item.get("isError"):
+                        return self._parse_mcp_error(item)
+
+            # Check for "error" key in result (common pattern)
+            if "error" in result and result.get("error"):
+                error_val = result["error"]
+                if isinstance(error_val, str):
+                    return error_val
+                elif isinstance(error_val, dict):
+                    return error_val.get("message", str(error_val))
+
+        return None
+
+    def _format_error_for_retry(self, error: str) -> str:
+        """Format error message with helpful retry guidance."""
+        guidance = []
+
+        error_lower = error.lower()
+
+        # Detect validation errors and provide specific guidance
+        if "must contain at least" in error_lower:
+            guidance.append("The parameter needs a non-empty value. Try using '*' for wildcard search or provide a specific term.")
+        if "required" in error_lower and ("missing" in error_lower or "field" in error_lower):
+            guidance.append("A required parameter is missing. Check the tool's parameter specification.")
+        if "invalid" in error_lower or "validation" in error_lower:
+            guidance.append("Parameter format may be incorrect. Check the expected type and format.")
+        if "timeout" in error_lower:
+            guidance.append("The operation took too long. Try with simpler parameters or break into smaller steps.")
+        if "not found" in error_lower or "does not exist" in error_lower:
+            guidance.append("The resource may not exist. Verify the ID or name is correct.")
+
+        if guidance:
+            return f"{error}\n\nRetry Guidance:\n- " + "\n- ".join(guidance)
+        return error
+
     async def _execute_tool(
         self,
         tool_name: str,
         parameters: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Execute a single tool and return the result."""
+        # Check if tool exists, try refresh if not found
         if tool_name not in self.tools:
-            return {
-                "status": "error",
-                "error": f"Tool '{tool_name}' not found",
-                "result": None,
-            }
+            # Try to refresh tools if callback provided
+            if self.tools_refresh_fn:
+                log.info(f"[ReAct] Tool '{tool_name}' not found, attempting refresh...")
+                try:
+                    refreshed_tools = await self.tools_refresh_fn()
+                    if refreshed_tools:
+                        self.tools = refreshed_tools
+                        log.info(f"[ReAct] Tools refreshed, now have {len(self.tools)} tools")
+                except Exception as e:
+                    log.warning(f"[ReAct] Tool refresh failed: {e}")
+
+            # Check again after refresh
+            if tool_name not in self.tools:
+                available = list(self.tools.keys())[:10]
+                return {
+                    "status": "error",
+                    "error": f"Tool '{tool_name}' not found. Available tools: {available}...",
+                    "result": None,
+                }
 
         tool = self.tools[tool_name]
         tool_type = tool.get("type", "")
@@ -578,6 +739,17 @@ Your response:"""
                         }
                     )
 
+            # Check for MCP-style errors in successful responses
+            mcp_error = self._parse_mcp_error(tool_result)
+            if mcp_error:
+                log.warning(f"[ReAct] Tool '{tool_name}' returned MCP error: {mcp_error}")
+                formatted_error = self._format_error_for_retry(mcp_error)
+                return {
+                    "status": "error",
+                    "error": formatted_error,
+                    "result": tool_result,  # Include result for debugging
+                }
+
             log.info(f"[ReAct] Tool '{tool_name}' executed successfully")
             return {
                 "status": "success",
@@ -591,14 +763,16 @@ Your response:"""
             log.error(f"[ReAct] Tool '{tool_name}' timed out after {self.config.tool_timeout}s")
             return {
                 "status": "error",
-                "error": f"Tool execution timed out after {self.config.tool_timeout}s",
+                "error": f"Tool execution timed out after {self.config.tool_timeout}s. Try again or use a different approach.",
                 "result": None,
             }
         except Exception as e:
-            log.error(f"[ReAct] Tool '{tool_name}' execution failed: {e}")
+            error_str = str(e)
+            log.error(f"[ReAct] Tool '{tool_name}' execution failed: {error_str}")
+            formatted_error = self._format_error_for_retry(error_str)
             return {
                 "status": "error",
-                "error": str(e),
+                "error": formatted_error,
                 "result": None,
             }
 
@@ -636,6 +810,8 @@ Your response:"""
             return f"Executing: {step.tool_name}"
         elif step.step_type == ReActStepType.OBSERVATION:
             return f"Observed result from {step.tool_name or 'tool'}"
+        elif step.step_type == ReActStepType.VERIFICATION:
+            return "Verifying answer against tool executions"
         elif step.step_type == ReActStepType.FINAL_ANSWER:
             return "Task completed"
         return "Processing..."
@@ -656,9 +832,18 @@ Your response:"""
 
         log.info(f"[ReAct] Starting execution for query: {query[:100]}...")
 
-        # Build system prompt with available tools
+        # Build system prompt with available tools and conversation history
         tools_description = self._format_tools_for_prompt()
-        system_prompt = REACT_SYSTEM_PROMPT.format(tools=tools_description)
+        conversation_context = self._format_conversation_history()
+        if conversation_context:
+            conversation_section = f"Recent Conversation History:\n{conversation_context}"
+        else:
+            conversation_section = "No previous conversation history."
+
+        system_prompt = REACT_SYSTEM_PROMPT.format(
+            tools=tools_description,
+            conversation_history=conversation_section,
+        )
 
         while iteration < self.config.max_iterations:
             iteration += 1
@@ -710,6 +895,7 @@ Your response:"""
                     if hallucination_correction:
                         # Hallucination detected! Don't accept this answer
                         # Add a VERIFICATION step recording the rejection
+                        # The agent will see this in the history via _format_history
                         verification_step = ReActStep(
                             step_number=len(result.steps) + 1,
                             step_type=ReActStepType.VERIFICATION,
@@ -718,18 +904,8 @@ Your response:"""
                         result.steps.append(verification_step)
                         await self._emit_step(verification_step)
 
-                        # Override instruction for next iteration
-                        instruction = hallucination_correction
-                        log.warning(f"[ReAct] Verification rejected final answer, continuing...")
-
-                        # Update user prompt and continue the loop
-                        history = self._format_history(result.steps)
-                        user_prompt = REACT_USER_PROMPT.format(
-                            query=query,
-                            history=history,
-                            instruction=instruction,
-                        )
-                        continue  # Skip to next iteration
+                        log.warning("[ReAct] Verification rejected final answer, continuing...")
+                        continue  # Skip to next iteration - agent will see verification failure in history
 
                     # Verification passed - Task complete!
                     step = ReActStep(
@@ -775,7 +951,13 @@ Your response:"""
 
                     # Record observation
                     if tool_result["status"] == "success":
-                        observation_content = json.dumps(tool_result["result"], ensure_ascii=False, indent=2)
+                        # Safely serialize the result
+                        try:
+                            observation_content = json.dumps(tool_result["result"], ensure_ascii=False, indent=2)
+                        except (TypeError, ValueError):
+                            # Handle non-serializable results
+                            observation_content = str(tool_result["result"])
+
                         consecutive_failures = 0
 
                         # Add to sources
@@ -876,6 +1058,8 @@ async def run_react_agent(
     request: Any = None,
     user: Any = None,
     config: Optional[ReActConfig] = None,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
+    tools_refresh_fn: Optional[Callable] = None,
 ) -> ReActResult:
     """
     Convenience function to run a ReAct agent on a query.
@@ -891,6 +1075,8 @@ async def run_react_agent(
         request: Optional request object
         user: Optional user object
         config: Optional ReActConfig
+        conversation_history: Optional list of previous messages for context
+        tools_refresh_fn: Optional async function to refresh tools if not found
 
     Returns:
         ReActResult with final answer and execution history
@@ -905,6 +1091,8 @@ async def run_react_agent(
         request=request,
         user=user,
         config=config,
+        conversation_history=conversation_history,
+        tools_refresh_fn=tools_refresh_fn,
     )
 
     return await agent.run(query)

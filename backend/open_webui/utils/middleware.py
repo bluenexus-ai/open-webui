@@ -400,6 +400,11 @@ async def chat_completion_tools_handler(
             continue_on_failure=True,
         )
 
+        # Get conversation history for context (exclude current message)
+        messages = body.get("messages", [])
+        # Pass all messages except the last one (which is the current query)
+        conversation_history = messages[:-1] if len(messages) > 1 else []
+
         # Create and run ReAct agent
         react_agent = ReActAgent(
             tools_dict=tools,
@@ -411,6 +416,7 @@ async def chat_completion_tools_handler(
             request=request,
             user=user,
             config=react_config,
+            conversation_history=conversation_history,
         )
 
         try:
@@ -1306,18 +1312,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
         # Count MCP servers to load
         mcp_server_ids = [tid for tid in tool_ids if tid.startswith("bluenexus_mcp:") or tid.startswith("server:mcp:")]
-        if mcp_server_ids and event_emitter:
-            await event_emitter(
-                {
-                    "type": "status",
-                    "data": {
-                        "action": "mcp_connect",
-                        "description": f"Loading MCP servers...",
-                        "done": False,
-                    },
-                }
-            )
-
         for tool_id in tool_ids:
             # Handle BlueNexus MCP servers (user-specific, fetched from BlueNexus API)
             if tool_id.startswith("bluenexus_mcp:"):
@@ -1427,18 +1421,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             tool_specs = await asyncio.wait_for(asyncio.shield(list_tools_task), timeout=heartbeat_interval)
                             break
                         except asyncio.TimeoutError:
-                            # Task not done yet, send silent heartbeat to keep connection alive
-                            if event_emitter:
-                                await event_emitter(
-                                    {
-                                        "type": "status",
-                                        "data": {
-                                            "action": "mcp_connect",
-                                            "description": f"Loading MCP servers...",
-                                            "done": False,
-                                        },
-                                    }
-                                )
+                            # Task not done yet, continue waiting silently
+                            pass
 
                     # Get result if not already obtained
                     if tool_specs is None:
