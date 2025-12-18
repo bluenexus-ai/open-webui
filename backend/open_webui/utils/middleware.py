@@ -122,7 +122,6 @@ from open_webui.config import (
     DEFAULT_CODE_INTERPRETER_PROMPT,
     CODE_INTERPRETER_BLOCKED_MODULES,
 )
-from open_webui.utils.workflow.executor import ParallelToolExecutor, parse_execution_plan
 from open_webui.utils.workflow.react import ReActAgent, ReActConfig, ReActStatus
 from open_webui.env import (
     SRC_LOG_LEVELS,
@@ -313,18 +312,14 @@ async def chat_completion_tools_handler(
     request: Request, body: dict, extra_params: dict, user: UserModel, models, tools
 ) -> tuple[dict, dict]:
     """
-    Enhanced tool handler with intelligent routing, execution planning and parallel execution.
+    Tool handler using ReAct agent for all tool execution.
 
-    Routes:
-    1. Simple tasks → Skip tools, return to regular LLM
-    2. Complex tasks with predefined patterns → Use template workflows
-    3. Complex tasks without patterns → Auto-plan with LLM
+    When tools are available, always uses ReAct which:
+    - Thinks step-by-step before acting
+    - Retries on tool errors
+    - Detects and rejects hallucinated responses
+    - Handles follow-up messages naturally
     """
-    from open_webui.utils.workflow.router import (
-        RouteType,
-        classify_task_by_pattern,
-        build_execution_plan_from_workflow,
-    )
 
     async def get_content_from_response(response) -> Optional[str]:
         content = None
@@ -376,23 +371,13 @@ async def chat_completion_tools_handler(
     user_query = get_last_user_message(body["messages"]) or ""
     available_tool_names = list(tools.keys())
 
-    # Step 1: Route the task (fast pattern matching, no LLM call)
-    route_decision = classify_task_by_pattern(user_query, available_tool_names)
-    log.info(f"[Tools Handler] Route decision: {route_decision.route_type.value} - {route_decision.reasoning}")
-
-    # Step 2: Handle based on route type
-    if route_decision.route_type == RouteType.SIMPLE_LLM:
-        # Simple task - skip tools, let regular LLM handle it
-        log.info("[Tools Handler] Simple task detected, skipping tool execution")
-        return body, {}
-
-    # Check if we should use ReAct (iterative reasoning and acting)
-    # This can be enabled via config or detected from query patterns
-    enable_react = getattr(request.app.state.config, "ENABLE_REACT_AGENT", False)
-
-    if enable_react or route_decision.route_type == RouteType.REACT_WORKFLOW:
-        # Use ReAct agent for iterative reasoning and acting
-        log.info("[Tools Handler] Using ReAct agent for iterative execution")
+    # When tools are available, always use ReAct
+    # ReAct is smart enough to:
+    # - Skip tools for simple questions and just give Final Answer
+    # - Use tools when needed
+    # - Handle follow-ups naturally (e.g., "planA", "retry", "yes")
+    if available_tool_names:
+        log.info(f"[Tools Handler] Using ReAct agent ({len(available_tool_names)} tools available)")
 
         async def generate_completion_for_react(system_prompt: str, user_prompt: str) -> str:
             """Generate LLM completion for ReAct agent."""
@@ -468,148 +453,11 @@ async def chat_completion_tools_handler(
 
         except Exception as e:
             log.error(f"[Tools Handler] ReAct error: {e}")
-            # Fall back to regular execution on error
-            pass
-
-    execution_plan = None
-
-    if route_decision.route_type == RouteType.PREDEFINED_WORKFLOW and route_decision.workflow:
-        # Use predefined workflow template
-        log.info(f"[Tools Handler] Using predefined workflow: {route_decision.workflow.name}")
-
-        # Build user context for variable substitution
-        user_context = {
-            "USER_EMAIL": user.email if hasattr(user, "email") else "",
-            "USER_NAME": user.name if hasattr(user, "name") else "",
-            "USER_ID": user.id if hasattr(user, "id") else "",
-        }
-
-        # Extract email address from query if present
-        email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_query)
-        if email_match:
-            user_context["USER_EMAIL"] = email_match.group()
-
-        # Build execution plan from template
-        plan_data = build_execution_plan_from_workflow(route_decision.workflow, user_context)
-
-        # Emit status about using predefined workflow
-        if event_emitter:
-            await event_emitter(
-                {
-                    "type": "status",
-                    "data": {
-                        "action": "workflow_routing",
-                        "description": f"Using optimized workflow: {route_decision.workflow.name}",
-                        "done": True,
-                    },
-                }
-            )
-
-        # Parse the template-generated plan
-        execution_plan = parse_execution_plan(json.dumps(plan_data), tools)
-
-    if execution_plan is None:
-        # AUTO_PLANNED_WORKFLOW: Use LLM to generate execution plan
-        log.info("[Tools Handler] Using LLM to generate execution plan")
-
-        specs = [tool["spec"] for tool in tools.values()]
-        tools_specs = json.dumps(specs)
-
-        # Use execution planning template if available, otherwise fall back to legacy
-        if hasattr(request.app.state.config, "TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE") and \
-           request.app.state.config.TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE != "":
-            template = request.app.state.config.TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE
-        elif request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE != "":
-            template = request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
-        else:
-            # Use the new execution planning template by default
-            template = DEFAULT_TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE
-
-        tools_function_calling_prompt = tools_function_calling_generation_template(
-            template, tools_specs
-        )
-        payload = get_tools_function_calling_payload(
-            body["messages"], task_model_id, tools_function_calling_prompt
-        )
-
-        response = await generate_chat_completion(request, form_data=payload, user=user)
-        log.debug(f"{response=}")
-        content = await get_content_from_response(response)
-        log.debug(f"{content=}")
-
-        if not content:
+            # ReAct failed - let regular LLM handle it without tools
             return body, {}
 
-        # Parse the execution plan from LLM response
-        execution_plan = parse_execution_plan(content, tools)
-
-    # At this point, execution_plan is either from predefined workflow or LLM planning
-    if not execution_plan or not execution_plan.steps:
-        log.debug("[Tools Handler] No valid execution plan parsed from response")
-        return body, {}
-
-    try:
-        log.info(
-            f"[Tools Handler] Execution plan: {execution_plan.total_tools} tools in "
-            f"{len(execution_plan.steps)} steps"
-        )
-        if execution_plan.reasoning:
-            log.info(f"[Tools Handler] Plan reasoning: {execution_plan.reasoning}")
-
-        # Create a completion function for LLM compose steps
-        async def generate_completion_for_compose(system_prompt: str, user_prompt: str) -> str:
-            """Generate LLM completion for __llm_compose__ tool."""
-            compose_payload = {
-                "model": task_model_id,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "stream": False,
-                "metadata": {"task": "compose"},
-            }
-            response = await generate_chat_completion(request, form_data=compose_payload, user=user)
-            content = await get_content_from_response(response)
-            return content or ""
-
-        # Create parallel executor
-        executor = ParallelToolExecutor(
-            tools_dict=tools,
-            event_emitter=event_emitter,
-            event_caller=event_caller,
-            metadata=metadata,
-            process_tool_result_fn=process_tool_result,
-            request=request,
-            user=user,
-            generate_completion_fn=generate_completion_for_compose,
-        )
-
-        # Execute the plan (steps run sequentially, tools within steps run in parallel)
-        context = await executor.execute_plan(execution_plan)
-
-        # Update body messages with tool results
-        for step_num, step_results in context.step_results.items():
-            for tool_name, result in step_results.items():
-                if result:
-                    tool = tools.get(tool_name, {})
-                    tool_id = tool.get("tool_id", "")
-                    display_name = f"{tool_id}/{tool_name}" if tool_id else tool_name
-
-                    body["messages"] = add_or_update_user_message(
-                        f"\nTool `{display_name}` Output: {result}",
-                        body["messages"],
-                    )
-
-        # Handle skip_files flag
-        if context.skip_files and "files" in body.get("metadata", {}):
-            del body["metadata"]["files"]
-
-        log.debug(f"[Tools Handler] Completed with {len(context.sources)} sources")
-        return body, {"sources": context.sources}
-
-    except Exception as e:
-        log.error(f"[Tools Handler] Error: {e}")
-        return body, {}
+    # No tools or ReAct disabled - let regular LLM handle it
+    return body, {}
 
 
 async def chat_memory_handler(

@@ -31,6 +31,7 @@ class ReActStepType(Enum):
     THOUGHT = "thought"
     ACTION = "action"
     OBSERVATION = "observation"
+    VERIFICATION = "verification"  # LLM verifies answer against actual tool results
     FINAL_ANSWER = "final_answer"
 
 
@@ -47,7 +48,7 @@ class ReActConfig:
     """Configuration for ReAct agent behavior."""
 
     # Maximum number of iterations (thought-action-observation cycles)
-    max_iterations: int = 10
+    max_iterations: int = 20
 
     # Maximum consecutive failures before giving up
     max_consecutive_failures: int = 3
@@ -133,22 +134,41 @@ For each step, you must respond in one of these formats:
    Action: <tool_name>
    Action Input: <json parameters>
 
-3. FINAL ANSWER: When you have enough information to answer the user's question
+3. FINAL ANSWER: When you have completed ALL parts of the user's request
    Format: Final Answer: <your complete answer to the user>
 
 IMPORTANT RULES:
-- Always start with a Thought to analyze the task
+- Always start with a Thought to analyze the task and identify ALL subtasks
 - After each Observation (tool result), think about what it means before the next action
 - Only use tools that are available to you
-- If a tool fails, think about alternatives or whether to retry
-- When you have enough information, provide a Final Answer
-- Be concise but thorough in your reasoning
 - Do NOT make up tool results - always use tools to get real data
+
+ERROR HANDLING (CRITICAL):
+- If a tool fails due to parameter validation (e.g., "String must contain at least 1 character"), you MUST retry with corrected parameters
+- Read the error message carefully to understand what parameter was wrong and fix it
+- For search tools: always provide a non-empty query string (e.g., use "*" or a specific search term)
+- Do NOT give up after a single failure - retry with different parameters or try alternative tools
+- Only consider a subtask failed after 2-3 retry attempts with different approaches
+
+TASK COMPLETION (CRITICAL):
+- Break down complex requests into subtasks (e.g., "search Notion AND Google Drive AND send email" = 3 subtasks)
+- You MUST complete ALL subtasks before providing a Final Answer
+- Do NOT provide Final Answer until you have successfully executed tools for EACH subtask
+- If the user asks to send an email, you MUST actually call the email tool - do not skip it
+- Track your progress: "Completed: X, Y | Remaining: Z"
+
+ANTI-HALLUCINATION (CRITICAL):
+- NEVER claim you did something you didn't do
+- NEVER say "email sent" unless you actually executed an email tool and got success
+- NEVER say "found X in Google Drive" unless you actually executed a drive search tool
+- Your Final Answer will be VALIDATED against actually executed tools
+- If you claim an action without executing the tool, your answer will be REJECTED and you must continue
+- Only report what you ACTUALLY did and observed
 
 Available Tools:
 {tools}
 
-Remember: Think -> Act -> Observe -> Think -> ... -> Final Answer"""
+Remember: Think -> Act -> Observe -> Think -> ... -> Final Answer (only after ALL subtasks done)"""
 
 
 REACT_USER_PROMPT = """Task: {query}
@@ -219,6 +239,147 @@ class ReActAgent:
 
         return available
 
+    async def _verify_answer_with_llm(
+        self,
+        query: str,
+        final_answer: str,
+        steps: List[ReActStep],
+    ) -> Optional[str]:
+        """
+        Use LLM to verify if the final answer is consistent with actual tool executions.
+
+        Returns:
+            Correction instruction if hallucination detected, None if answer is valid.
+        """
+        # Build a summary of what tools were actually called and their results
+        tool_executions = []
+        for step in steps:
+            if step.step_type == ReActStepType.ACTION and step.tool_name:
+                tool_executions.append(f"- Called: {step.tool_name}")
+            elif step.step_type == ReActStepType.OBSERVATION:
+                result_preview = str(step.content)[:500] if step.content else "No result"
+                if step.error:
+                    tool_executions.append(f"  Result: ERROR - {step.error}")
+                else:
+                    tool_executions.append(f"  Result: {result_preview}")
+
+        # If no tools were called but answer claims action was done, that's suspicious
+        has_tool_calls = any(s.step_type == ReActStepType.ACTION for s in steps)
+
+        if not has_tool_calls:
+            # Quick check: does the answer claim success?
+            success_indicators = ["successfully", "done", "completed", "added", "sent", "posted", "i've", "has been"]
+            if any(ind in final_answer.lower() for ind in success_indicators):
+                log.warning("[ReAct] Verification: Answer claims success but no tools were called")
+                return (
+                    "STOP! You claimed to have completed an action but you have NOT executed ANY tools. "
+                    "You MUST call the appropriate tool to actually perform the requested action. "
+                    f"Available tools: {list(self.tools.keys())[:10]}..."
+                )
+
+        tool_summary = "\n".join(tool_executions) if tool_executions else "No tools were executed."
+
+        # Use LLM to verify
+        verification_prompt = f"""You are a verification system. Your job is to check if the Final Answer is consistent with what tools were ACTUALLY executed.
+
+USER REQUEST:
+{query}
+
+TOOLS ACTUALLY EXECUTED:
+{tool_summary}
+
+FINAL ANSWER BEING VERIFIED:
+{final_answer}
+
+VERIFICATION RULES:
+1. The Final Answer can ONLY claim actions that were actually performed by executed tools
+2. If the user asked to "send email" but no email tool was called, the answer cannot claim email was sent
+3. If the user asked to "add reaction" but only a search tool was called, the answer cannot claim reaction was added
+4. Search/list/get tools are READ-ONLY - they cannot send, create, add, or modify anything
+5. The answer must accurately reflect what the tool results show
+
+RESPOND WITH EXACTLY ONE OF:
+- "VALID" - if the Final Answer accurately reflects what tools did
+- "INVALID: <reason>" - if the Final Answer claims something that wasn't actually done
+
+Your response:"""
+
+        try:
+            response = await self.generate_completion_fn(
+                system_prompt="You are a strict verification system that detects hallucinations. Be very strict - if there's any doubt, mark as INVALID.",
+                user_prompt=verification_prompt,
+            )
+
+            response_clean = response.strip().upper()
+
+            if response_clean.startswith("VALID"):
+                log.info("[ReAct] Verification passed: Answer is consistent with tool executions")
+                return None
+            elif response_clean.startswith("INVALID"):
+                reason = response.strip()[8:].strip() if len(response.strip()) > 8 else "Answer claims actions that were not performed"
+                log.warning(f"[ReAct] Verification FAILED: {reason}")
+                return (
+                    f"STOP! Your answer was verified and found to be INCORRECT. "
+                    f"Reason: {reason}\n\n"
+                    f"You must actually execute the required tools before claiming success. "
+                    f"Continue by calling the appropriate tool NOW."
+                )
+            else:
+                # Ambiguous response - be safe and reject
+                log.warning(f"[ReAct] Verification unclear response: {response[:100]}")
+                return None  # Let it pass if unclear
+
+        except Exception as e:
+            log.error(f"[ReAct] Verification LLM call failed: {e}")
+            return None  # Don't block on verification errors
+
+    def _quick_hallucination_check(
+        self,
+        query: str,
+        final_answer: str,
+        steps: List[ReActStep],
+    ) -> bool:
+        """
+        Quick pattern-based check to see if LLM verification is needed.
+        Returns True if verification should be run.
+        """
+        # Always verify if no tools were called but answer claims success
+        has_tool_calls = any(s.step_type == ReActStepType.ACTION for s in steps)
+        success_indicators = ["successfully", "done", "completed", "added", "sent", "i've", "has been"]
+        claims_success = any(ind in final_answer.lower() for ind in success_indicators)
+
+        if not has_tool_calls and claims_success:
+            return True
+
+        # Check for action words in query that might need verification
+        action_words = ["send", "add", "create", "post", "schedule", "delete", "update", "react", "thumbsup"]
+        query_has_action = any(w in query.lower() for w in action_words)
+
+        if query_has_action and claims_success:
+            return True
+
+        return False
+
+    async def _detect_hallucination(
+        self,
+        query: str,
+        final_answer: str,
+        steps: List[ReActStep],
+    ) -> Optional[str]:
+        """
+        Detect if the final answer claims things that weren't actually done.
+        Uses LLM-based verification for accuracy.
+
+        Returns:
+            Correction instruction if hallucination detected, None otherwise.
+        """
+        # Quick check first - only run expensive LLM verification if needed
+        if not self._quick_hallucination_check(query, final_answer, steps):
+            return None
+
+        # Run LLM-based verification
+        return await self._verify_answer_with_llm(query, final_answer, steps)
+
     def _format_tools_for_prompt(self) -> str:
         """Format available tools for the system prompt."""
         tools = self._get_available_tools()
@@ -258,6 +419,9 @@ class ReActAgent:
                 if len(content) > 2000:
                     content = content[:2000] + "... (truncated)"
                 lines.append(f"Observation: {content}")
+            elif step.step_type == ReActStepType.VERIFICATION:
+                # Show verification failures to guide the agent
+                lines.append(f"Verification: {step.content}")
 
         return "\n".join(lines)
 
@@ -447,6 +611,7 @@ class ReActAgent:
             ReActStepType.THOUGHT: "thinking",
             ReActStepType.ACTION: "tool_execution",
             ReActStepType.OBSERVATION: "observation",
+            ReActStepType.VERIFICATION: "verification",
             ReActStepType.FINAL_ANSWER: "complete",
         }
 
@@ -532,7 +697,41 @@ class ReActAgent:
                 parsed = self._parse_response(response)
 
                 if parsed["type"] == "final_answer":
-                    # Task complete!
+                    # Before accepting, verify with LLM that answer matches actual tool executions
+                    log.info("[ReAct] Verifying final answer against tool executions...")
+
+                    # Check for hallucination using LLM-based verification
+                    hallucination_correction = await self._detect_hallucination(
+                        query=query,
+                        final_answer=parsed["content"],
+                        steps=result.steps,
+                    )
+
+                    if hallucination_correction:
+                        # Hallucination detected! Don't accept this answer
+                        # Add a VERIFICATION step recording the rejection
+                        verification_step = ReActStep(
+                            step_number=len(result.steps) + 1,
+                            step_type=ReActStepType.VERIFICATION,
+                            content=f"[VERIFICATION FAILED] {hallucination_correction}",
+                        )
+                        result.steps.append(verification_step)
+                        await self._emit_step(verification_step)
+
+                        # Override instruction for next iteration
+                        instruction = hallucination_correction
+                        log.warning(f"[ReAct] Verification rejected final answer, continuing...")
+
+                        # Update user prompt and continue the loop
+                        history = self._format_history(result.steps)
+                        user_prompt = REACT_USER_PROMPT.format(
+                            query=query,
+                            history=history,
+                            instruction=instruction,
+                        )
+                        continue  # Skip to next iteration
+
+                    # Verification passed - Task complete!
                     step = ReActStep(
                         step_number=len(result.steps) + 1,
                         step_type=ReActStepType.FINAL_ANSWER,
