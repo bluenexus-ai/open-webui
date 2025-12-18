@@ -483,30 +483,3 @@ export const getBlueNexusMCPServers = async (token: string): Promise<BlueNexusMC
 
 	return res?.data ?? [];
 };
-
-export const refreshBlueNexusMCPServers = async (token: string): Promise<BlueNexusMCPServer[]> => {
-	let error = null;
-
-	const res = await fetch(`${WEBUI_API_BASE_URL}/configs/bluenexus/mcp_servers/refresh`, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			Authorization: `Bearer ${token}`
-		}
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			console.error(err);
-			error = err.detail;
-			return { data: [] };
-		});
-
-	if (error) {
-		return [];
-	}
-
-	return res?.data ?? [];
-};
