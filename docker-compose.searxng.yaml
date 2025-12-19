@@ -1,0 +1,14 @@
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: open-webui-searxng
+    restart: unless-stopped
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/ >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5

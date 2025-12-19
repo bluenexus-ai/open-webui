@@ -25,8 +25,20 @@ from starlette.responses import Response, StreamingResponse, JSONResponse
 
 
 from open_webui.models.oauth_sessions import OAuthSessions
-from open_webui.models.chats import Chats
 from open_webui.models.folders import Folders
+from open_webui.utils.bluenexus.chat_ops import (
+    get_chat_by_id_and_user_id as bluenexus_get_chat,
+    get_messages_map_by_chat_id as bluenexus_get_messages_map,
+    get_message_by_id_and_message_id as bluenexus_get_message,
+    upsert_message_to_chat_by_id_and_message_id as bluenexus_upsert_message,
+    update_chat_title_by_id as bluenexus_update_title,
+    get_chat_title_by_id as bluenexus_get_title,
+    update_chat_tags_by_id as bluenexus_update_tags,
+    update_chat_title_and_tags as bluenexus_update_title_and_tags,
+    MessageUpdateBatcher,
+)
+from open_webui.utils.bluenexus.config import is_bluenexus_data_storage_enabled
+from open_webui.models.chats import Chats
 from open_webui.models.users import Users
 from open_webui.socket.main import (
     get_event_call,
@@ -105,9 +117,11 @@ from open_webui.utils.mcp.client import MCPClient
 from open_webui.config import (
     CACHE_DIR,
     DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
+    DEFAULT_TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE,
     DEFAULT_CODE_INTERPRETER_PROMPT,
     CODE_INTERPRETER_BLOCKED_MODULES,
 )
+from open_webui.utils.workflow.react import ReActAgent, ReActConfig, ReActStatus
 from open_webui.env import (
     SRC_LOG_LEVELS,
     GLOBAL_LOG_LEVEL,
@@ -148,6 +162,7 @@ def process_tool_result(
     metadata=None,
     user=None,
 ):
+    log.info(f"[MCP] Step 7: Processing tool result for '{tool_function_name}', tool_type={tool_type}, result_type={type(tool_result).__name__}")
     tool_result_embeds = []
 
     if isinstance(tool_result, HTMLResponse):
@@ -231,18 +246,23 @@ def process_tool_result(
 
     if isinstance(tool_result, list):
         if tool_type == "mcp":  # MCP
+            log.info(f"[MCP] Step 7: Processing MCP result list with {len(tool_result)} items")
             tool_response = []
-            for item in tool_result:
+            for idx, item in enumerate(tool_result):
                 if isinstance(item, dict):
-                    if item.get("type") == "text":
+                    item_type = item.get("type", "unknown")
+                    log.debug(f"[MCP] Step 7: Processing item {idx}, type={item_type}")
+                    if item_type == "text":
                         text = item.get("text", "")
                         if isinstance(text, str):
                             try:
                                 text = json.loads(text)
+                                log.debug(f"[MCP] Step 7: Parsed text as JSON")
                             except json.JSONDecodeError:
                                 pass
                         tool_response.append(text)
-                    elif item.get("type") in ["image", "audio"]:
+                    elif item_type in ["image", "audio"]:
+                        log.info(f"[MCP] Step 7: Processing {item_type} file, mimeType={item.get('mimeType')}")
                         file_url = get_file_url_from_base64(
                             request,
                             f"data:{item.get('mimeType')};base64,{item.get('data', item.get('blob', ''))}",
@@ -261,7 +281,9 @@ def process_tool_result(
                                 "url": file_url,
                             }
                         )
+                        log.info(f"[MCP] Step 7: Created file URL for {item_type}")
             tool_result = tool_response[0] if len(tool_response) == 1 else tool_response
+            log.info(f"[MCP] Step 7: Final MCP result - text_items={len(tool_response)}, files={len(tool_result_files)}")
         else:  # OpenAPI
             for item in tool_result:
                 if isinstance(item, str) and item.startswith("data:"):
@@ -279,12 +301,25 @@ def process_tool_result(
     if isinstance(tool_result, dict) or isinstance(tool_result, list):
         tool_result = json.dumps(tool_result, indent=2, ensure_ascii=False)
 
+    result_preview = str(tool_result)[:200] + "..." if len(str(tool_result)) > 200 else str(tool_result)
+    log.info(f"[MCP] Step 7: Finished processing '{tool_function_name}' - result_preview={result_preview}, files={len(tool_result_files)}, embeds={len(tool_result_embeds)}")
+
     return tool_result, tool_result_files, tool_result_embeds
 
 
 async def chat_completion_tools_handler(
     request: Request, body: dict, extra_params: dict, user: UserModel, models, tools
 ) -> tuple[dict, dict]:
+    """
+    Tool handler using ReAct agent for all tool execution.
+
+    When tools are available, always uses ReAct which:
+    - Thinks step-by-step before acting
+    - Retries on tool errors
+    - Detects and rejects hallucinated responses
+    - Handles follow-up messages naturally
+    """
+
     async def get_content_from_response(response) -> Optional[str]:
         content = None
         if hasattr(response, "body_iterator"):
@@ -302,7 +337,7 @@ async def chat_completion_tools_handler(
     def get_tools_function_calling_payload(messages, task_model_id, content):
         user_message = get_last_user_message(messages)
 
-        recent_messages = messages[-4:] if len(messages) > 4 else messages
+        recent_messages = messages[-6:] if len(messages) > 6 else messages
         chat_history = "\n".join(
             f"{message['role'].upper()}: \"\"\"{get_content_from_message(message)}\"\"\""
             for message in recent_messages
@@ -331,189 +366,103 @@ async def chat_completion_tools_handler(
         models,
     )
 
-    skip_files = False
-    sources = []
+    # Get user query for routing
+    user_query = get_last_user_message(body["messages"]) or ""
+    available_tool_names = list(tools.keys())
 
-    specs = [tool["spec"] for tool in tools.values()]
-    tools_specs = json.dumps(specs)
+    # When tools are available, always use ReAct
+    # ReAct is smart enough to:
+    # - Skip tools for simple questions and just give Final Answer
+    # - Use tools when needed
+    # - Handle follow-ups naturally (e.g., "planA", "retry", "yes")
+    if available_tool_names:
+        log.info(f"[Tools Handler] Using ReAct agent ({len(available_tool_names)} tools available)")
 
-    if request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE != "":
-        template = request.app.state.config.TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
-    else:
-        template = DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE
+        async def generate_completion_for_react(system_prompt: str, user_prompt: str) -> str:
+            """Generate LLM completion for ReAct agent."""
+            react_payload = {
+                "model": task_model_id,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "stream": False,
+                "metadata": {"task": "react"},
+            }
+            response = await generate_chat_completion(request, form_data=react_payload, user=user)
+            content = await get_content_from_response(response)
+            return content or ""
 
-    tools_function_calling_prompt = tools_function_calling_generation_template(
-        template, tools_specs
-    )
-    payload = get_tools_function_calling_payload(
-        body["messages"], task_model_id, tools_function_calling_prompt
-    )
+        # Configure ReAct agent
+        react_config = ReActConfig(
+            max_iterations=getattr(request.app.state.config, "REACT_MAX_ITERATIONS", 10),
+            tool_timeout=getattr(request.app.state.config, "REACT_TOOL_TIMEOUT", 60.0),
+            continue_on_failure=True,
+        )
 
-    try:
-        response = await generate_chat_completion(request, form_data=payload, user=user)
-        log.debug(f"{response=}")
-        content = await get_content_from_response(response)
-        log.debug(f"{content=}")
+        # Get conversation history for context (exclude current message)
+        messages = body.get("messages", [])
+        # Pass all messages except the last one (which is the current query)
+        conversation_history = messages[:-1] if len(messages) > 1 else []
 
-        if not content:
-            return body, {}
+        # Create and run ReAct agent
+        react_agent = ReActAgent(
+            tools_dict=tools,
+            generate_completion_fn=generate_completion_for_react,
+            event_emitter=event_emitter,
+            event_caller=event_caller,
+            metadata=metadata,
+            process_tool_result_fn=process_tool_result,
+            request=request,
+            user=user,
+            config=react_config,
+            conversation_history=conversation_history,
+        )
 
         try:
-            content = content[content.find("{") : content.rfind("}") + 1]
-            if not content:
-                raise Exception("No JSON object found in the response")
-
-            result = json.loads(content)
-
-            async def tool_call_handler(tool_call):
-                nonlocal skip_files
-
-                log.debug(f"{tool_call=}")
-
-                tool_function_name = tool_call.get("name", None)
-                if tool_function_name not in tools:
-                    return body, {}
-
-                tool_function_params = tool_call.get("parameters", {})
-
-                tool = None
-                tool_type = ""
-                direct_tool = False
-
-                try:
-                    tool = tools[tool_function_name]
-                    tool_type = tool.get("type", "")
-                    direct_tool = tool.get("direct", False)
-
-                    spec = tool.get("spec", {})
-                    allowed_params = (
-                        spec.get("parameters", {}).get("properties", {}).keys()
-                    )
-                    tool_function_params = {
-                        k: v
-                        for k, v in tool_function_params.items()
-                        if k in allowed_params
+            if event_emitter:
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "react_start",
+                            "description": "Starting ReAct agent...",
+                            "done": False,
+                        },
                     }
-
-                    if tool.get("direct", False):
-                        tool_result = await event_caller(
-                            {
-                                "type": "execute:tool",
-                                "data": {
-                                    "id": str(uuid4()),
-                                    "name": tool_function_name,
-                                    "params": tool_function_params,
-                                    "server": tool.get("server", {}),
-                                    "session_id": metadata.get("session_id", None),
-                                },
-                            }
-                        )
-                    else:
-                        tool_function = tool["callable"]
-                        tool_result = await tool_function(**tool_function_params)
-
-                except Exception as e:
-                    tool_result = str(e)
-
-                tool_result, tool_result_files, tool_result_embeds = (
-                    process_tool_result(
-                        request,
-                        tool_function_name,
-                        tool_result,
-                        tool_type,
-                        direct_tool,
-                        metadata,
-                        user,
-                    )
                 )
 
-                if event_emitter:
-                    if tool_result_files:
-                        await event_emitter(
-                            {
-                                "type": "files",
-                                "data": {
-                                    "files": tool_result_files,
-                                },
-                            }
-                        )
+            react_result = await react_agent.run(user_query)
 
-                    if tool_result_embeds:
-                        await event_emitter(
-                            {
-                                "type": "embeds",
-                                "data": {
-                                    "embeds": tool_result_embeds,
-                                },
-                            }
-                        )
-
-                print(
-                    f"Tool {tool_function_name} result: {tool_result}",
-                    tool_result_files,
-                    tool_result_embeds,
+            if event_emitter:
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "react_complete",
+                            "description": f"ReAct completed ({react_result.total_iterations} iterations)",
+                            "done": True,
+                        },
+                    }
                 )
 
-                if tool_result:
-                    tool = tools[tool_function_name]
-                    tool_id = tool.get("tool_id", "")
+            # Add ReAct result to messages
+            if react_result.final_answer:
+                body["messages"] = add_or_update_user_message(
+                    f"\n[ReAct Agent Result]\n{react_result.final_answer}",
+                    body["messages"],
+                )
 
-                    tool_name = (
-                        f"{tool_id}/{tool_function_name}"
-                        if tool_id
-                        else f"{tool_function_name}"
-                    )
-
-                    # Citation is enabled for this tool
-                    sources.append(
-                        {
-                            "source": {
-                                "name": (f"{tool_name}"),
-                            },
-                            "document": [str(tool_result)],
-                            "metadata": [
-                                {
-                                    "source": (f"{tool_name}"),
-                                    "parameters": tool_function_params,
-                                }
-                            ],
-                            "tool_result": True,
-                        }
-                    )
-
-                    # Citation is not enabled for this tool
-                    body["messages"] = add_or_update_user_message(
-                        f"\nTool `{tool_name}` Output: {tool_result}",
-                        body["messages"],
-                    )
-
-                    if (
-                        tools[tool_function_name]
-                        .get("metadata", {})
-                        .get("file_handler", False)
-                    ):
-                        skip_files = True
-
-            # check if "tool_calls" in result
-            if result.get("tool_calls"):
-                for tool_call in result.get("tool_calls"):
-                    await tool_call_handler(tool_call)
-            else:
-                await tool_call_handler(result)
+            log.info(f"[Tools Handler] ReAct completed: status={react_result.status.value}, iterations={react_result.total_iterations}")
+            return body, {"sources": react_result.sources}
 
         except Exception as e:
-            log.debug(f"Error: {e}")
-            content = None
-    except Exception as e:
-        log.debug(f"Error: {e}")
-        content = None
+            log.error(f"[Tools Handler] ReAct error: {e}")
+            # ReAct failed - let regular LLM handle it without tools
+            return body, {}
 
-    log.debug(f"tool_contexts: {sources}")
-
-    if skip_files and "files" in body.get("metadata", {}):
-        del body["metadata"]["files"]
-
-    return body, {"sources": sources}
+    # No tools or ReAct disabled - let regular LLM handle it
+    return body, {}
 
 
 async def chat_memory_handler(
@@ -718,6 +667,42 @@ async def chat_web_search_handler(
     return form_data
 
 
+def strip_images_from_messages(messages: list) -> list:
+    """
+    Strip image content from messages so they can be sent to non-vision LLMs.
+    Converts messages with image_url content to text-only content.
+    """
+    stripped_messages = []
+    for message in messages:
+        new_message = {**message}
+        content = message.get("content")
+
+        # If content is a list (multimodal format), extract only text
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        text_parts.append(item.get("text", ""))
+                    # Skip image_url items
+                elif isinstance(item, str):
+                    text_parts.append(item)
+            new_message["content"] = " ".join(text_parts).strip() or "[Image]"
+
+        # Remove files with image type from the message
+        if "files" in new_message:
+            new_message["files"] = [
+                f for f in new_message.get("files", [])
+                if f.get("type") != "image"
+            ]
+            if not new_message["files"]:
+                del new_message["files"]
+
+        stripped_messages.append(new_message)
+
+    return stripped_messages
+
+
 def get_last_images(message_list):
     images = []
     for message in reversed(message_list):
@@ -741,7 +726,16 @@ async def chat_image_generation_handler(
     if not chat_id:
         return form_data
 
-    chat = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+    # Use cached chat data if available to avoid redundant API calls
+    chat_data = metadata.get("_cached_chat_data")
+    if not chat_data:
+        if is_bluenexus_data_storage_enabled():
+            chat_data = await bluenexus_get_chat(user.id, chat_id)
+        else:
+            chat_model = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+            chat_data = chat_model.model_dump() if chat_model else None
+    if not chat_data:
+        return form_data
 
     __event_emitter__ = extra_params["__event_emitter__"]
     await __event_emitter__(
@@ -751,8 +745,9 @@ async def chat_image_generation_handler(
         }
     )
 
-    messages_map = chat.chat.get("history", {}).get("messages", {})
-    message_id = chat.chat.get("history", {}).get("currentId")
+    chat_content = chat_data.get("chat", {})
+    messages_map = chat_content.get("history", {}).get("messages", {})
+    message_id = chat_content.get("history", {}).get("currentId")
     message_list = get_message_list(messages_map, message_id)
     user_message = get_last_user_message(message_list)
 
@@ -875,6 +870,8 @@ async def chat_image_generation_handler(
             )
 
             system_message_content = "<context>The requested image has been created and is now being shown to the user. Let them know that it has been generated.</context>"
+
+            form_data["messages"] = strip_images_from_messages(form_data["messages"])
         except Exception as e:
             log.debug(e)
 
@@ -1142,9 +1139,17 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Check if the request has chat_id and is inside of a folder
     chat_id = metadata.get("chat_id", None)
     if chat_id and user:
-        chat = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
-        if chat and chat.folder_id:
-            folder = Folders.get_folder_by_id_and_user_id(chat.folder_id, user.id)
+        # Use cached chat data if available to avoid redundant API calls
+        chat_data = metadata.get("_cached_chat_data")
+        if not chat_data:
+            if is_bluenexus_data_storage_enabled():
+                chat_data = await bluenexus_get_chat(user.id, chat_id)
+            else:
+                chat_model = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
+                chat_data = chat_model.model_dump() if chat_model else None
+        folder_id = chat_data.get("folder_id") if chat_data else None
+        if folder_id:
+            folder = Folders.get_folder_by_id_and_user_id(folder_id, user.id)
 
             if folder and folder.data:
                 if "system_prompt" in folder.data:
@@ -1293,6 +1298,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Client side tools
     direct_tool_servers = metadata.get("tool_servers", None)
 
+    log.info(f"[MCP] Chat payload received - tool_ids={tool_ids}, direct_tool_servers={direct_tool_servers is not None}")
     log.debug(f"{tool_ids=}")
     log.debug(f"{direct_tool_servers=}")
 
@@ -1302,15 +1308,194 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     mcp_tools_dict = {}
 
     if tool_ids:
+        log.info(f"[MCP] Processing {len(tool_ids)} tool_ids: {tool_ids}")
+
+        # Count MCP servers to load
+        mcp_server_ids = [tid for tid in tool_ids if tid.startswith("bluenexus_mcp:") or tid.startswith("server:mcp:")]
         for tool_id in tool_ids:
-            if tool_id.startswith("server:mcp:"):
+            # Handle BlueNexus MCP servers (user-specific, fetched from BlueNexus API)
+            if tool_id.startswith("bluenexus_mcp:"):
+                try:
+                    server_slug = tool_id[len("bluenexus_mcp:"):]
+                    log.info(f"[BlueNexus MCP] Processing server slug: {server_slug}")
+
+                    # Fetch user's BlueNexus MCP servers
+                    from open_webui.utils.bluenexus.mcp import get_bluenexus_mcp_servers, get_bluenexus_mcp_oauth_token
+                    bn_servers_response = await get_bluenexus_mcp_servers(user.id)
+                    bn_servers = bn_servers_response.data if bn_servers_response else []
+
+                    # Find the matching server
+                    mcp_server = None
+                    for server in bn_servers:
+                        if server.slug == server_slug:
+                            mcp_server = server
+                            break
+
+                    if not mcp_server:
+                        log.error(f"[BlueNexus MCP] Server not found for slug: {server_slug}")
+                        continue
+
+                    log.info(f"[BlueNexus MCP] Found server: {mcp_server.label} at {mcp_server.url}")
+
+                    # Get BlueNexus OAuth token
+                    headers = {}
+                    oauth_token = get_bluenexus_mcp_oauth_token(user.id, f"bluenexus:{server_slug}")
+                    if oauth_token:
+                        log.info("[BlueNexus MCP] OAuth token found")
+                        headers["Authorization"] = f"Bearer {oauth_token.get('access_token', '')}"
+                    else:
+                        log.warning("[BlueNexus MCP] No OAuth token found - connection may fail")
+
+                    # Connect to MCP server with retry logic
+                    mcp_url = mcp_server.url
+                    log.info(f"[BlueNexus MCP] Connecting to {mcp_url}")
+
+                    mcp_clients[server_slug] = MCPClient()
+
+                    # Helper function to check if error is connection-related
+                    def is_connection_error(error):
+                        """Check if an error (including ExceptionGroup) is connection-related."""
+                        error_str = str(error)
+                        # Check the error string
+                        if any(keyword in error_str for keyword in ["ConnectError", "Connection", "connect", "ConnectionReset"]):
+                            return True
+                        # Check for ExceptionGroup/BaseExceptionGroup
+                        if isinstance(error, BaseException) and hasattr(error, 'exceptions'):
+                            # It's an ExceptionGroup - check nested exceptions
+                            for exc in error.exceptions:
+                                if is_connection_error(exc):
+                                    return True
+                        # Check the exception type name
+                        if "Connect" in type(error).__name__ or "Connection" in type(error).__name__:
+                            return True
+                        return False
+
+                    # Retry logic for MCP connection
+                    max_retries = 3
+                    retry_delay = 1.0
+                    last_error = None
+                    connected = False
+
+                    for attempt in range(max_retries):
+                        try:
+                            # Create a new MCPClient for each attempt (in case previous attempt left it in bad state)
+                            mcp_clients[server_slug] = MCPClient()
+                            await mcp_clients[server_slug].connect(
+                                url=mcp_url,
+                                headers=headers if headers else None,
+                            )
+                            connected = True
+                            log.info(f"[BlueNexus MCP] Connected successfully to {mcp_url}")
+                            break
+                        except BaseException as conn_error:
+                            last_error = conn_error
+                            # Check if it's a connection error that's worth retrying
+                            if is_connection_error(conn_error):
+                                if attempt < max_retries - 1:
+                                    delay = retry_delay * (2 ** attempt)
+                                    log.warning(
+                                        f"[BlueNexus MCP] Connection error (attempt {attempt + 1}/{max_retries}): {type(conn_error).__name__}. Retrying in {delay}s..."
+                                    )
+                                    await asyncio.sleep(delay)
+                                else:
+                                    log.error(
+                                        f"[BlueNexus MCP] Connection failed after {max_retries} attempts: {conn_error}"
+                                    )
+                            else:
+                                # Non-connection error, don't retry
+                                raise
+
+                    if not connected:
+                        raise last_error if last_error else Exception("MCP connection failed")
+
+                    # List and register tools with heartbeat to prevent timeout
+
+                    # Create task for list_tool_specs
+                    list_tools_task = asyncio.create_task(mcp_clients[server_slug].list_tool_specs())
+
+                    # Send heartbeat while waiting for tools
+                    heartbeat_interval = 0.5  # seconds - shorter interval for faster keepalive
+                    tool_specs = None
+                    while not list_tools_task.done():
+                        try:
+                            tool_specs = await asyncio.wait_for(asyncio.shield(list_tools_task), timeout=heartbeat_interval)
+                            break
+                        except asyncio.TimeoutError:
+                            # Task not done yet, continue waiting silently
+                            pass
+
+                    # Get result if not already obtained
+                    if tool_specs is None:
+                        tool_specs = await list_tools_task
+                    log.info(f"[BlueNexus MCP] Retrieved {len(tool_specs) if tool_specs else 0} tool specs")
+
+                    for tool_spec in tool_specs:
+                        tool_name = tool_spec.get("name", "unknown")
+                        full_tool_name = f"{server_slug}_{tool_name}"
+
+                        def make_tool_function(client, function_name, srv_slug):
+                            async def tool_function(**kwargs):
+                                log.info(f"[BlueNexus MCP] Calling tool '{function_name}' on server '{srv_slug}'")
+                                try:
+                                    result = await client.call_tool(
+                                        function_name,
+                                        function_args=kwargs,
+                                    )
+                                    log.info(f"[BlueNexus MCP] Tool '{function_name}' returned successfully")
+                                    return result
+                                except Exception as e:
+                                    log.error(f"[BlueNexus MCP] Tool '{function_name}' failed: {e}")
+                                    raise
+
+                            return tool_function
+
+                        tool_function = make_tool_function(
+                            mcp_clients[server_slug], tool_spec["name"], server_slug
+                        )
+
+                        mcp_tools_dict[full_tool_name] = {
+                            "spec": {
+                                **tool_spec,
+                                "name": full_tool_name,
+                            },
+                            "callable": tool_function,
+                            "type": "mcp",
+                            "client": mcp_clients[server_slug],
+                            "direct": False,
+                        }
+
+                    log.info(f"[BlueNexus MCP] Registered {len(tool_specs) if tool_specs else 0} tools from {server_slug}")
+
+                except Exception as e:
+                    log.error(f"[BlueNexus MCP] Failed to process server {tool_id}: {e}")
+                    import traceback
+                    log.error(f"[BlueNexus MCP] Full traceback:\n{traceback.format_exc()}")
+                    if event_emitter:
+                        await event_emitter(
+                            {
+                                "type": "chat:message:error",
+                                "data": {
+                                    "error": {
+                                        "content": f"Failed to connect to BlueNexus MCP server '{server_slug}'"
+                                    }
+                                },
+                            }
+                        )
+                    continue
+
+            # Handle admin-configured MCP servers
+            elif tool_id.startswith("server:mcp:"):
                 try:
                     server_id = tool_id[len("server:mcp:") :]
+                    log.info(f"[MCP] Step 1: Finding MCP server config for server_id: {server_id}")
 
                     mcp_server_connection = None
+                    available_mcp_servers = []
                     for (
                         server_connection
                     ) in request.app.state.config.TOOL_SERVER_CONNECTIONS:
+                        if server_connection.get("type", "") == "mcp":
+                            available_mcp_servers.append(server_connection.get("info", {}).get("id"))
                         if (
                             server_connection.get("type", "") == "mcp"
                             and server_connection.get("info", {}).get("id") == server_id
@@ -1319,80 +1504,144 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             break
 
                     if not mcp_server_connection:
-                        log.error(f"MCP server with id {server_id} not found")
+                        log.error(f"[MCP] Server config NOT FOUND for server_id: {server_id}. Available MCP servers: {available_mcp_servers}")
                         continue
+
+                    log.info(f"[MCP] Server config FOUND: url={mcp_server_connection.get('url')}, auth_type={mcp_server_connection.get('auth_type')}, config={mcp_server_connection.get('config', {})}")
 
                     auth_type = mcp_server_connection.get("auth_type", "")
 
+                    log.info(f"[MCP] Step 2: Preparing auth headers for auth_type: {auth_type}")
                     headers = {}
                     if auth_type == "bearer":
                         headers["Authorization"] = (
                             f"Bearer {mcp_server_connection.get('key', '')}"
                         )
+                        log.info(f"[MCP] Auth: Using bearer token (key length: {len(mcp_server_connection.get('key', ''))})")
                     elif auth_type == "none":
                         # No authentication
+                        log.info("[MCP] Auth: No authentication required")
                         pass
                     elif auth_type == "session":
                         headers["Authorization"] = (
                             f"Bearer {request.state.token.credentials}"
                         )
+                        log.info("[MCP] Auth: Using session token")
                     elif auth_type == "system_oauth":
-                        oauth_token = extra_params.get("__oauth_token__", None)
-                        if oauth_token:
-                            headers["Authorization"] = (
-                                f"Bearer {oauth_token.get('access_token', '')}"
-                            )
+                        # Check if this is a BlueNexus MCP server (use bluenexus module)
+                        oauth_provider = mcp_server_connection.get("config", {}).get(
+                            "oauth_provider"
+                        )
+
+                        log.info(f"[MCP] Auth: system_oauth - server_id={server_id}")
+
+                        # Try to get BlueNexus OAuth token if applicable
+                        oauth_token = None
+                        try:
+                            from open_webui.utils.bluenexus.mcp import get_bluenexus_mcp_oauth_token
+                            oauth_token = get_bluenexus_mcp_oauth_token(user.id, server_id)
+                            if oauth_token:
+                                # Do not log access_token; log only that the token was found and expiration.
+                                log.info("[MCP] Auth: BlueNexus OAuth token session FOUND.")
+                                headers["Authorization"] = (
+                                    f"Bearer {oauth_token.get('access_token', '')}"
+                                )
+                        except ImportError:
+                            pass
+
+                        if not oauth_token:
+                            # Use the OAuth token from extra_params (standard system_oauth)
+                            oauth_token = extra_params.get("__oauth_token__", None)
+                            if oauth_token:
+                                # Do not log access_token; indicate token was found.
+                                log.info(f"[MCP] Auth: Using system_oauth token from extra_params.")
+                                headers["Authorization"] = (
+                                    f"Bearer {oauth_token.get('access_token', '')}"
+                                )
+                            else:
+                                log.warning("[MCP] Auth: No OAuth token found in extra_params")
                     elif auth_type == "oauth_2.1":
                         try:
                             splits = server_id.split(":")
                             server_id = splits[-1] if len(splits) > 1 else server_id
 
+                            log.info(f"[MCP] Auth: oauth_2.1 - getting token for mcp:{server_id}")
                             oauth_token = await request.app.state.oauth_client_manager.get_oauth_token(
                                 user.id, f"mcp:{server_id}"
                             )
 
                             if oauth_token:
+                                log.info(f"[MCP] Auth: oauth_2.1 token obtained.")
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
+                                headers["Authorization"] = (
+                                    f"Bearer {oauth_token.get('access_token', '')}"
+                                )
+                            else:
+                                log.warning(f"[MCP] Auth: oauth_2.1 - no token returned for mcp:{server_id}")
                         except Exception as e:
-                            log.error(f"Error getting OAuth token: {e}")
+                            log.error(f"[MCP] Auth: oauth_2.1 - error getting OAuth token: {e}")
                             oauth_token = None
+
+                    mcp_url = mcp_server_connection.get("url", "")
+                    log.info(f"[MCP] Step 3: Connecting to MCP server at {mcp_url}")
+                    log.info(f"[MCP] Connection headers: {list(headers.keys()) if headers else 'None'}")
 
                     mcp_clients[server_id] = MCPClient()
                     await mcp_clients[server_id].connect(
-                        url=mcp_server_connection.get("url", ""),
+                        url=mcp_url,
                         headers=headers if headers else None,
                     )
+                    log.info(f"[MCP] Step 3: Connection SUCCESSFUL to {mcp_url}")
 
+                    log.info(f"[MCP] Step 4: Listing tool specs from server {server_id}")
                     tool_specs = await mcp_clients[server_id].list_tool_specs()
+                    log.info(f"[MCP] Step 4: Retrieved {len(tool_specs) if tool_specs else 0} tool specs")
                     for tool_spec in tool_specs:
+                        tool_name = tool_spec.get("name", "unknown")
+                        full_tool_name = f"{server_id}_{tool_name}"
+                        log.debug(f"[MCP] Registering tool: {full_tool_name}, description: {tool_spec.get('description', 'N/A')[:100]}")
 
-                        def make_tool_function(client, function_name):
+                        def make_tool_function(client, function_name, srv_id):
                             async def tool_function(**kwargs):
-                                return await client.call_tool(
-                                    function_name,
-                                    function_args=kwargs,
-                                )
+                                log.info(f"[MCP] Step 6: Calling tool '{function_name}' on server '{srv_id}' with args: {list(kwargs.keys())}")
+                                try:
+                                    result = await client.call_tool(
+                                        function_name,
+                                        function_args=kwargs,
+                                    )
+                                    log.info(f"[MCP] Step 6: Tool '{function_name}' returned result type: {type(result).__name__}, length: {len(result) if isinstance(result, (list, dict, str)) else 'N/A'}")
+                                    return result
+                                except Exception as e:
+                                    log.error(f"[MCP] Step 6: Tool '{function_name}' FAILED with error: {e}")
+                                    raise
 
                             return tool_function
 
                         tool_function = make_tool_function(
-                            mcp_clients[server_id], tool_spec["name"]
+                            mcp_clients[server_id], tool_spec["name"], server_id
                         )
 
-                        mcp_tools_dict[f"{server_id}_{tool_spec['name']}"] = {
+                        mcp_tools_dict[full_tool_name] = {
                             "spec": {
                                 **tool_spec,
-                                "name": f"{server_id}_{tool_spec['name']}",
+                                "name": full_tool_name,
                             },
                             "callable": tool_function,
                             "type": "mcp",
                             "client": mcp_clients[server_id],
                             "direct": False,
                         }
+
+                    tool_names = [f"{server_id}_{t.get('name')}" for t in (tool_specs or [])]
+                    log.info(f"[MCP] Registered {len(tool_specs) if tool_specs else 0} tools from server {server_id}: {tool_names}")
+
                 except Exception as e:
-                    log.debug(e)
+                    log.error(f"[MCP] Connection FAILED for server {server_id}: {type(e).__name__}: {e}")
+                    # Log the full traceback for debugging
+                    import traceback
+                    log.error(f"[MCP] Full traceback:\n{traceback.format_exc()}")
                     if event_emitter:
                         await event_emitter(
                             {
@@ -1418,7 +1667,21 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             },
         )
         if mcp_tools_dict:
+            log.info(f"[MCP] Merging {len(mcp_tools_dict)} MCP tools into tools_dict (existing: {len(tools_dict)})")
             tools_dict = {**tools_dict, **mcp_tools_dict}
+
+            # Send final summary message for MCP loading
+            if event_emitter:
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "mcp_connect",
+                            "description": f"MCP servers ready ({len(mcp_tools_dict)} tools)",
+                            "done": True,
+                        },
+                    }
+                )
 
     if direct_tool_servers:
         for tool_server in direct_tool_servers:
@@ -1433,10 +1696,16 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if mcp_clients:
         metadata["mcp_clients"] = mcp_clients
+        log.info(f"[MCP] Stored {len(mcp_clients)} MCP clients in metadata")
 
     if tools_dict:
+        mcp_tool_count = sum(1 for t in tools_dict.values() if t.get("type") == "mcp")
+        log.info(f"[MCP] Step 5: Passing {len(tools_dict)} tools to LLM ({mcp_tool_count} MCP tools)")
+        log.debug(f"[MCP] All tool names: {list(tools_dict.keys())}")
+
         if metadata.get("params", {}).get("function_calling") == "native":
             # If the function calling is native, then call the tools function calling handler
+            log.info("[MCP] Step 5: Using NATIVE function calling mode")
             metadata["tools"] = tools_dict
             form_data["tools"] = [
                 {"type": "function", "function": tool.get("spec", {})}
@@ -1536,7 +1805,16 @@ async def process_chat_response(
         messages = []
 
         if "chat_id" in metadata and not metadata["chat_id"].startswith("local:"):
-            messages_map = Chats.get_messages_map_by_chat_id(metadata["chat_id"])
+            # Use cached chat data if available to avoid redundant API calls
+            cached_chat = metadata.get("_cached_chat_data")
+            if cached_chat:
+                chat = cached_chat.get("chat", {})
+                messages_map = chat.get("history", {}).get("messages", {})
+            else:
+                if is_bluenexus_data_storage_enabled():
+                    messages_map = await bluenexus_get_messages_map(user.id, metadata["chat_id"])
+                else:
+                    messages_map = Chats.get_messages_map_by_chat_id(metadata["chat_id"])
             message = messages_map.get(metadata["message_id"]) if messages_map else None
 
             message_list = get_message_list(messages_map, metadata["message_id"])
@@ -1626,13 +1904,21 @@ async def process_chat_response(
                             )
 
                             if not metadata.get("chat_id", "").startswith("local:"):
-                                Chats.upsert_message_to_chat_by_id_and_message_id(
-                                    metadata["chat_id"],
-                                    metadata["message_id"],
-                                    {
-                                        "followUps": follow_ups,
-                                    },
-                                )
+                                if is_bluenexus_data_storage_enabled():
+                                    await bluenexus_upsert_message(
+                                        user.id,
+                                        metadata["chat_id"],
+                                        metadata["message_id"],
+                                        {
+                                            "followUps": follow_ups,
+                                        },
+                                    )
+                                else:
+                                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                                        metadata["chat_id"],
+                                        metadata["message_id"],
+                                        {"followUps": follow_ups},
+                                    )
 
                         except Exception as e:
                             pass
@@ -1640,6 +1926,10 @@ async def process_chat_response(
                 if not metadata.get("chat_id", "").startswith(
                     "local:"
                 ):  # Only update titles and tags for non-temp chats
+                    # Collect title and tags for a single combined update
+                    generated_title = None
+                    generated_tags = None
+
                     if TASKS.TITLE_GENERATION in tasks:
                         user_message = get_last_user_message(messages)
                         if user_message and len(user_message) > 100:
@@ -1687,9 +1977,7 @@ async def process_chat_response(
                                 if not title:
                                     title = messages[0].get("content", user_message)
 
-                                Chats.update_chat_title_by_id(
-                                    metadata["chat_id"], title
-                                )
+                                generated_title = title
 
                                 await event_emitter(
                                     {
@@ -1700,8 +1988,7 @@ async def process_chat_response(
 
                         if title == None and len(messages) == 2:
                             title = messages[0].get("content", user_message)
-
-                            Chats.update_chat_title_by_id(metadata["chat_id"], title)
+                            generated_title = title
 
                             await event_emitter(
                                 {
@@ -1739,9 +2026,7 @@ async def process_chat_response(
 
                             try:
                                 tags = json.loads(tags_string).get("tags", [])
-                                Chats.update_chat_tags_by_id(
-                                    metadata["chat_id"], tags, user
-                                )
+                                generated_tags = tags
 
                                 await event_emitter(
                                     {
@@ -1751,6 +2036,19 @@ async def process_chat_response(
                                 )
                             except Exception as e:
                                 pass
+
+                    # Combined update for title and tags (1 API call instead of 2)
+                    if generated_title is not None or generated_tags is not None:
+                        if is_bluenexus_data_storage_enabled():
+                            await bluenexus_update_title_and_tags(
+                                user.id, metadata["chat_id"], generated_title, generated_tags
+                            )
+                        else:
+                            # Use PostgreSQL for title/tags update
+                            if generated_title is not None:
+                                Chats.update_chat_title_by_id(metadata["chat_id"], generated_title)
+                            if generated_tags is not None:
+                                Chats.update_chat_tags_by_id(metadata["chat_id"], generated_tags, user)
 
     event_emitter = None
     event_caller = None
@@ -1796,13 +2094,21 @@ async def process_chat_response(
                         else:
                             error = str(error)
 
-                        Chats.upsert_message_to_chat_by_id_and_message_id(
-                            metadata["chat_id"],
-                            metadata["message_id"],
-                            {
-                                "error": {"content": error},
-                            },
-                        )
+                        if is_bluenexus_data_storage_enabled():
+                            await bluenexus_upsert_message(
+                                user.id,
+                                metadata["chat_id"],
+                                metadata["message_id"],
+                                {
+                                    "error": {"content": error},
+                                },
+                            )
+                        else:
+                            Chats.upsert_message_to_chat_by_id_and_message_id(
+                                metadata["chat_id"],
+                                metadata["message_id"],
+                                {"error": {"content": error}},
+                            )
                         if isinstance(error, str) or isinstance(error, dict):
                             await event_emitter(
                                 {
@@ -1812,13 +2118,21 @@ async def process_chat_response(
                             )
 
                     if "selected_model_id" in response_data:
-                        Chats.upsert_message_to_chat_by_id_and_message_id(
-                            metadata["chat_id"],
-                            metadata["message_id"],
-                            {
-                                "selectedModelId": response_data["selected_model_id"],
-                            },
-                        )
+                        if is_bluenexus_data_storage_enabled():
+                            await bluenexus_upsert_message(
+                                user.id,
+                                metadata["chat_id"],
+                                metadata["message_id"],
+                                {
+                                    "selectedModelId": response_data["selected_model_id"],
+                                },
+                            )
+                        else:
+                            Chats.upsert_message_to_chat_by_id_and_message_id(
+                                metadata["chat_id"],
+                                metadata["message_id"],
+                                {"selectedModelId": response_data["selected_model_id"]},
+                            )
 
                     choices = response_data.get("choices", [])
                     if choices and choices[0].get("message", {}).get("content"):
@@ -1832,7 +2146,10 @@ async def process_chat_response(
                                 }
                             )
 
-                            title = Chats.get_chat_title_by_id(metadata["chat_id"])
+                            if is_bluenexus_data_storage_enabled():
+                                title = await bluenexus_get_title(user.id, metadata["chat_id"])
+                            else:
+                                title = Chats.get_chat_title_by_id(metadata["chat_id"])
 
                             await event_emitter(
                                 {
@@ -1846,14 +2163,22 @@ async def process_chat_response(
                             )
 
                             # Save message in the database
-                            Chats.upsert_message_to_chat_by_id_and_message_id(
-                                metadata["chat_id"],
-                                metadata["message_id"],
-                                {
-                                    "role": "assistant",
-                                    "content": content,
-                                },
-                            )
+                            if is_bluenexus_data_storage_enabled():
+                                await bluenexus_upsert_message(
+                                    user.id,
+                                    metadata["chat_id"],
+                                    metadata["message_id"],
+                                    {
+                                        "role": "assistant",
+                                        "content": content,
+                                    },
+                                )
+                            else:
+                                Chats.upsert_message_to_chat_by_id_and_message_id(
+                                    metadata["chat_id"],
+                                    metadata["message_id"],
+                                    {"role": "assistant", "content": content},
+                                )
 
                             # Send a webhook notification if the user is not active
                             if not get_active_status_by_user_id(user.id):
@@ -2321,9 +2646,22 @@ async def process_chat_response(
 
                 return content, content_blocks, end_flag
 
-            message = Chats.get_message_by_id_and_message_id(
-                metadata["chat_id"], metadata["message_id"]
-            )
+            if is_bluenexus_data_storage_enabled():
+                message = await bluenexus_get_message(
+                    user.id, metadata["chat_id"], metadata["message_id"]
+                )
+            else:
+                message = Chats.get_message_by_id_and_message_id(metadata["chat_id"], metadata["message_id"])
+
+            # Create batcher for streaming message updates (reduces API calls)
+            message_batcher = None
+            if ENABLE_REALTIME_CHAT_SAVE and not metadata.get("chat_id", "").startswith("local:"):
+                message_batcher = MessageUpdateBatcher(
+                    user.id, metadata["chat_id"],
+                    flush_interval=2.0,  # Flush every 2 seconds
+                    max_pending=10  # Or after 10 pending updates
+                )
+                await message_batcher.__aenter__()
 
             tool_calls = []
 
@@ -2377,17 +2715,26 @@ async def process_chat_response(
                     )
 
                     # Save message in the database
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
-                        metadata["chat_id"],
-                        metadata["message_id"],
-                        {
-                            **event,
-                        },
-                    )
+                    if is_bluenexus_data_storage_enabled():
+                        await bluenexus_upsert_message(
+                            user.id,
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {
+                                **event,
+                            },
+                        )
+                    else:
+                        Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {**event},
+                        )
 
                 async def stream_body_handler(response, form_data):
                     nonlocal content
                     nonlocal content_blocks
+                    nonlocal message_batcher
 
                     response_tool_calls = []
 
@@ -2453,13 +2800,21 @@ async def process_chat_response(
 
                                 if "selected_model_id" in data:
                                     model_id = data["selected_model_id"]
-                                    Chats.upsert_message_to_chat_by_id_and_message_id(
-                                        metadata["chat_id"],
-                                        metadata["message_id"],
-                                        {
-                                            "selectedModelId": model_id,
-                                        },
-                                    )
+                                    if is_bluenexus_data_storage_enabled():
+                                        await bluenexus_upsert_message(
+                                            user.id,
+                                            metadata["chat_id"],
+                                            metadata["message_id"],
+                                            {
+                                                "selectedModelId": model_id,
+                                            },
+                                        )
+                                    else:
+                                        Chats.upsert_message_to_chat_by_id_and_message_id(
+                                            metadata["chat_id"],
+                                            metadata["message_id"],
+                                            {"selectedModelId": model_id},
+                                        )
                                     await event_emitter(
                                         {
                                             "type": "chat:completion",
@@ -2660,16 +3015,35 @@ async def process_chat_response(
                                                 break
 
                                         if ENABLE_REALTIME_CHAT_SAVE:
-                                            # Save message in the database
-                                            Chats.upsert_message_to_chat_by_id_and_message_id(
-                                                metadata["chat_id"],
-                                                metadata["message_id"],
-                                                {
-                                                    "content": serialize_content_blocks(
-                                                        content_blocks
-                                                    ),
-                                                },
-                                            )
+                                            # Use batcher for batched saves (reduces API calls)
+                                            if message_batcher:
+                                                await message_batcher.update_message(
+                                                    metadata["message_id"],
+                                                    {
+                                                        "content": serialize_content_blocks(
+                                                            content_blocks
+                                                        ),
+                                                    },
+                                                )
+                                            else:
+                                                # Fallback for local chats
+                                                if is_bluenexus_data_storage_enabled():
+                                                    await bluenexus_upsert_message(
+                                                        user.id,
+                                                        metadata["chat_id"],
+                                                        metadata["message_id"],
+                                                        {
+                                                            "content": serialize_content_blocks(
+                                                                content_blocks
+                                                            ),
+                                                        },
+                                                    )
+                                                else:
+                                                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                                                        metadata["chat_id"],
+                                                        metadata["message_id"],
+                                                        {"content": serialize_content_blocks(content_blocks)},
+                                                    )
                                         else:
                                             data = {
                                                 "content": serialize_content_blocks(
@@ -2762,14 +3136,13 @@ async def process_chat_response(
 
                     tools = metadata.get("tools", {})
 
-                    results = []
-
-                    for tool_call in response_tool_calls:
-                        tool_call_id = tool_call.get("id", "")
-                        tool_function_name = tool_call.get("function", {}).get(
+                    # Define async function to execute a single tool call
+                    async def execute_native_tool_call(tool_call_data):
+                        tool_call_id = tool_call_data.get("id", "")
+                        tool_function_name = tool_call_data.get("function", {}).get(
                             "name", ""
                         )
-                        tool_args = tool_call.get("function", {}).get("arguments", "{}")
+                        tool_args = tool_call_data.get("function", {}).get("arguments", "{}")
 
                         tool_function_params = {}
                         try:
@@ -2793,7 +3166,7 @@ async def process_chat_response(
                         log.debug(
                             f"Parsed args from {tool_args} to {tool_function_params}"
                         )
-                        tool_call.setdefault("function", {})["arguments"] = json.dumps(
+                        tool_call_data.setdefault("function", {})["arguments"] = json.dumps(
                             tool_function_params
                         )
 
@@ -2868,22 +3241,37 @@ async def process_chat_response(
                             )
                         )
 
-                        results.append(
-                            {
-                                "tool_call_id": tool_call_id,
-                                "content": tool_result or "",
-                                **(
-                                    {"files": tool_result_files}
-                                    if tool_result_files
-                                    else {}
-                                ),
-                                **(
-                                    {"embeds": tool_result_embeds}
-                                    if tool_result_embeds
-                                    else {}
-                                ),
-                            }
-                        )
+                        return {
+                            "tool_call_id": tool_call_id,
+                            "content": tool_result or "",
+                            **(
+                                {"files": tool_result_files}
+                                if tool_result_files
+                                else {}
+                            ),
+                            **(
+                                {"embeds": tool_result_embeds}
+                                if tool_result_embeds
+                                else {}
+                            ),
+                        }
+
+                    # Execute all tool calls in parallel using asyncio.gather
+                    log.info(f"[Native Tools] Executing {len(response_tool_calls)} tool calls in parallel")
+                    tool_tasks = [execute_native_tool_call(tc) for tc in response_tool_calls]
+                    parallel_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
+
+                    # Process results, handling any exceptions
+                    results = []
+                    for i, result in enumerate(parallel_results):
+                        if isinstance(result, Exception):
+                            log.error(f"[Native Tools] Tool call {i} failed: {result}")
+                            results.append({
+                                "tool_call_id": response_tool_calls[i].get("id", ""),
+                                "content": f"Error: {str(result)}",
+                            })
+                        else:
+                            results.append(result)
 
                     content_blocks[-1]["results"] = results
                     content_blocks.append(
@@ -3108,7 +3496,14 @@ async def process_chat_response(
                             log.debug(e)
                             break
 
-                title = Chats.get_chat_title_by_id(metadata["chat_id"])
+                # Flush any pending batched updates before final save
+                if message_batcher:
+                    await message_batcher.__aexit__(None, None, None)
+
+                if is_bluenexus_data_storage_enabled():
+                    title = await bluenexus_get_title(user.id, metadata["chat_id"])
+                else:
+                    title = Chats.get_chat_title_by_id(metadata["chat_id"])
                 data = {
                     "done": True,
                     "content": serialize_content_blocks(content_blocks),
@@ -3117,13 +3512,21 @@ async def process_chat_response(
 
                 if not ENABLE_REALTIME_CHAT_SAVE:
                     # Save message in the database
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
-                        metadata["chat_id"],
-                        metadata["message_id"],
-                        {
-                            "content": serialize_content_blocks(content_blocks),
-                        },
-                    )
+                    if is_bluenexus_data_storage_enabled():
+                        await bluenexus_upsert_message(
+                            user.id,
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {
+                                "content": serialize_content_blocks(content_blocks),
+                            },
+                        )
+                    else:
+                        Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {"content": serialize_content_blocks(content_blocks)},
+                        )
 
                 # Send a webhook notification if the user is not active
                 if not get_active_status_by_user_id(user.id):
@@ -3153,15 +3556,30 @@ async def process_chat_response(
                 log.warning("Task was cancelled!")
                 await event_emitter({"type": "chat:tasks:cancel"})
 
+                # Flush batcher on cancellation to save any pending updates
+                if message_batcher:
+                    try:
+                        await message_batcher.__aexit__(None, None, None)
+                    except Exception as e:
+                        log.debug(f"Error flushing batcher on cancel: {e}")
+
                 if not ENABLE_REALTIME_CHAT_SAVE:
                     # Save message in the database
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
-                        metadata["chat_id"],
-                        metadata["message_id"],
-                        {
-                            "content": serialize_content_blocks(content_blocks),
-                        },
-                    )
+                    if is_bluenexus_data_storage_enabled():
+                        await bluenexus_upsert_message(
+                            user.id,
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {
+                                "content": serialize_content_blocks(content_blocks),
+                            },
+                        )
+                    else:
+                        Chats.upsert_message_to_chat_by_id_and_message_id(
+                            metadata["chat_id"],
+                            metadata["message_id"],
+                            {"content": serialize_content_blocks(content_blocks)},
+                        )
 
             if response.background is not None:
                 await response.background()

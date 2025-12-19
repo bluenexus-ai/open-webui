@@ -13,7 +13,7 @@ from open_webui.models.auths import Auths
 from open_webui.models.oauth_sessions import OAuthSessions
 
 from open_webui.models.groups import Groups
-from open_webui.models.chats import Chats
+from open_webui.utils.bluenexus.chat_ops import get_chat_by_id as bluenexus_get_chat
 from open_webui.models.users import (
     UserModel,
     UserListResponse,
@@ -335,9 +335,9 @@ async def get_user_by_id(user_id: str, user=Depends(get_verified_user)):
     # If it is, get the user_id from the chat
     if user_id.startswith("shared-"):
         chat_id = user_id.replace("shared-", "")
-        chat = Chats.get_chat_by_id(chat_id)
+        chat = await bluenexus_get_chat(user.id, chat_id)
         if chat:
-            user_id = chat.user_id
+            user_id = chat.get("user_id")
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

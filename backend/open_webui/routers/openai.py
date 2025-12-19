@@ -2,12 +2,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import ssl
 from typing import Optional
 
 import aiohttp
 from aiocache import cached
 import requests
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 
@@ -32,8 +33,10 @@ from open_webui.env import (
     AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST,
     ENABLE_FORWARD_USER_INFO_HEADERS,
     BYPASS_MODEL_ACCESS_CONTROL,
+    API_CONNECTION_MAX_RETRIES,
 )
 from open_webui.models.users import UserModel
+from open_webui.models.oauth_sessions import OAuthSessions
 
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import SRC_LOG_LEVELS
@@ -50,6 +53,12 @@ from open_webui.utils.misc import (
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access
 
+# Import BlueNexus session check - guarded to avoid circular imports
+try:
+    from open_webui.utils.bluenexus import has_bluenexus_session
+except ImportError:
+    has_bluenexus_session = lambda user_id: False
+
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["OPENAI"])
@@ -62,32 +71,84 @@ log.setLevel(SRC_LOG_LEVELS["OPENAI"])
 ##########################################
 
 
-async def send_get_request(url, key=None, user: UserModel = None):
+# Import SSL context helper from bluenexus module (with fallback)
+try:
+    from open_webui.utils.bluenexus.llm import get_ssl_context_for_url as get_ssl_context
+except ImportError:
+    # Fallback implementation if bluenexus module is not available
+    def get_ssl_context(url: str):
+        """Get SSL context for a URL. Disables SSL verification for localhost."""
+        parsed_url = urlparse(url)
+        hostname = parsed_url.hostname or ""
+        if hostname in ["localhost", "127.0.0.1", "::1"]:
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            return ssl_context
+        return AIOHTTP_CLIENT_SESSION_SSL
+
+
+async def send_get_request(
+    url,
+    key=None,
+    user: UserModel = None,
+    request: Request | None = None,
+    config: Optional[dict] = None,
+    max_retries: int = 3,
+    retry_delay: float = 1.0,
+):
     timeout = aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST)
-    try:
-        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
-            async with session.get(
-                url,
-                headers={
-                    **({"Authorization": f"Bearer {key}"} if key else {}),
-                    **(
-                        {
-                            "X-OpenWebUI-User-Name": quote(user.name, safe=" "),
-                            "X-OpenWebUI-User-Id": user.id,
-                            "X-OpenWebUI-User-Email": user.email,
-                            "X-OpenWebUI-User-Role": user.role,
-                        }
-                        if ENABLE_FORWARD_USER_INFO_HEADERS and user
-                        else {}
-                    ),
-                },
-                ssl=AIOHTTP_CLIENT_SESSION_SSL,
-            ) as response:
-                return await response.json()
-    except Exception as e:
-        # Handle connection error here
-        log.error(f"Connection error: {e}")
-        return None
+    headers = {}
+    cookies = {}
+
+    if request is not None:
+        headers, cookies = await get_headers_and_cookies(
+            request,
+            url,
+            key,
+            config or {},
+            user=user,
+        )
+    else:
+        headers = {
+            **({"Authorization": f"Bearer {key}"} if key else {}),
+            **(
+                {
+                    "X-OpenWebUI-User-Name": quote(user.name, safe=" "),
+                    "X-OpenWebUI-User-Id": user.id,
+                    "X-OpenWebUI-User-Email": user.email,
+                    "X-OpenWebUI-User-Role": user.role,
+                }
+                if ENABLE_FORWARD_USER_INFO_HEADERS and user
+                else {}
+            ),
+        }
+
+    last_error = None
+    for attempt in range(max_retries):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    cookies=cookies,
+                    ssl=get_ssl_context(url),
+                ) as response:
+                    return await response.json()
+        except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, asyncio.TimeoutError) as e:
+            last_error = e
+            if attempt < max_retries - 1:
+                log.warning(f"Connection error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                log.error(f"Connection error after {max_retries} attempts: {e}")
+        except Exception as e:
+            # Handle other errors without retry
+            log.error(f"Unexpected error: {e}")
+            return None
+
+    return None
 
 
 async def cleanup_response(
@@ -173,7 +234,20 @@ async def get_headers_and_cookies(
 
         oauth_token = None
         try:
-            if request.cookies.get("oauth_session_id", None):
+            # Check if this is a BlueNexus OAuth provider
+            oauth_provider = config.get("oauth_provider")
+            if oauth_provider == "bluenexus":
+                # Get BlueNexus OAuth session token
+                from open_webui.models.oauth_sessions import OAuthSessions
+                session = OAuthSessions.get_session_by_provider_and_user_id(
+                    provider="bluenexus",
+                    user_id=user.id
+                )
+                if session:
+                    oauth_token = session.token
+                else:
+                    log.warning(f"No BlueNexus OAuth session found for user {user.id}")
+            elif request.cookies.get("oauth_session_id", None):
                 oauth_token = await request.app.state.oauth_manager.get_oauth_token(
                     user.id,
                     request.cookies.get("oauth_session_id", None),
@@ -209,6 +283,16 @@ def get_microsoft_entra_id_access_token():
     except Exception as e:
         log.error(f"Error getting Microsoft Entra ID access token: {e}")
         return None
+
+
+# Import BlueNexus provider setup from bluenexus module (with no-op fallback)
+try:
+    from open_webui.utils.bluenexus.llm import ensure_bluenexus_provider
+except ImportError:
+    # Fallback no-op function if bluenexus module is not available
+    def ensure_bluenexus_provider(request: Request, user: UserModel):
+        """No-op fallback for BlueNexus provider setup."""
+        pass
 
 
 ##########################################
@@ -360,6 +444,8 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
     if not request.app.state.config.ENABLE_OPENAI_API:
         return []
 
+    ensure_bluenexus_provider(request, user)
+
     # Check if API KEYS length is same than API URLS length
     num_urls = len(request.app.state.config.OPENAI_API_BASE_URLS)
     num_keys = len(request.app.state.config.OPENAI_API_KEYS)
@@ -375,56 +461,65 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
 
     request_tasks = []
     for idx, url in enumerate(request.app.state.config.OPENAI_API_BASE_URLS):
-        if (str(idx) not in request.app.state.config.OPENAI_API_CONFIGS) and (
-            url not in request.app.state.config.OPENAI_API_CONFIGS  # Legacy support
-        ):
+        api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+            str(idx),
+            request.app.state.config.OPENAI_API_CONFIGS.get(url, {}),  # Legacy support
+        )
+
+        enable = api_config.get("enable", True)
+        model_ids = api_config.get("model_ids", [])
+
+        if "bluenexus" in api_config.get("tags", []):
+            # Check if user has BlueNexus session - first by cookie, then by database lookup
+            session_id = request.cookies.get("oauth_session_id")
+            session = (
+                OAuthSessions.get_session_by_id_and_user_id(session_id, user.id)
+                if session_id
+                else None
+            )
+            has_valid_session = session and session.provider == "bluenexus"
+
+            # Fallback: check database directly if cookie check fails
+            if not has_valid_session:
+                has_valid_session = has_bluenexus_session(user.id)
+                if has_valid_session:
+                    log.info(f"BlueNexus session found via database lookup for user {user.id}")
+
+            if not has_valid_session:
+                log.debug(f"Skipping BlueNexus models for user {user.id} - no valid session")
+                request_tasks.append(asyncio.ensure_future(asyncio.sleep(0, None)))
+                continue
+
+        if not enable:
+            request_tasks.append(asyncio.ensure_future(asyncio.sleep(0, None)))
+            continue
+
+        if len(model_ids) == 0:
             request_tasks.append(
                 send_get_request(
                     f"{url}/models",
                     request.app.state.config.OPENAI_API_KEYS[idx],
                     user=user,
+                    request=request,
+                    config=api_config,
                 )
             )
         else:
-            api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
-                str(idx),
-                request.app.state.config.OPENAI_API_CONFIGS.get(
-                    url, {}
-                ),  # Legacy support
-            )
-
-            enable = api_config.get("enable", True)
-            model_ids = api_config.get("model_ids", [])
-
-            if enable:
-                if len(model_ids) == 0:
-                    request_tasks.append(
-                        send_get_request(
-                            f"{url}/models",
-                            request.app.state.config.OPENAI_API_KEYS[idx],
-                            user=user,
-                        )
-                    )
-                else:
-                    model_list = {
-                        "object": "list",
-                        "data": [
-                            {
-                                "id": model_id,
-                                "name": model_id,
-                                "owned_by": "openai",
-                                "openai": {"id": model_id},
-                                "urlIdx": idx,
-                            }
-                            for model_id in model_ids
-                        ],
+            model_list = {
+                "object": "list",
+                "data": [
+                    {
+                        "id": model_id,
+                        "name": model_id,
+                        "owned_by": "openai",
+                        "openai": {"id": model_id},
+                        "urlIdx": idx,
                     }
+                    for model_id in model_ids
+                ],
+            }
 
-                    request_tasks.append(
-                        asyncio.ensure_future(asyncio.sleep(0, model_list))
-                    )
-            else:
-                request_tasks.append(asyncio.ensure_future(asyncio.sleep(0, None)))
+            request_tasks.append(asyncio.ensure_future(asyncio.sleep(0, model_list)))
 
     responses = await asyncio.gather(*request_tasks)
 
@@ -522,6 +617,15 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
 
         for idx, model_list in enumerate(model_lists):
             if model_list is not None and "error" not in model_list:
+                # Check if this provider is BlueNexus
+                api_config = request.app.state.config.OPENAI_API_CONFIGS.get(
+                    str(idx),
+                    request.app.state.config.OPENAI_API_CONFIGS.get(
+                        request.app.state.config.OPENAI_API_BASE_URLS[idx], {}
+                    ),
+                )
+                is_bluenexus = "bluenexus" in api_config.get("tags", [])
+
                 for model in model_list:
                     model_id = model.get("id") or model.get("name")
 
@@ -534,9 +638,14 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
                         continue
 
                     if model_id and model_id not in models:
+                        # Add BlueNexus prefix to model name if from BlueNexus provider
+                        model_name = model.get("name", model_id)
+                        if is_bluenexus and not model_name.startswith("BlueNexus:"):
+                            model_name = f"BlueNexus: {model_name}"
+
                         models[model_id] = {
                             **model,
-                            "name": model.get("name", model_id),
+                            "name": model_name,
                             "owned_by": "openai",
                             "openai": model,
                             "connection_type": model.get("connection_type", "external"),
@@ -592,7 +701,7 @@ async def get_models(
                         f"{url}/models",
                         headers=headers,
                         cookies=cookies,
-                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                        ssl=get_ssl_context(url),
                     ) as r:
                         if r.status != 200:
                             # Extract response error details if available
@@ -679,7 +788,7 @@ async def verify_connection(
                     url=f"{url}/openai/models?api-version={api_version}",
                     headers=headers,
                     cookies=cookies,
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ssl=get_ssl_context(url),
                 ) as r:
                     try:
                         response_data = await r.json()
@@ -702,7 +811,7 @@ async def verify_connection(
                     f"{url}/models",
                     headers=headers,
                     cookies=cookies,
-                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ssl=get_ssl_context(url),
                 ) as r:
                     try:
                         response_data = await r.json()
@@ -851,11 +960,17 @@ async def generate_chat_completion(
                     detail="Model not found",
                 )
     elif not bypass_filter:
+        # For models not in DB (like BlueNexus runtime models), check if user has BlueNexus session
         if user.role != "admin":
-            raise HTTPException(
-                status_code=403,
-                detail="Model not found",
-            )
+            # Check if this is a BlueNexus model by checking if user has session
+            if has_bluenexus_session(user.id):
+                # Allow BlueNexus users to use runtime BlueNexus models
+                log.info(f"Allowing BlueNexus model access for user {user.id} (model not in DB)")
+            else:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Model not found",
+                )
 
     await get_all_models(request, user=user)
     model = request.app.state.OPENAI_MODELS.get(model_id)
@@ -903,6 +1018,19 @@ async def generate_chat_completion(
     if "max_tokens" in payload and "max_completion_tokens" in payload:
         del payload["max_tokens"]
 
+    # Add default max_tokens for Anthropic models (they require it)
+    model_name = payload.get("model", "")
+    model_name_lower = model_name.lower()
+    is_anthropic_model = "anthropic/" in model_name_lower or "claude" in model_name_lower
+    log.info(f"Chat completion model: {model_name}, is_anthropic: {is_anthropic_model}, max_tokens in payload: {'max_tokens' in payload}")
+    if (
+        is_anthropic_model
+        and "max_tokens" not in payload
+        and "max_completion_tokens" not in payload
+    ):
+        payload["max_tokens"] = 4096
+        log.info(f"Added default max_tokens=4096 for Anthropic model: {model_name}")
+
     # Convert the modified body back to JSON
     if "logit_bias" in payload:
         payload["logit_bias"] = json.loads(
@@ -931,58 +1059,85 @@ async def generate_chat_completion(
 
     r = None
     session = None
-    streaming = False
     response = None
 
-    try:
-        session = aiohttp.ClientSession(
-            trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
-        )
+    # Retry logic for connection errors
+    max_retries = API_CONNECTION_MAX_RETRIES
 
-        r = await session.request(
-            method="POST",
-            url=request_url,
-            data=payload,
-            headers=headers,
-            cookies=cookies,
-            ssl=AIOHTTP_CLIENT_SESSION_SSL,
-        )
+    for attempt in range(max_retries + 1):
+        try:
+            # Clean up previous session if retrying
+            if session is not None:
+                await cleanup_response(r, session)
+                r = None
+                session = None
 
-        # Check if response is SSE
-        if "text/event-stream" in r.headers.get("Content-Type", ""):
-            streaming = True
-            return StreamingResponse(
-                r.content,
-                status_code=r.status,
-                headers=dict(r.headers),
-                background=BackgroundTask(
-                    cleanup_response, response=r, session=session
-                ),
+            session = aiohttp.ClientSession(
+                trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
             )
-        else:
-            try:
-                response = await r.json()
-            except Exception as e:
-                log.error(e)
-                response = await r.text()
 
-            if r.status >= 400:
-                if isinstance(response, (dict, list)):
-                    return JSONResponse(status_code=r.status, content=response)
-                else:
-                    return PlainTextResponse(status_code=r.status, content=response)
+            r = await session.request(
+                method="POST",
+                url=request_url,
+                data=payload,
+                headers=headers,
+                cookies=cookies,
+                ssl=get_ssl_context(request_url),
+            )
 
-            return response
-    except Exception as e:
-        log.exception(e)
+            # Check if response is SSE
+            if "text/event-stream" in r.headers.get("Content-Type", ""):
+                return StreamingResponse(
+                    r.content,
+                    status_code=r.status,
+                    headers=dict(r.headers),
+                    background=BackgroundTask(
+                        cleanup_response, response=r, session=session
+                    ),
+                )
+            else:
+                try:
+                    response = await r.json()
+                except Exception as e:
+                    log.error(e)
+                    response = await r.text()
 
-        raise HTTPException(
-            status_code=r.status if r else 500,
-            detail="Open WebUI: Server Connection Error",
-        )
-    finally:
-        if not streaming:
+                # Clean up before returning non-streaming response
+                await cleanup_response(r, session)
+
+                if r.status >= 400:
+                    if isinstance(response, (dict, list)):
+                        return JSONResponse(status_code=r.status, content=response)
+                    else:
+                        return PlainTextResponse(status_code=r.status, content=response)
+
+                return response
+
+        except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, ConnectionResetError, OSError) as e:
+            if attempt < max_retries:
+                retry_delay = 0.5 * (2 ** attempt)  # Exponential backoff: 0.5s, 1s, 2s
+                log.warning(
+                    f"[OpenAI API] Connection error (attempt {attempt + 1}/{max_retries + 1}): {type(e).__name__}: {e}. Retrying in {retry_delay}s..."
+                )
+                await asyncio.sleep(retry_delay)
+                continue
+            else:
+                # Clean up before raising exception
+                await cleanup_response(r, session)
+                log.error(f"[OpenAI API] Connection failed after {max_retries + 1} attempts: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Open WebUI: Server Connection Error after {max_retries + 1} attempts",
+                )
+
+        except Exception as e:
+            # Clean up before raising exception
             await cleanup_response(r, session)
+            log.exception(e)
+            raise HTTPException(
+                status_code=r.status if r else 500,
+                detail="Open WebUI: Server Connection Error",
+            )
 
 
 async def embeddings(request: Request, form_data: dict, user):
@@ -1119,7 +1274,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             data=body,
             headers=headers,
             cookies=cookies,
-            ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ssl=get_ssl_context(request_url),
         )
 
         # Check if response is SSE

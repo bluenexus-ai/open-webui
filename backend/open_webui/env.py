@@ -568,6 +568,28 @@ else:
     except Exception:
         CHAT_RESPONSE_MAX_TOOL_CALL_RETRIES = 30
 
+# Max retries when chat processing is cancelled (e.g., client disconnect during MCP calls)
+CHAT_CANCELLED_MAX_RETRIES = os.environ.get("CHAT_CANCELLED_MAX_RETRIES", "2")
+
+if CHAT_CANCELLED_MAX_RETRIES == "":
+    CHAT_CANCELLED_MAX_RETRIES = 2
+else:
+    try:
+        CHAT_CANCELLED_MAX_RETRIES = int(CHAT_CANCELLED_MAX_RETRIES)
+    except Exception:
+        CHAT_CANCELLED_MAX_RETRIES = 2
+
+# Max retries for connection errors (e.g., SSL handshake failures, connection reset)
+API_CONNECTION_MAX_RETRIES = os.environ.get("API_CONNECTION_MAX_RETRIES", "3")
+
+if API_CONNECTION_MAX_RETRIES == "":
+    API_CONNECTION_MAX_RETRIES = 3
+else:
+    try:
+        API_CONNECTION_MAX_RETRIES = int(API_CONNECTION_MAX_RETRIES)
+    except Exception:
+        API_CONNECTION_MAX_RETRIES = 3
+
 
 ####################################
 # WEBSOCKET SUPPORT

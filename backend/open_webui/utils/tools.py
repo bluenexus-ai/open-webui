@@ -34,7 +34,11 @@ from langchain_core.utils.function_calling import (
 )
 
 
-from open_webui.models.tools import Tools
+from open_webui.utils.bluenexus.tool_ops import (
+    get_tool_by_id as bluenexus_get_tool,
+    get_tool_valves_by_id as bluenexus_get_valves,
+    get_user_valves_by_id_and_user_id as bluenexus_get_user_valves,
+)
 from open_webui.models.users import UserModel
 from open_webui.utils.plugin import load_tool_module_by_id
 from open_webui.env import (
@@ -111,8 +115,8 @@ async def get_tools(
     tools_dict = {}
 
     for tool_id in tool_ids:
-        tool = Tools.get_tool_by_id(tool_id)
-        if tool is None:
+        tool_data = await bluenexus_get_tool(user.id, tool_id)
+        if tool_data is None:
 
             if tool_id.startswith("server:"):
                 splits = tool_id.split(":")
@@ -229,21 +233,21 @@ async def get_tools(
         else:
             module = request.app.state.TOOLS.get(tool_id, None)
             if module is None:
-                module, _ = load_tool_module_by_id(tool_id)
+                module, _ = load_tool_module_by_id(tool_id, user_id=user.id)
                 request.app.state.TOOLS[tool_id] = module
 
             extra_params["__id__"] = tool_id
 
             # Set valves for the tool
             if hasattr(module, "valves") and hasattr(module, "Valves"):
-                valves = Tools.get_tool_valves_by_id(tool_id) or {}
+                valves = await bluenexus_get_valves(user.id, tool_id) or {}
                 module.valves = module.Valves(**valves)
             if hasattr(module, "UserValves"):
                 extra_params["__user__"]["valves"] = module.UserValves(  # type: ignore
-                    **Tools.get_user_valves_by_id_and_user_id(tool_id, user.id)
+                    **await bluenexus_get_user_valves(user.id, tool_id, user.id)
                 )
 
-            for spec in tool.specs:
+            for spec in tool_data.get("specs", []):
                 # TODO: Fix hack for OpenAI API
                 # Some times breaks OpenAI but others don't. Leaving the comment
                 for val in spec.get("parameters", {}).get("properties", {}).values():

@@ -11,8 +11,12 @@ import pycrdt as Y
 
 from open_webui.models.users import Users, UserNameResponse
 from open_webui.models.channels import Channels
-from open_webui.models.chats import Chats
 from open_webui.models.notes import Notes, NoteUpdateForm
+from open_webui.utils.bluenexus.chat_ops import (
+    get_message_by_id_and_message_id,
+    upsert_message_to_chat_by_id_and_message_id,
+    add_message_status_to_chat_by_id_and_message_id,
+)
 from open_webui.utils.redis import (
     get_sentinels_from_env,
     get_sentinel_url_from_env,
@@ -684,14 +688,16 @@ def get_event_emitter(request_info, update_db=True):
             and not request_info.get("chat_id", "").startswith("local:")
         ):
             if "type" in event_data and event_data["type"] == "status":
-                Chats.add_message_status_to_chat_by_id_and_message_id(
+                await add_message_status_to_chat_by_id_and_message_id(
+                    user_id,
                     request_info["chat_id"],
                     request_info["message_id"],
                     event_data.get("data", {}),
                 )
 
             if "type" in event_data and event_data["type"] == "message":
-                message = Chats.get_message_by_id_and_message_id(
+                message = await get_message_by_id_and_message_id(
+                    user_id,
                     request_info["chat_id"],
                     request_info["message_id"],
                 )
@@ -700,7 +706,8 @@ def get_event_emitter(request_info, update_db=True):
                     content = message.get("content", "")
                     content += event_data.get("data", {}).get("content", "")
 
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                    await upsert_message_to_chat_by_id_and_message_id(
+                        user_id,
                         request_info["chat_id"],
                         request_info["message_id"],
                         {
@@ -711,7 +718,8 @@ def get_event_emitter(request_info, update_db=True):
             if "type" in event_data and event_data["type"] == "replace":
                 content = event_data.get("data", {}).get("content", "")
 
-                Chats.upsert_message_to_chat_by_id_and_message_id(
+                await upsert_message_to_chat_by_id_and_message_id(
+                    user_id,
                     request_info["chat_id"],
                     request_info["message_id"],
                     {
@@ -720,7 +728,8 @@ def get_event_emitter(request_info, update_db=True):
                 )
 
             if "type" in event_data and event_data["type"] == "embeds":
-                message = Chats.get_message_by_id_and_message_id(
+                message = await get_message_by_id_and_message_id(
+                    user_id,
                     request_info["chat_id"],
                     request_info["message_id"],
                 )
@@ -728,7 +737,8 @@ def get_event_emitter(request_info, update_db=True):
                 embeds = event_data.get("data", {}).get("embeds", [])
                 embeds.extend(message.get("embeds", []))
 
-                Chats.upsert_message_to_chat_by_id_and_message_id(
+                await upsert_message_to_chat_by_id_and_message_id(
+                    user_id,
                     request_info["chat_id"],
                     request_info["message_id"],
                     {
@@ -737,7 +747,8 @@ def get_event_emitter(request_info, update_db=True):
                 )
 
             if "type" in event_data and event_data["type"] == "files":
-                message = Chats.get_message_by_id_and_message_id(
+                message = await get_message_by_id_and_message_id(
+                    user_id,
                     request_info["chat_id"],
                     request_info["message_id"],
                 )
@@ -745,7 +756,8 @@ def get_event_emitter(request_info, update_db=True):
                 files = event_data.get("data", {}).get("files", [])
                 files.extend(message.get("files", []))
 
-                Chats.upsert_message_to_chat_by_id_and_message_id(
+                await upsert_message_to_chat_by_id_and_message_id(
+                    user_id,
                     request_info["chat_id"],
                     request_info["message_id"],
                     {
@@ -756,7 +768,8 @@ def get_event_emitter(request_info, update_db=True):
             if event_data.get("type") in ["source", "citation"]:
                 data = event_data.get("data", {})
                 if data.get("type") == None:
-                    message = Chats.get_message_by_id_and_message_id(
+                    message = await get_message_by_id_and_message_id(
+                        user_id,
                         request_info["chat_id"],
                         request_info["message_id"],
                     )
@@ -764,7 +777,8 @@ def get_event_emitter(request_info, update_db=True):
                     sources = message.get("sources", [])
                     sources.append(data)
 
-                    Chats.upsert_message_to_chat_by_id_and_message_id(
+                    await upsert_message_to_chat_by_id_and_message_id(
+                        user_id,
                         request_info["chat_id"],
                         request_info["message_id"],
                         {

@@ -36,8 +36,10 @@ async def redis_task_command_listener(app):
             command = json.loads(message["data"])
             if command.get("action") == "stop":
                 task_id = command.get("task_id")
+                log.info(f"[redis_pubsub] Received stop command for task_id={task_id}")
                 local_task = tasks.get(task_id)
                 if local_task:
+                    log.info(f"[redis_pubsub] Cancelling local task {task_id}")
                     local_task.cancel()
         except Exception as e:
             log.exception(f"Error handling distributed task command: {e}")
@@ -141,6 +143,7 @@ async def stop_task(redis, task_id: str):
     """
     Cancel a running task and remove it from the global task list.
     """
+    log.debug(f"[stop_task] Called for task_id={task_id}")
     if redis:
         # PUBSUB: All instances check if they have this task, and stop if so.
         await redis_send_command(
@@ -174,6 +177,7 @@ async def stop_item_tasks(redis: Redis, item_id: str):
     """
     Stop all tasks associated with a specific item ID.
     """
+    log.debug(f"[stop_item_tasks] Called for item_id={item_id}")
     task_ids = await list_task_ids_by_item_id(redis, item_id)
     if not task_ids:
         return {"status": True, "message": f"No tasks found for item {item_id}."}

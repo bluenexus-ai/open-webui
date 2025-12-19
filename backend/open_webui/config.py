@@ -436,6 +436,30 @@ GITHUB_CLIENT_REDIRECT_URI = PersistentConfig(
     os.environ.get("GITHUB_CLIENT_REDIRECT_URI", ""),
 )
 
+####################################
+# BlueNexus Configuration
+####################################
+# Import BlueNexus configuration from dedicated module
+# All BlueNexus functionality is gated by ENABLE_BLUENEXUS flag
+
+from open_webui.utils.bluenexus.config import (
+    BLUENEXUS_CLIENT_ID,
+    BLUENEXUS_CLIENT_SECRET,
+    BLUENEXUS_OAUTH_SCOPE,
+    BLUENEXUS_REDIRECT_URI,
+    BLUENEXUS_API_BASE_URL,
+    BLUENEXUS_AUTHORIZATION_URL,
+    BLUENEXUS_TOKEN_URL,
+    BLUENEXUS_LLM_API_BASE_URL,
+    BLUENEXUS_LLM_AUTO_ENABLE,
+    ENABLE_BLUENEXUS,
+    ENABLE_BLUENEXUS_SYNC,
+)
+
+####################################
+# Generic OAuth/OIDC
+####################################
+
 OAUTH_CLIENT_ID = PersistentConfig(
     "OAUTH_CLIENT_ID",
     "oauth.oidc.client_id",
@@ -470,6 +494,12 @@ OAUTH_TIMEOUT = PersistentConfig(
     "OAUTH_TIMEOUT",
     "oauth.oidc.oauth_timeout",
     os.environ.get("OAUTH_TIMEOUT", ""),
+)
+
+OAUTH_SSL_VERIFY = PersistentConfig(
+    "OAUTH_SSL_VERIFY",
+    "oauth.oidc.ssl_verify",
+    os.environ.get("OAUTH_SSL_VERIFY", "True").lower() == "true",
 )
 
 OAUTH_TOKEN_ENDPOINT_AUTH_METHOD = PersistentConfig(
@@ -702,6 +732,18 @@ def load_oauth_providers():
             "sub_claim": "id",
         }
 
+    # BlueNexus OAuth Provider (imported from bluenexus module)
+    try:
+        from open_webui.utils.bluenexus.oauth import get_bluenexus_oauth_provider_config
+
+        bluenexus_config = get_bluenexus_oauth_provider_config(
+            oauth_timeout=OAUTH_TIMEOUT.value
+        )
+        if bluenexus_config:
+            OAUTH_PROVIDERS["bluenexus"] = bluenexus_config
+    except ImportError:
+        pass
+
     if (
         OAUTH_CLIENT_ID.value
         and (OAUTH_CLIENT_SECRET.value or OAUTH_CODE_CHALLENGE_METHOD.value)
@@ -785,6 +827,12 @@ def load_oauth_providers():
         configured_providers.append("Microsoft")
     if GITHUB_CLIENT_ID.value:
         configured_providers.append("GitHub")
+    # BlueNexus check with fallback
+    try:
+        if BLUENEXUS_CLIENT_ID.value:
+            configured_providers.append("BlueNexus")
+    except (NameError, AttributeError):
+        pass
     if FEISHU_CLIENT_ID.value:
         configured_providers.append("Feishu")
 
@@ -1845,6 +1893,353 @@ The format for the JSON response is strictly:
     {"name": "toolName2", "parameters": {"key2": "value2"}}
   ]
 }"""
+
+
+DEFAULT_TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE = """Available Tools: {{TOOLS}}
+
+You are an expert tool orchestrator. Analyze the user's query and create an execution plan that:
+1. Identifies which tools need to be called
+2. Determines dependencies between tool calls (e.g., tool B needs output from tool A)
+3. Groups independent tools that can execute in parallel
+4. Orders steps based on dependencies
+
+### Rules:
+- Tools with no dependencies on each other can run in the same step (parallel execution)
+- Tools that depend on another tool's output must be in a later step
+- Return ONLY the JSON, no explanation text before or after
+
+### Built-in Tool: __llm_compose__
+When you need to generate human-readable content (like email bodies, summaries, reports) from tool results,
+use the built-in `__llm_compose__` tool. This tool lets the LLM see the actual data and compose beautiful content.
+
+**__llm_compose__ Parameters:**
+- `data`: Reference to previous step data (e.g., "{{step_1_result_get_transcripts}}")
+- `prompt`: Instructions for what to generate (e.g., "write a professional email summarizing this meeting")
+- `output_key`: Name for the output field (default: "content")
+
+**IMPORTANT: When to use __llm_compose__:**
+- When sending emails - use __llm_compose__ to generate the email body and subject
+- When creating reports or summaries from raw data
+- When the output needs to be human-readable, not raw JSON
+- When you need to format or transform data into a different structure
+
+**DO NOT** pass raw JSON data directly to email bodies or user-facing content. Always use __llm_compose__ first!
+
+### Built-in Tool: __llm_critique__
+Use `__llm_critique__` to review and validate content before sending it to external services (email, Slack, etc.).
+This tool ensures quality control by checking content against specified criteria.
+
+**__llm_critique__ Parameters:**
+- `content`: The content to review (usually a reference like "{{step_2_result___llm_compose__.email_body}}")
+- `criteria`: List of criteria to check (e.g., ["Professional tone", "No sensitive data", "Clear structure"])
+- `action_on_issues`: What to do if issues found: "revise" | "halt" | "warn"
+  - "revise": Automatically fix issues and return revised content
+  - "halt": Stop execution if major/critical issues found
+  - "warn": Continue with warnings logged
+- `revision_instructions`: Optional custom instructions for revision
+
+**__llm_critique__ Output:**
+- `status`: "approved" | "revised" | "warned" | "halted"
+- `final_content`: The content to use (original if approved, revised if issues fixed)
+- `issues`: List of issues found (empty if approved)
+- `severity`: "none" | "minor" | "major" | "critical"
+
+**IMPORTANT: When to use __llm_critique__:**
+- ALWAYS before sending emails to external recipients
+- ALWAYS before posting to public Slack channels
+- Before any action that cannot be easily undone
+- When content quality and professionalism are critical
+
+**Example workflow with critique:**
+1. Fetch data (e.g., meeting transcripts)
+2. Use __llm_compose__ to generate email content (BOTH subject and body)
+3. Use __llm_critique__ to review the email (action_on_issues: "revise")
+4. Send email using the generated subject and body
+
+### CRITICAL: Email Composition Rules
+**When sending emails, you MUST generate BOTH subject AND body separately:**
+
+1. **Subject Line Requirements:**
+   - MUST be generated dynamically (never use generic placeholders like "Meeting Summary")
+   - MUST be short, descriptive, and summarize the email content (max 100 characters)
+   - MUST NOT contain JSON, curly braces, or raw data
+   - MUST NOT contain the email body or any long text
+   - Should be specific to the content (e.g., "Q4 Planning Meeting - Action Items" not just "Meeting Summary")
+
+2. **Body Requirements:**
+   - MUST be human-readable, well-formatted text
+   - MUST NOT be raw JSON or data dumps
+   - Should include proper greeting, content, and signature
+
+3. **Critique Criteria for Emails MUST Include:**
+   - "Subject line is short, descriptive, and NOT JSON or raw data"
+   - "Subject line accurately summarizes the email content"
+   - "Body is properly formatted and human-readable"
+
+**WRONG approach (DO NOT DO):**
+```json
+{"subject": "Meeting Summary", "body": "{{step_2_result___llm_compose__.email}}"}
+```
+This uses a hardcoded subject instead of generating one from the data.
+
+**CORRECT approach:**
+Generate subject and body as separate output_keys, then use both:
+
+### Referencing Previous Step Results:
+Use these EXACT formats to reference outputs from previous steps:
+- {{step_N_result_toolName}} - Get the FULL result from toolName in step N
+- {{step_N_result_toolName.property}} - Get a specific property from the result
+- {{step_N_result_toolName.nested.path}} - Get a nested property
+- {{step_N_result_toolName.array.0}} - Get first item from an array result
+
+IMPORTANT: Always use the exact format above. The pattern MUST be:
+- Start with "step_" followed by the step number
+- Then "_result_"
+- Then the exact tool name
+- Optionally followed by ".property.path"
+
+**CRITICAL: Use property access to extract specific fields!**
+- When a tool returns structured data (JSON), extract ONLY the fields you need
+- DO NOT pass entire JSON objects as email bodies, messages, or user-facing content
+- Always use .property.path notation to get human-readable text fields
+- For arrays, use .0, .1, etc. to access specific items
+
+Examples of CORRECT references:
+- {{step_1_result_web_search}} - Full result (only use when you need everything)
+- {{step_1_result_get_user.id}} - Get "id" property from get_user result
+- {{step_1_result_get_user.email}} - Get just the email field
+- {{step_2_result_fetch_data.items.0.name}} - Get name of first item
+- {{step_1_result_get_meeting.results.0.summary.short_summary}} - Get readable summary text
+
+Examples of WRONG approaches (DO NOT DO):
+- Using {{step_1_result_get_data}} as email body when it returns JSON - WRONG! Extract the text field
+- {{search_result}} - Missing step number and _result_ format
+- {{step1_web_search}} - Missing _result_ between step number and tool name
+- {{result.id}} - Missing step number and tool name
+
+### Output Format:
+{
+  "reasoning": "Brief explanation of the execution plan",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "What this step accomplishes",
+        "tool_calls": [
+          {
+            "id": "unique_id_1",
+            "name": "toolName",
+            "parameters": {"param1": "value1"},
+            "depends_on": []
+          }
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Process results from step 1",
+        "tool_calls": [
+          {
+            "id": "unique_id_2",
+            "name": "anotherTool",
+            "parameters": {"input": "{{step_1_result_toolName}}"},
+            "depends_on": ["unique_id_1"]
+          }
+        ]
+      }
+    ]
+  }
+}
+
+### Example:
+Query: "Search for Python tutorials and summarize the top result"
+Tools: [web_search, summarize_text]
+
+Response:
+{
+  "reasoning": "First search for tutorials, then summarize the best result from the search",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Search for Python tutorials",
+        "tool_calls": [
+          {"id": "search_1", "name": "web_search", "parameters": {"query": "Python tutorials"}, "depends_on": []}
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Summarize the search results",
+        "tool_calls": [
+          {"id": "summarize_1", "name": "summarize_text", "parameters": {"text": "{{step_1_result_web_search}}"}, "depends_on": ["search_1"]}
+        ]
+      }
+    ]
+  }
+}
+
+### Example with Parallel Tools:
+Query: "Get weather in NYC and SF, then compare them"
+Tools: [get_weather, compare_data]
+
+Response:
+{
+  "reasoning": "Get weather for both cities in parallel, then compare the results",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Fetch weather data for both cities simultaneously",
+        "tool_calls": [
+          {"id": "weather_nyc", "name": "get_weather", "parameters": {"city": "New York"}, "depends_on": []},
+          {"id": "weather_sf", "name": "get_weather", "parameters": {"city": "San Francisco"}, "depends_on": []}
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Compare the weather data",
+        "tool_calls": [
+          {"id": "compare_1", "name": "compare_data", "parameters": {"data1": "{{step_1_result_get_weather}}", "data2": "{{step_1_result_get_weather}}"}, "depends_on": ["weather_nyc", "weather_sf"]}
+        ]
+      }
+    ]
+  }
+}
+
+### Example with Property Access:
+Query: "Get user info and send them a welcome email"
+Tools: [get_user, send_email]
+
+Response:
+{
+  "reasoning": "First get user details, then use their email to send welcome message",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Fetch user information",
+        "tool_calls": [
+          {"id": "user_1", "name": "get_user", "parameters": {"user_id": "123"}, "depends_on": []}
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Send welcome email using user's email address",
+        "tool_calls": [
+          {"id": "email_1", "name": "send_email", "parameters": {"to": "{{step_1_result_get_user.email}}", "subject": "Welcome!", "body": "Hello {{step_1_result_get_user.name}}!"}, "depends_on": ["user_1"]}
+        ]
+      }
+    ]
+  }
+}
+
+### Example with Email Composition using __llm_compose__ (RECOMMENDED):
+Query: "Get my recent meeting transcript and send me a summary email to user@example.com"
+Tools: [get_transcripts, send_email]
+
+Response:
+{
+  "reasoning": "Fetch meeting data, generate SUBJECT and BODY separately using __llm_compose__, then send",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Fetch recent meeting transcripts",
+        "tool_calls": [
+          {"id": "transcripts_1", "name": "get_transcripts", "parameters": {"limit": 1}, "depends_on": []}
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Generate specific email subject line",
+        "tool_calls": [
+          {"id": "compose_subject", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Generate a SHORT email subject line (max 80 chars) that summarizes this meeting. Include meeting name/topic. Output ONLY the subject text.", "output_key": "subject"}, "depends_on": ["transcripts_1"]}
+        ]
+      },
+      {
+        "step_number": 3,
+        "description": "Generate professional email body",
+        "tool_calls": [
+          {"id": "compose_body", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Write a professional email body summarizing this meeting. Include meeting title, date, key discussion points, and action items. Use proper greeting and signature. Do NOT include a subject line.", "output_key": "body"}, "depends_on": ["transcripts_1"]}
+        ]
+      },
+      {
+        "step_number": 4,
+        "description": "Send the composed email",
+        "tool_calls": [
+          {"id": "email_1", "name": "send_email", "parameters": {"to": "user@example.com", "subject": "{{step_2_result___llm_compose__.subject}}", "body": "{{step_3_result___llm_compose__.body}}"}, "depends_on": ["compose_subject", "compose_body"]}
+        ]
+      }
+    ]
+  }
+}
+
+Note: When composing emails or user-facing content:
+- ALWAYS generate subject and body SEPARATELY using __llm_compose__
+- NEVER use hardcoded subjects like "Meeting Summary" - generate them from the data
+- The LLM will see the actual data and create specific, relevant content
+- This ensures professional quality output instead of generic or malformed content
+
+### Example with Critique/Review Step (BEST PRACTICE for Emails):
+Query: "Get my recent meeting transcript and send me a summary email to user@example.com"
+Tools: [get_transcripts, send_email]
+
+Response:
+{
+  "reasoning": "Fetch meeting data, generate subject and body separately with __llm_compose__, review with __llm_critique__, then send",
+  "execution_plan": {
+    "steps": [
+      {
+        "step_number": 1,
+        "description": "Fetch recent meeting transcripts",
+        "tool_calls": [
+          {"id": "transcripts_1", "name": "get_transcripts", "parameters": {"limit": 1}, "depends_on": []}
+        ]
+      },
+      {
+        "step_number": 2,
+        "description": "Generate email subject line from meeting data",
+        "tool_calls": [
+          {"id": "compose_subject", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Generate a SHORT, specific email subject line (max 80 characters) that summarizes this meeting. Include the meeting name/topic if available. Output ONLY the subject line text, nothing else.", "output_key": "subject"}, "depends_on": ["transcripts_1"]}
+        ]
+      },
+      {
+        "step_number": 3,
+        "description": "Generate professional email body",
+        "tool_calls": [
+          {"id": "compose_body", "name": "__llm_compose__", "parameters": {"data": "{{step_1_result_get_transcripts}}", "prompt": "Write a professional email body summarizing this meeting. Include: greeting, meeting date/time, key discussion points, action items, and professional closing. Do NOT include a subject line.", "output_key": "body"}, "depends_on": ["transcripts_1"]}
+        ]
+      },
+      {
+        "step_number": 4,
+        "description": "Review email content before sending",
+        "tool_calls": [
+          {"id": "critique_1", "name": "__llm_critique__", "parameters": {"content": "Subject: {{step_2_result___llm_compose__.subject}}\n\nBody: {{step_3_result___llm_compose__.body}}", "criteria": ["Subject line is short (under 100 chars), descriptive, and NOT JSON", "Subject line accurately reflects the meeting content", "Body is well-formatted with proper greeting and closing", "No sensitive information exposed", "Professional tone throughout"], "action_on_issues": "revise"}, "depends_on": ["compose_subject", "compose_body"]}
+        ]
+      },
+      {
+        "step_number": 5,
+        "description": "Send the reviewed email with generated subject",
+        "tool_calls": [
+          {"id": "email_1", "name": "send_email", "parameters": {"to": "user@example.com", "subject": "{{step_2_result___llm_compose__.subject}}", "body": "{{step_4_result___llm_critique__.final_content}}"}, "depends_on": ["critique_1"]}
+        ]
+      }
+    ]
+  }
+}
+
+Note: The __llm_critique__ tool:
+- Reviews content before sensitive actions (sending emails, posting messages)
+- Can auto-revise content if issues are found (action_on_issues: "revise")
+- Can halt execution for critical issues (action_on_issues: "halt")
+- Returns final_content which is either the approved original or revised version
+- For emails, ALWAYS include subject line validation in the criteria"""
+
+
+TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE = PersistentConfig(
+    "TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE",
+    "task.tools.execution_planning_prompt_template",
+    os.environ.get("TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE", ""),
+)
 
 
 DEFAULT_EMOJI_GENERATION_PROMPT_TEMPLATE = """Your task is to reflect the speaker's likely facial expression through a fitting emoji. Interpret emotions from the message and reflect their facial expression using fitting, diverse emojis (e.g., 😊, 😢, 😡, 😱).
@@ -3267,10 +3662,21 @@ COMFYUI_WORKFLOW = PersistentConfig(
     os.getenv("COMFYUI_WORKFLOW", COMFYUI_DEFAULT_WORKFLOW),
 )
 
+COMFYUI_DEFAULT_WORKFLOW_NODES = [
+    {"type": "model", "node_ids": ["4"], "key": "ckpt_name"},
+    {"type": "prompt", "node_ids": ["6"], "key": "text"},
+    {"type": "negative_prompt", "node_ids": ["7"], "key": "text"},
+    {"type": "width", "node_ids": ["5"], "key": "width"},
+    {"type": "height", "node_ids": ["5"], "key": "height"},
+    {"type": "n", "node_ids": ["5"], "key": "batch_size"},
+    {"type": "seed", "node_ids": ["3"], "key": "seed"},
+    {"type": "steps", "node_ids": ["3"], "key": "steps"},
+]
+
 COMFYUI_WORKFLOW_NODES = PersistentConfig(
-    "COMFYUI_WORKFLOW",
+    "COMFYUI_WORKFLOW_NODES",
     "image_generation.comfyui.nodes",
-    [],
+    COMFYUI_DEFAULT_WORKFLOW_NODES,
 )
 
 IMAGES_OPENAI_API_BASE_URL = PersistentConfig(
@@ -3364,16 +3770,100 @@ IMAGES_EDIT_COMFYUI_API_KEY = PersistentConfig(
     os.getenv("IMAGES_EDIT_COMFYUI_API_KEY", ""),
 )
 
+COMFYUI_DEFAULT_EDIT_WORKFLOW = """
+{
+  "1": {
+    "inputs": {
+      "image": "input.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {"title": "Load Image"}
+  },
+  "2": {
+    "inputs": {
+      "ckpt_name": "model.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {"title": "Load Checkpoint"}
+  },
+  "3": {
+    "inputs": {
+      "pixels": ["1", 0],
+      "vae": ["2", 2]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {"title": "VAE Encode"}
+  },
+  "4": {
+    "inputs": {
+      "text": "Prompt",
+      "clip": ["2", 1]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "CLIP Text Encode (Prompt)"}
+  },
+  "5": {
+    "inputs": {
+      "text": "",
+      "clip": ["2", 1]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {"title": "CLIP Text Encode (Negative)"}
+  },
+  "6": {
+    "inputs": {
+      "seed": 0,
+      "steps": 20,
+      "cfg": 8,
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "denoise": 0.75,
+      "model": ["2", 0],
+      "positive": ["4", 0],
+      "negative": ["5", 0],
+      "latent_image": ["3", 0]
+    },
+    "class_type": "KSampler",
+    "_meta": {"title": "KSampler"}
+  },
+  "7": {
+    "inputs": {
+      "samples": ["6", 0],
+      "vae": ["2", 2]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {"title": "VAE Decode"}
+  },
+  "8": {
+    "inputs": {
+      "filename_prefix": "ComfyUI_Edit",
+      "images": ["7", 0]
+    },
+    "class_type": "SaveImage",
+    "_meta": {"title": "Save Image"}
+  }
+}
+"""
+
+COMFYUI_DEFAULT_EDIT_WORKFLOW_NODES = [
+    {"type": "image", "node_ids": ["1"], "key": "image"},
+    {"type": "model", "node_ids": ["2"], "key": "ckpt_name"},
+    {"type": "prompt", "node_ids": ["4"], "key": "text"},
+    {"type": "negative_prompt", "node_ids": ["5"], "key": "text"},
+    {"type": "seed", "node_ids": ["6"], "key": "seed"},
+    {"type": "steps", "node_ids": ["6"], "key": "steps"},
+]
+
 IMAGES_EDIT_COMFYUI_WORKFLOW = PersistentConfig(
     "IMAGES_EDIT_COMFYUI_WORKFLOW",
     "images.edit.comfyui.workflow",
-    os.getenv("IMAGES_EDIT_COMFYUI_WORKFLOW", ""),
+    os.getenv("IMAGES_EDIT_COMFYUI_WORKFLOW", COMFYUI_DEFAULT_EDIT_WORKFLOW),
 )
 
 IMAGES_EDIT_COMFYUI_WORKFLOW_NODES = PersistentConfig(
     "IMAGES_EDIT_COMFYUI_WORKFLOW_NODES",
     "images.edit.comfyui.nodes",
-    [],
+    COMFYUI_DEFAULT_EDIT_WORKFLOW_NODES,
 )
 
 ####################################

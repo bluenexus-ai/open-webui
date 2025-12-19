@@ -4,10 +4,11 @@
 	import { fly } from 'svelte/transition';
 	import { flyAndScale } from '$lib/utils/transitions';
 
-	import { config, user, tools as _tools, mobile, settings, toolServers } from '$lib/stores';
+	import { config, user, tools as _tools, mobile, settings, toolServers, bluenexusMcpServers } from '$lib/stores';
 
 	import { getOAuthClientAuthorizationUrl } from '$lib/apis/configs';
 	import { getTools } from '$lib/apis/tools';
+	import { updateUserSettings } from '$lib/apis/users';
 
 	import Knobs from '$lib/components/icons/Knobs.svelte';
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
@@ -49,6 +50,16 @@
 
 	let tools = null;
 
+	// Save selected tools to user settings for persistence across sessions
+	const saveDefaultTools = async (toolIds: string[]) => {
+		try {
+			await updateUserSettings(localStorage.token, { defaultToolIds: toolIds });
+			settings.update((s) => ({ ...s, defaultToolIds: toolIds }));
+		} catch (e) {
+			console.error('Failed to save default tools:', e);
+		}
+	};
+
 	$: if (show) {
 		init();
 	}
@@ -85,6 +96,19 @@
 						enabled: selectedToolIds.includes(`direct_server:${serverIdx}`)
 					};
 				}
+			}
+		}
+
+		// Add BlueNexus MCP servers
+		if ($bluenexusMcpServers && $bluenexusMcpServers.length > 0) {
+			for (const server of $bluenexusMcpServers) {
+				const serverId = server.info?.id || `bluenexus_mcp:${server.slug}`;
+				tools[serverId] = {
+					name: server.info?.title ?? server.slug,
+					description: server.info?.description ?? '',
+					enabled: selectedToolIds.includes(serverId),
+					bluenexus: true // Flag for styling
+				};
 			}
 		}
 
@@ -351,6 +375,9 @@
 									} else {
 										selectedToolIds = selectedToolIds.filter((id) => id !== toolId);
 									}
+
+									// Save selection to persist across chat sessions
+									saveDefaultTools(selectedToolIds);
 								}
 							}}
 						>
@@ -368,6 +395,9 @@
 									<Tooltip content={tools[toolId]?.description ?? ''} placement="top-start">
 										<div class=" truncate">{tools[toolId].name}</div>
 									</Tooltip>
+									{#if tools[toolId]?.bluenexus}
+										<span class="text-blue-500 text-xs font-medium px-1 py-0.5 bg-blue-100 dark:bg-blue-900/30 rounded">BN</span>
+									{/if}
 								</div>
 							</div>
 

@@ -27,6 +27,17 @@ from open_webui.config import (
 )
 
 from open_webui.env import BYPASS_MODEL_ACCESS_CONTROL, SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL
+
+# Import BlueNexus session check - guarded to avoid circular imports
+try:
+    from open_webui.utils.bluenexus import has_bluenexus_session, is_bluenexus_enabled
+    from open_webui.utils.bluenexus.config import is_bluenexus_data_storage_enabled
+    from open_webui.repositories.factory import get_model_repository
+except ImportError:
+    has_bluenexus_session = lambda user_id: False
+    is_bluenexus_enabled = lambda: False
+    is_bluenexus_data_storage_enabled = lambda: False
+    get_model_repository = None
 from open_webui.models.users import UserModel
 
 
@@ -146,10 +157,38 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
         for function in Functions.get_functions_by_type("filter", active_only=True)
     ]
 
-    custom_models = Models.get_all_models()
+    # Fetch custom models - use BlueNexus OR PostgreSQL based on config (not both)
+    custom_models = []
+    bluenexus_storage_enabled = is_bluenexus_data_storage_enabled()
+
+    if bluenexus_storage_enabled and get_model_repository and user:
+        # ONLY use BlueNexus when BLUENEXUS_DATA_STORAGE=true
+        try:
+            repo = get_model_repository(user.id)
+            bn_models = await repo.get_list(user.id)
+            # Wrap dicts in SimpleNamespace for attribute access, add model_dump method
+            from types import SimpleNamespace
+            for m in bn_models:
+                ns = SimpleNamespace(**m)
+                ns.model_dump = lambda _m=m: _m
+                # Handle meta as SimpleNamespace too if it's a dict
+                if isinstance(m.get("meta"), dict):
+                    ns.meta = SimpleNamespace(**m["meta"])
+                    ns.meta.model_dump = lambda _meta=m["meta"]: _meta
+                custom_models.append(ns)
+            log.info(f"[get_all_models] Loaded {len(custom_models)} models from BlueNexus (storage=true)")
+        except Exception as e:
+            log.warning(f"[get_all_models] Failed to load BlueNexus models: {e}")
+    else:
+        # ONLY use PostgreSQL when BLUENEXUS_DATA_STORAGE=false
+        custom_models = list(Models.get_all_models())
+        log.info(f"[get_all_models] Loaded {len(custom_models)} models from PostgreSQL (storage=false)")
+
     for custom_model in custom_models:
+        log.info(f"[get_all_models] Processing custom model: id={custom_model.id}, name={getattr(custom_model, 'name', 'N/A')}, base_model_id={getattr(custom_model, 'base_model_id', 'N/A')}, is_active={getattr(custom_model, 'is_active', 'N/A')}")
         if custom_model.base_model_id is None:
             # Applied directly to a base model
+            matched_base_model = False
             for model in models:
                 if custom_model.id == model["id"] or (
                     model.get("owned_by") == "ollama"
@@ -158,6 +197,7 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                         0
                     ]  # Ollama may return model ids in different formats (e.g., 'llama3' vs. 'llama3:7b')
                 ):
+                    matched_base_model = True
                     if custom_model.is_active:
                         model["name"] = custom_model.name
                         model["info"] = custom_model.model_dump()
@@ -183,57 +223,94 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
                         model["filter_ids"] = filter_ids
                     else:
                         models.remove(model)
+                    break
+
+            # If no base model matched and model is active, add as standalone custom model
+            if not matched_base_model and custom_model.is_active and (
+                custom_model.id not in [model["id"] for model in models]
+            ):
+                model = {
+                    "id": f"{custom_model.id}",
+                    "name": custom_model.name,
+                    "object": "model",
+                    "created": getattr(custom_model, 'created_at', int(time.time())),
+                    "owned_by": "custom",
+                    "preset": True,
+                }
+
+                info = custom_model.model_dump()
+                if "params" in info:
+                    del info["params"]
+                model["info"] = info
+
+                action_ids = []
+                filter_ids = []
+                if hasattr(custom_model, 'meta') and custom_model.meta:
+                    meta = custom_model.meta.model_dump() if hasattr(custom_model.meta, 'model_dump') else custom_model.meta
+                    if isinstance(meta, dict):
+                        action_ids.extend(meta.get("actionIds", []))
+                        filter_ids.extend(meta.get("filterIds", []))
+
+                model["action_ids"] = action_ids
+                model["filter_ids"] = filter_ids
+                models.append(model)
+                log.info(f"[get_all_models] Added standalone custom model: {custom_model.id}")
 
         elif custom_model.is_active and (
             custom_model.id not in [model["id"] for model in models]
         ):
             # Custom model based on a base model
-            owned_by = "openai"
-            pipe = None
+            try:
+                owned_by = "openai"
+                pipe = None
 
-            for m in models:
-                if (
-                    custom_model.base_model_id == m["id"]
-                    or custom_model.base_model_id == m["id"].split(":")[0]
-                ):
-                    owned_by = m.get("owned_by", "unknown")
-                    if "pipe" in m:
-                        pipe = m["pipe"]
-                    break
+                for m in models:
+                    if (
+                        custom_model.base_model_id == m["id"]
+                        or custom_model.base_model_id == m["id"].split(":")[0]
+                    ):
+                        owned_by = m.get("owned_by", "unknown")
+                        if "pipe" in m:
+                            pipe = m["pipe"]
+                        break
 
-            model = {
-                "id": f"{custom_model.id}",
-                "name": custom_model.name,
-                "object": "model",
-                "created": custom_model.created_at,
-                "owned_by": owned_by,
-                "preset": True,
-                **({"pipe": pipe} if pipe is not None else {}),
-            }
+                model = {
+                    "id": f"{custom_model.id}",
+                    "name": custom_model.name,
+                    "object": "model",
+                    "created": getattr(custom_model, 'created_at', int(time.time())),
+                    "owned_by": owned_by,
+                    "preset": True,
+                    **({"pipe": pipe} if pipe is not None else {}),
+                }
 
-            info = custom_model.model_dump()
-            if "params" in info:
-                # Remove params to avoid exposing sensitive info
-                del info["params"]
+                info = custom_model.model_dump()
+                if "params" in info:
+                    # Remove params to avoid exposing sensitive info
+                    del info["params"]
 
-            model["info"] = info
+                model["info"] = info
 
-            action_ids = []
-            filter_ids = []
+                action_ids = []
+                filter_ids = []
 
-            if custom_model.meta:
-                meta = custom_model.meta.model_dump()
+                if hasattr(custom_model, 'meta') and custom_model.meta:
+                    meta = custom_model.meta.model_dump() if hasattr(custom_model.meta, 'model_dump') else (custom_model.meta if isinstance(custom_model.meta, dict) else {})
 
-                if "actionIds" in meta:
-                    action_ids.extend(meta["actionIds"])
+                    if isinstance(meta, dict):
+                        if "actionIds" in meta:
+                            action_ids.extend(meta["actionIds"])
 
-                if "filterIds" in meta:
-                    filter_ids.extend(meta["filterIds"])
+                        if "filterIds" in meta:
+                            filter_ids.extend(meta["filterIds"])
 
-            model["action_ids"] = action_ids
-            model["filter_ids"] = filter_ids
+                model["action_ids"] = action_ids
+                model["filter_ids"] = filter_ids
 
-            models.append(model)
+                models.append(model)
+                log.info(f"[get_all_models] Added preset custom model: id={custom_model.id}, name={custom_model.name}")
+            except Exception as e:
+                log.error(f"[get_all_models] Failed to add preset custom model {custom_model.id}: {e}")
 
     # Process action_ids to get the actions
     def get_action_items_from_module(function, module):
@@ -327,6 +404,9 @@ async def get_all_models(request, refresh: bool = False, user: UserModel = None)
 
 
 def check_model_access(user, model):
+    model_id = model.get("id", "unknown")
+    log.info(f"[check_model_access] model_id={model_id}, user={user.id}, role={user.role}, tags={model.get('tags', [])}")
+
     if model.get("arena"):
         if not has_access(
             user.id,
@@ -337,8 +417,30 @@ def check_model_access(user, model):
         ):
             raise Exception("Model not found")
     else:
+        # Check if this is a BlueNexus model and user has BlueNexus session
+        model_tags = model.get("tags", [])
+        tag_names = []
+        for tag in model_tags:
+            if isinstance(tag, str):
+                tag_names.append(tag)
+            elif isinstance(tag, dict) and "name" in tag:
+                tag_names.append(tag.get("name"))
+
+        log.info(f"[check_model_access] tag_names={tag_names}")
+
+        if "bluenexus" in tag_names:
+            # Allow BlueNexus models for users with BlueNexus session
+            bn_enabled = is_bluenexus_enabled()
+            bn_session = has_bluenexus_session(user.id) if bn_enabled else False
+            log.info(f"[check_model_access] BlueNexus model detected: enabled={bn_enabled}, has_session={bn_session}")
+            if bn_enabled and bn_session:
+                return  # Access granted
+            else:
+                raise Exception("Model not found")
+
         model_info = Models.get_model_by_id(model.get("id"))
         if not model_info:
+            log.info(f"[check_model_access] Model not in database: {model_id}")
             raise Exception("Model not found")
         elif not (
             user.id == model_info.user_id
@@ -349,14 +451,27 @@ def check_model_access(user, model):
             raise Exception("Model not found")
 
 
-def get_filtered_models(models, user):
+async def get_filtered_models(models, user):
     # Filter out models that the user does not have access to
     if (
         user.role == "user"
         or (user.role == "admin" and not BYPASS_ADMIN_ACCESS_CONTROL)
     ) and not BYPASS_MODEL_ACCESS_CONTROL:
         filtered_models = []
+
+        # Check if user has BlueNexus session (cached for this filtering pass)
+        bluenexus_enabled = is_bluenexus_enabled()
+        user_has_session = has_bluenexus_session(user.id) if bluenexus_enabled else False
+        user_has_bluenexus = bluenexus_enabled and user_has_session
+
+        # Check if BlueNexus data storage is enabled
+        bluenexus_data_storage = is_bluenexus_data_storage_enabled()
+
+        log.info(f"[get_filtered_models] user={user.id}, role={user.role}, bluenexus_enabled={bluenexus_enabled}, has_session={user_has_session}, data_storage={bluenexus_data_storage}")
+
         for model in models:
+            model_id = model.get("id", "unknown")
+
             if model.get("arena"):
                 if has_access(
                     user.id,
@@ -368,18 +483,58 @@ def get_filtered_models(models, user):
                     filtered_models.append(model)
                 continue
 
-            model_info = Models.get_model_by_id(model["id"])
+            # Allow BlueNexus models for users with a valid BlueNexus session
+            model_tags = model.get("tags", [])
+            # Handle tags that could be strings or dicts with "name" key
+            tag_names = []
+            for tag in model_tags:
+                if isinstance(tag, str):
+                    tag_names.append(tag)
+                elif isinstance(tag, dict) and "name" in tag:
+                    tag_names.append(tag["name"])
+
+            # Debug: log model tags for first few models
+            if len(filtered_models) < 3:
+                log.info(f"[get_filtered_models] model={model_id}, tags={model_tags}, tag_names={tag_names}")
+
+            if "bluenexus" in tag_names and user_has_bluenexus:
+                filtered_models.append(model)
+                continue
+
+            # For preset models, use the info already attached from get_all_models
+            # This avoids a separate lookup that may fail due to ID mismatch
+            model_info = model.get("info")
             if model_info:
-                if (
-                    (user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL)
-                    or user.id == model_info.user_id
-                    or has_access(
-                        user.id,
-                        type="read",
-                        access_control=model_info.access_control,
-                    )
-                ):
+                log.info(f"[get_filtered_models] Using attached info for model {model_id}, user_id={model_info.get('user_id')}, current_user={user.id}")
+            else:
+                # Check model access - use BlueNexus or PostgreSQL based on config
+                if bluenexus_data_storage and get_model_repository:
+                    try:
+                        repo = get_model_repository(user.id)
+                        model_info = await repo.get_by_id(model["id"])
+                    except Exception as e:
+                        log.debug(f"[get_filtered_models] BlueNexus model lookup failed: {e}")
+                        model_info = None
+
+                # Fallback to PostgreSQL
+                if model_info is None:
+                    model_info = Models.get_model_by_id(model["id"])
+                    if model_info:
+                        model_info = model_info.model_dump()
+
+            if model_info:
+                # Check access: admin bypass, owner, or has read access
+                is_admin_bypass = user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL
+                info_user_id = model_info.get("user_id") if isinstance(model_info, dict) else getattr(model_info, 'user_id', None)
+                is_owner = user.id == info_user_id
+                access_control = model_info.get("access_control") if isinstance(model_info, dict) else getattr(model_info, 'access_control', None)
+                has_read_access = has_access(user.id, type="read", access_control=access_control)
+
+                log.info(f"[get_filtered_models] Access check for {model_id}: is_admin_bypass={is_admin_bypass}, is_owner={is_owner} (user={user.id}, info_user_id={info_user_id}), has_read_access={has_read_access}")
+
+                if is_admin_bypass or is_owner or has_read_access:
                     filtered_models.append(model)
+                    log.info(f"[get_filtered_models] Model {model_id} PASSED access check")
 
         return filtered_models
     else:

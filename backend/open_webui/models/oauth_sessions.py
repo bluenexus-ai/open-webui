@@ -11,7 +11,7 @@ from cryptography.fernet import Fernet
 from open_webui.internal.db import Base, get_db
 from open_webui.env import SRC_LOG_LEVELS, OAUTH_SESSION_TOKEN_ENCRYPTION_KEY
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import BigInteger, Column, String, Text, Index
 
 log = logging.getLogger(__name__)
@@ -53,6 +53,14 @@ class OAuthSessionModel(BaseModel):
     updated_at: int  # timestamp in epoch
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("expires_at", "created_at", "updated_at", mode="before")
+    @classmethod
+    def convert_float_to_int(cls, v):
+        """Convert float timestamps to int for backwards compatibility with old data."""
+        if isinstance(v, float):
+            return int(v)
+        return v
 
 
 ####################

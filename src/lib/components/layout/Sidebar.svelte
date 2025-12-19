@@ -180,29 +180,52 @@
 
 	const initChatList = async () => {
 		// Reset pagination variables
-		console.log('initChatList');
+		console.log('[initChatList] Starting...');
 		currentChatPage.set(1);
 		allChatsLoaded = false;
 		scrollPaginationEnabled.set(false);
 
+		// Initialize folders (non-blocking)
 		initFolders();
-		await Promise.all([
-			await (async () => {
-				console.log('Init tags');
+
+		// Fetch tags, pinned chats, and chat list in parallel
+		const tagsPromise = (async () => {
+			console.log('[initChatList] Fetching tags...');
+			try {
 				const _tags = await getAllTags(localStorage.token);
 				tags.set(_tags);
-			})(),
-			await (async () => {
-				console.log('Init pinned chats');
+				console.log('[initChatList] Tags loaded');
+			} catch (err) {
+				console.error('[initChatList] Tags error:', err);
+			}
+		})();
+
+		const pinnedPromise = (async () => {
+			console.log('[initChatList] Fetching pinned chats...');
+			try {
 				const _pinnedChats = await getPinnedChatList(localStorage.token);
 				pinnedChats.set(_pinnedChats);
-			})(),
-			await (async () => {
-				console.log('Init chat list');
+				console.log('[initChatList] Pinned chats loaded');
+			} catch (err) {
+				console.error('[initChatList] Pinned chats error:', err);
+			}
+		})();
+
+		const chatsPromise = (async () => {
+			console.log('[initChatList] Fetching chat list, token:', localStorage.token ? 'present' : 'MISSING');
+			try {
 				const _chats = await getChatList(localStorage.token, $currentChatPage);
-				await chats.set(_chats);
-			})()
-		]);
+				console.log('[initChatList] Got chats:', _chats?.length ?? 'null');
+				chats.set(_chats);
+			} catch (err) {
+				console.error('[initChatList] Chat list error:', err);
+				chats.set([]);  // Set empty array instead of leaving null
+			}
+		})();
+
+		// Wait for all to complete
+		await Promise.all([tagsPromise, pinnedPromise, chatsPromise]);
+		console.log('[initChatList] All data loaded');
 
 		// Enable pagination
 		scrollPaginationEnabled.set(true);
@@ -371,6 +394,7 @@
 				}
 			}),
 			showSidebar.subscribe(async (value) => {
+				console.log('[Sidebar] showSidebar changed:', value);
 				localStorage.sidebar = value;
 
 				// nav element is not available on the first render
@@ -389,8 +413,10 @@
 				}
 
 				if (value) {
+					console.log('[Sidebar] Calling initChannels and initChatList');
 					await initChannels();
 					await initChatList();
+					console.log('[Sidebar] Done with initChannels and initChatList');
 				}
 			})
 		];
@@ -409,6 +435,12 @@
 		dropZone?.addEventListener('dragover', onDragOver);
 		dropZone?.addEventListener('drop', onDrop);
 		dropZone?.addEventListener('dragleave', onDragLeave);
+
+		// Always init chat list on mount to ensure it loads (even if sidebar is initially hidden)
+		console.log('[Sidebar] onMount - calling initChatList unconditionally');
+		await initChannels();
+		await initChatList();
+		console.log('[Sidebar] onMount - initChatList completed');
 	});
 
 	onDestroy(() => {

@@ -130,7 +130,10 @@ export const getChatList = async (
 		searchParams.append('include_pinned', 'true');
 	}
 
-	const res = await fetch(`${WEBUI_API_BASE_URL}/chats/?${searchParams.toString()}`, {
+	const url = `${WEBUI_API_BASE_URL}/chats/?${searchParams.toString()}`;
+	console.log('[getChatList] Fetching:', url, 'token:', token ? 'present' : 'missing');
+
+	const res = await fetch(url, {
 		method: 'GET',
 		headers: {
 			Accept: 'application/json',
@@ -139,15 +142,26 @@ export const getChatList = async (
 		}
 	})
 		.then(async (res) => {
-			if (!res.ok) throw await res.json();
+			console.log('[getChatList] Response status:', res.status, res.statusText);
+			if (!res.ok) {
+				// Try to get error details, but handle non-JSON responses
+				const text = await res.text();
+				console.error('[getChatList] Error response:', text.substring(0, 200));
+				try {
+					throw JSON.parse(text);
+				} catch {
+					throw new Error(`HTTP ${res.status}: ${text.substring(0, 100)}`);
+				}
+			}
 			return res.json();
 		})
 		.then((json) => {
+			console.log('[getChatList] Got', json?.length ?? 0, 'chats');
 			return json;
 		})
 		.catch((err) => {
 			error = err;
-			console.error(err);
+			console.error('[getChatList] Error:', err);
 			return null;
 		});
 

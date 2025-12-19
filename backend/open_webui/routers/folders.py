@@ -15,7 +15,10 @@ from open_webui.models.folders import (
     FolderNameIdResponse,
     Folders,
 )
-from open_webui.models.chats import Chats
+from open_webui.utils.bluenexus.chat_ops import (
+    count_chats_by_folder_id_and_user_id as bluenexus_count_chats,
+    delete_chats_by_user_id_and_folder_id as bluenexus_delete_chats,
+)
 from open_webui.models.files import Files
 from open_webui.models.knowledge import Knowledges
 
@@ -260,7 +263,7 @@ async def update_folder_is_expanded_by_id(
 async def delete_folder_by_id(
     request: Request, id: str, user=Depends(get_verified_user)
 ):
-    if Chats.count_chats_by_folder_id_and_user_id(id, user.id):
+    if await bluenexus_count_chats(user.id, id):
         chat_delete_permission = has_permission(
             user.id, "chat.delete", request.app.state.config.USER_PERMISSIONS
         )
@@ -278,7 +281,7 @@ async def delete_folder_by_id(
             try:
                 folder_ids = Folders.delete_folder_by_id_and_user_id(id, user.id)
                 for folder_id in folder_ids:
-                    Chats.delete_chats_by_user_id_and_folder_id(user.id, folder_id)
+                    await bluenexus_delete_chats(user.id, folder_id)
 
                 return True
             except Exception as e:

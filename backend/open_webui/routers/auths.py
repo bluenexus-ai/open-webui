@@ -1079,3 +1079,36 @@ async def get_api_key(user=Depends(get_current_user)):
         }
     else:
         raise HTTPException(404, detail=ERROR_MESSAGES.API_KEY_NOT_FOUND)
+
+
+############################
+# OAuth Token Refresh
+############################
+
+# Import OAuth token refresh handler from bluenexus module
+try:
+    from open_webui.utils.bluenexus.auth import (
+        refresh_oauth_token as _refresh_oauth_token_impl,
+        OAuthTokenStatusResponse,
+    )
+except ImportError:
+    # Fallback model and handler if bluenexus module is not available
+    class OAuthTokenStatusResponse(BaseModel):
+        has_session: bool
+        provider: Optional[str] = None
+        expires_at: Optional[int] = None
+        expires_in: Optional[int] = None
+        refreshed: bool = False
+
+    async def _refresh_oauth_token_impl(request: Request, user):
+        return OAuthTokenStatusResponse(has_session=False)
+
+
+@router.post("/oauth/refresh", response_model=OAuthTokenStatusResponse)
+async def refresh_oauth_token(request: Request, user=Depends(get_current_user)):
+    """
+    Refresh the OAuth token if it's close to expiring.
+    This endpoint is designed to be called periodically by the frontend
+    to keep the OAuth session alive for active users.
+    """
+    return await _refresh_oauth_token_impl(request, user)

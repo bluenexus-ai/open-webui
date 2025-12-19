@@ -13,6 +13,11 @@
 
 	export let showSetDefault = true;
 
+	const isTeeModel = (model) => {
+		// Treat only explicitly confidential models as TEE
+		return Boolean(model?.confidential);
+	};
+
 	const saveDefaultModel = async () => {
 		const hasEmptyModel = selectedModels.filter((it) => it === '');
 		if (hasEmptyModel.length) {
@@ -54,17 +59,26 @@
 		<div class="flex w-full max-w-fit">
 			<div class="overflow-hidden w-full">
 				<div class="max-w-full {($settings?.highContrastMode ?? false) ? 'm-1' : 'mr-1'}">
-					<Selector
-						id={`${selectedModelIdx}`}
-						placeholder={$i18n.t('Select a model')}
-						items={$models.map((model) => ({
-							value: model.id,
-							label: model.name,
-							model: model
-						}))}
-						{pinModelHandler}
-						bind:value={selectedModel}
-					/>
+			<Selector
+				id={`${selectedModelIdx}`}
+				placeholder={$i18n.t('Select a model')}
+				items={(($config?.features?.enable_bluenexus ?? false)
+					? [...$models].sort((a, b) => {
+							const aTee = isTeeModel(a);
+							const bTee = isTeeModel(b);
+							if (aTee !== bTee) return aTee ? -1 : 1;
+							return a.name.localeCompare(b.name);
+					  })
+					: $models
+				).map((model) => ({
+					value: model.id,
+					label: model.name,
+					model: model,
+					isTEE: isTeeModel(model)
+				}))}
+				{pinModelHandler}
+				bind:value={selectedModel}
+			/>
 				</div>
 			</div>
 

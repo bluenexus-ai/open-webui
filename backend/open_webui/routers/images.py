@@ -9,12 +9,18 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from PIL import Image
 from urllib.parse import quote
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
-from open_webui.config import CACHE_DIR
+from open_webui.config import (
+    CACHE_DIR,
+    COMFYUI_DEFAULT_WORKFLOW_NODES,
+    COMFYUI_DEFAULT_EDIT_WORKFLOW,
+    COMFYUI_DEFAULT_EDIT_WORKFLOW_NODES,
+)
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import ENABLE_FORWARD_USER_INFO_HEADERS, SRC_LOG_LEVELS
 from open_webui.routers.files import upload_file_handler, get_file_content_by_id
@@ -137,6 +143,11 @@ class ImagesConfig(BaseModel):
 
 @router.get("/config", response_model=ImagesConfig)
 async def get_config(request: Request, user=Depends(get_admin_user)):
+    # Ensure AUTOMATIC1111_API_AUTH is a string (fix for corrupted data)
+    automatic1111_api_auth = request.app.state.config.AUTOMATIC1111_API_AUTH
+    if not isinstance(automatic1111_api_auth, str):
+        automatic1111_api_auth = ""
+
     return {
         "ENABLE_IMAGE_GENERATION": request.app.state.config.ENABLE_IMAGE_GENERATION,
         "ENABLE_IMAGE_PROMPT_GENERATION": request.app.state.config.ENABLE_IMAGE_PROMPT_GENERATION,
@@ -148,7 +159,7 @@ async def get_config(request: Request, user=Depends(get_admin_user)):
         "IMAGES_OPENAI_API_KEY": request.app.state.config.IMAGES_OPENAI_API_KEY,
         "IMAGES_OPENAI_API_VERSION": request.app.state.config.IMAGES_OPENAI_API_VERSION,
         "AUTOMATIC1111_BASE_URL": request.app.state.config.AUTOMATIC1111_BASE_URL,
-        "AUTOMATIC1111_API_AUTH": request.app.state.config.AUTOMATIC1111_API_AUTH,
+        "AUTOMATIC1111_API_AUTH": automatic1111_api_auth,
         "AUTOMATIC1111_PARAMS": request.app.state.config.AUTOMATIC1111_PARAMS,
         "COMFYUI_BASE_URL": request.app.state.config.COMFYUI_BASE_URL,
         "COMFYUI_API_KEY": request.app.state.config.COMFYUI_API_KEY,
@@ -229,7 +240,7 @@ async def update_config(
     request.app.state.config.AUTOMATIC1111_API_AUTH = form_data.AUTOMATIC1111_API_AUTH
     request.app.state.config.AUTOMATIC1111_PARAMS = form_data.AUTOMATIC1111_PARAMS
 
-    request.app.state.config.COMFYUI_BASE_URL = form_data.COMFYUI_BASE_URL.strip("/")
+    request.app.state.config.COMFYUI_BASE_URL = form_data.COMFYUI_BASE_URL.strip().strip("/")
     request.app.state.config.COMFYUI_API_KEY = form_data.COMFYUI_API_KEY
     request.app.state.config.COMFYUI_WORKFLOW = form_data.COMFYUI_WORKFLOW
     request.app.state.config.COMFYUI_WORKFLOW_NODES = form_data.COMFYUI_WORKFLOW_NODES
@@ -265,7 +276,7 @@ async def update_config(
     )
 
     request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL = (
-        form_data.IMAGES_EDIT_COMFYUI_BASE_URL.strip("/")
+        form_data.IMAGES_EDIT_COMFYUI_BASE_URL.strip().strip("/")
     )
     request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY = (
         form_data.IMAGES_EDIT_COMFYUI_API_KEY
@@ -459,12 +470,13 @@ def get_image_data(data: str, headers=None):
                 r = requests.get(data)
 
             r.raise_for_status()
-            if r.headers["content-type"].split("/")[0] == "image":
-                mime_type = r.headers["content-type"]
+            content_type = r.headers.get("content-type", "")
+            if content_type.split("/")[0] == "image":
+                mime_type = content_type
                 return r.content, mime_type
             else:
-                log.error("Url does not point to an image.")
-                return None
+                log.error(f"URL does not point to an image. Content-Type: {content_type}")
+                return None, None
         else:
             if "," in data:
                 header, encoded = data.split(",", 1)
@@ -655,12 +667,20 @@ async def image_generations(
             if form_data.negative_prompt is not None:
                 data["negative_prompt"] = form_data.negative_prompt
 
+            # Use default workflow nodes if not configured or if all nodes have empty node_ids
+            workflow_nodes = request.app.state.config.COMFYUI_WORKFLOW_NODES
+            if not workflow_nodes or not any(
+                node.get("node_ids") if isinstance(node, dict) else node.node_ids
+                for node in workflow_nodes
+            ):
+                workflow_nodes = COMFYUI_DEFAULT_WORKFLOW_NODES
+
             form_data = ComfyUICreateImageForm(
                 **{
                     "workflow": ComfyUIWorkflow(
                         **{
                             "workflow": request.app.state.config.COMFYUI_WORKFLOW,
-                            "nodes": request.app.state.config.COMFYUI_WORKFLOW_NODES,
+                            "nodes": workflow_nodes,
                         }
                     ),
                     **data,
@@ -818,17 +838,48 @@ async def image_edits(
     except Exception as e:
         raise HTTPException(status_code=400, detail=ERROR_MESSAGES.DEFAULT(e))
 
-    def get_image_file_item(base64_string):
+    def get_image_file_item(base64_string, max_size: int = None):
+        """
+        Convert base64 image to file item, optionally resizing for ComfyUI.
+        If max_size is provided, resize image to fit within that size.
+        SD 1.5 models work best with images up to 512x512, SDXL up to 1024x1024.
+        """
         data = base64_string
         header, encoded = data.split(",", 1)
         mime_type = header.split(";")[0].lstrip("data:")
         image_data = base64.b64decode(encoded)
+
+        img = Image.open(io.BytesIO(image_data))
+        original_size = img.size
+        log.info(f"Original image size: {original_size}")
+
+        # Resize image if max_size is specified and image exceeds it
+        if max_size and (img.width > max_size or img.height > max_size):
+            # Resize to fit within max_size while maintaining aspect ratio
+            ratio = min(max_size / img.width, max_size / img.height)
+            new_width = int(img.width * ratio)
+            new_height = int(img.height * ratio)
+            # Round to nearest multiple of 8 (required for stable diffusion)
+            new_width = (new_width // 8) * 8
+            new_height = (new_height // 8) * 8
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            log.info(f"Resized image to: {img.size}")
+
+        # Convert to RGB if necessary (remove alpha channel)
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+
+        # Save to BytesIO
+        output = io.BytesIO()
+        img.save(output, format='PNG')
+        output.seek(0)
+
         return (
             "image",
             (
                 f"{uuid.uuid4()}.png",
-                io.BytesIO(image_data),
-                mime_type if mime_type else "image/png",
+                output,
+                "image/png",
             ),
         )
 
@@ -945,25 +996,43 @@ async def image_edits(
             return images
 
         elif request.app.state.config.IMAGE_EDIT_ENGINE == "comfyui":
+            # Resolve base URL and API key first (use main ComfyUI config as fallback)
+            edit_base_url = request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL
+            if not edit_base_url or edit_base_url.strip() == "":
+                edit_base_url = request.app.state.config.COMFYUI_BASE_URL
+            edit_base_url = edit_base_url.strip().rstrip("/")
+
+            edit_api_key = request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY
+            if not edit_api_key:
+                edit_api_key = request.app.state.config.COMFYUI_API_KEY
+
+            log.info(f"ComfyUI edit using base URL: {edit_base_url}")
+
+            # Determine max image size based on model (SDXL=1024, SD1.5=512)
+            max_image_size = 512  # Default for SD 1.5
+            if model and ("xl" in model.lower() or "sdxl" in model.lower()):
+                max_image_size = 1024
+            log.info(f"Using max image size: {max_image_size} for model: {model}")
+
             try:
                 files = []
                 if isinstance(form_data.image, str):
-                    files = [get_image_file_item(form_data.image)]
+                    files = [get_image_file_item(form_data.image, max_size=max_image_size)]
                 elif isinstance(form_data.image, list):
                     for img in form_data.image:
-                        files.append(get_image_file_item(img))
+                        files.append(get_image_file_item(img, max_size=max_image_size))
 
                 # Upload images to ComfyUI and get their names
                 comfyui_images = []
                 for file_item in files:
                     res = await comfyui_upload_image(
                         file_item,
-                        request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL,
-                        request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY,
+                        edit_base_url,
+                        edit_api_key,
                     )
                     comfyui_images.append(res.get("name", file_item[1][0]))
             except Exception as e:
-                log.debug(f"Error uploading images to ComfyUI: {e}")
+                log.exception(f"Error uploading images to ComfyUI: {e}")
                 raise Exception("Failed to upload images to ComfyUI.")
 
             data = {
@@ -974,25 +1043,45 @@ async def image_edits(
                 **({"n": form_data.n} if form_data.n else {}),
             }
 
+            # Use default edit workflow if not configured
+            edit_workflow = request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW
+            if not edit_workflow or edit_workflow.strip() == "":
+                edit_workflow = COMFYUI_DEFAULT_EDIT_WORKFLOW
+
+            # Use default edit workflow nodes if not configured or if all nodes have empty node_ids
+            edit_workflow_nodes = request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES
+            if not edit_workflow_nodes or not any(
+                node.get("node_ids") if isinstance(node, dict) else node.node_ids
+                for node in edit_workflow_nodes
+            ):
+                edit_workflow_nodes = COMFYUI_DEFAULT_EDIT_WORKFLOW_NODES
+
             form_data = ComfyUIEditImageForm(
                 **{
                     "workflow": ComfyUIWorkflow(
                         **{
-                            "workflow": request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW,
-                            "nodes": request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES,
+                            "workflow": edit_workflow,
+                            "nodes": edit_workflow_nodes,
                         }
                     ),
                     **data,
                 }
             )
+
             res = await comfyui_edit_image(
                 model,
                 form_data,
                 user.id,
-                request.app.state.config.IMAGES_EDIT_COMFYUI_BASE_URL,
-                request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY,
+                edit_base_url,
+                edit_api_key,
             )
-            log.debug(f"res: {res}")
+            log.info(f"ComfyUI edit result: {res}")
+
+            if res is None:
+                raise Exception("ComfyUI workflow execution failed - no result returned")
+
+            if "data" not in res or not res["data"]:
+                raise Exception(f"ComfyUI workflow returned no images: {res}")
 
             image_urls = set()
             for image in res["data"]:
@@ -1004,17 +1093,22 @@ async def image_edits(
             if output_type_urls:
                 image_urls = output_type_urls
 
-            log.debug(f"Image URLs: {image_urls}")
+            log.info(f"Image URLs to fetch: {image_urls}")
             images = []
 
             for image_url in image_urls:
                 headers = None
-                if request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY:
+                if edit_api_key:
                     headers = {
-                        "Authorization": f"Bearer {request.app.state.config.IMAGES_EDIT_COMFYUI_API_KEY}"
+                        "Authorization": f"Bearer {edit_api_key}"
                     }
 
+                log.info(f"Fetching image from: {image_url}")
                 image_data, content_type = get_image_data(image_url, headers)
+                if image_data is None:
+                    log.error(f"Failed to fetch image from {image_url}")
+                    continue
+
                 url = upload_image(
                     request,
                     image_data,
@@ -1024,8 +1118,12 @@ async def image_edits(
                 )
                 images.append({"url": url})
 
+            if not images:
+                raise Exception("Failed to retrieve any images from ComfyUI")
+
             return images
     except Exception as e:
+        log.exception(f"Error in image_edits: {e}")
         error = e
         if r != None:
             data = r.text

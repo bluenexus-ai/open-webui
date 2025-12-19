@@ -15,7 +15,7 @@
 	import { getAllTags } from '$lib/apis/chats';
 	import { getPrompts } from '$lib/apis/prompts';
 	import { getTools } from '$lib/apis/tools';
-	import { getBanners } from '$lib/apis/configs';
+	import { getBanners, getBlueNexusMCPServers } from '$lib/apis/configs';
 	import { getUserSettings } from '$lib/apis/users';
 
 	import { WEBUI_VERSION } from '$lib/constants';
@@ -37,6 +37,7 @@
 		showChangelog,
 		temporaryChatEnabled,
 		toolServers,
+		bluenexusMcpServers,
 		showSearch,
 		showSidebar
 	} from '$lib/stores';
@@ -145,6 +146,35 @@
 		tools.set(toolsData);
 	};
 
+	const setBluenexusMcpServers = async () => {
+		try {
+			const serversData = await getBlueNexusMCPServers(localStorage.token);
+			if (serversData && serversData.length > 0) {
+				// Transform to include necessary fields for tool execution
+				// Only include servers that are explicitly active (isActive === true)
+				const servers = serversData
+					.filter((s) => s.isActive === true)
+					.map((server) => ({
+						url: server.url,
+						slug: server.slug,
+						info: {
+							id: `bluenexus_mcp:${server.slug}`,
+							title: server.label,
+							description: server.description
+						},
+						type: 'mcp',
+						auth_type: 'system_oauth',
+						config: { oauth_provider: 'bluenexus' },
+						bluenexus: true
+					}));
+				bluenexusMcpServers.set(servers);
+			}
+		} catch (e) {
+			// User may not have BlueNexus - silently ignore
+			console.debug('BlueNexus MCP servers not available:', e);
+		}
+	};
+
 	onMount(async () => {
 		if ($user === undefined || $user === null) {
 			await goto('/auth');
@@ -159,6 +189,7 @@
 			checkLocalDBChats(),
 			setBanners(),
 			setTools(),
+			setBluenexusMcpServers(),
 			setUserSettings(async () => {
 				await Promise.all([setModels(), setToolServers()]);
 			})

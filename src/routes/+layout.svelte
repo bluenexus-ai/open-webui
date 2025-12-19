@@ -41,7 +41,7 @@
 	import 'tippy.js/dist/tippy.css';
 
 	import { executeToolServer, getBackendConfig, getVersion } from '$lib/apis';
-	import { getSessionUser, userSignOut } from '$lib/apis/auths';
+	import { getSessionUser, userSignOut, refreshOAuthToken } from '$lib/apis/auths';
 	import { getAllTags, getChatList } from '$lib/apis/chats';
 	import { chatCompletion } from '$lib/apis/openai';
 
@@ -475,21 +475,51 @@
 	};
 
 	const TOKEN_EXPIRY_BUFFER = 60; // seconds
+	const OAUTH_REFRESH_INTERVAL = 5 * 60 * 1000;
+	let lastOAuthRefresh = 0;
+
 	const checkTokenExpiry = async () => {
 		const exp = $user?.expires_at; // token expiry time in unix timestamp
 		const now = Math.floor(Date.now() / 1000); // current time in unix timestamp
 
-		if (!exp) {
-			// If no expiry time is set, do nothing
-			return;
-		}
-
-		if (now >= exp - TOKEN_EXPIRY_BUFFER) {
+		// Check JWT token expiry
+		if (exp && now >= exp - TOKEN_EXPIRY_BUFFER) {
 			const res = await userSignOut();
 			user.set(null);
 			localStorage.removeItem('token');
 
 			location.href = res?.redirect_url ?? '/auth';
+			return;
+		}
+
+		// Also refresh OAuth token periodically (every 5 minutes)
+		// This keeps the BlueNexus OAuth session alive for active users
+		const nowMs = Date.now();
+		if (localStorage.token && nowMs - lastOAuthRefresh >= OAUTH_REFRESH_INTERVAL) {
+			lastOAuthRefresh = nowMs;
+			console.log('Checking OAuth token refresh...');
+			try {
+				const oauthStatus = await refreshOAuthToken(localStorage.token);
+				if (oauthStatus?.has_session) {
+					console.log(
+						`OAuth token status: Provider: ${oauthStatus.provider}, expires_in: ${oauthStatus.expires_in}s`
+					);
+				} else {
+					console.log('No OAuth session found');
+					// If requires_reauth is true, the user needs to re-login
+					if (oauthStatus?.requires_reauth) {
+						console.log('OAuth session expired - redirecting to login');
+						toast.error('Your session has expired. Please log in again.');
+						const res = await userSignOut();
+						user.set(null);
+						localStorage.removeItem('token');
+						location.href = res?.redirect_url ?? '/auth';
+						return;
+					}
+				}
+			} catch (err) {
+				console.error('OAuth token refresh failed:', err);
+			}
 		}
 	};
 
@@ -597,6 +627,10 @@
 					clearInterval(tokenTimer);
 				}
 				tokenTimer = setInterval(checkTokenExpiry, 15000);
+				console.log('Token timer set up, will check every 15 seconds');
+
+				// Immediately trigger OAuth refresh check on login
+				checkTokenExpiry();
 			} else {
 				$socket?.off('events', chatEventHandler);
 				$socket?.off('events:channel', channelEventHandler);

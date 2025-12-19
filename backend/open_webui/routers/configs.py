@@ -270,17 +270,40 @@ async def verify_tool_servers_config(
                     elif form_data.auth_type == "session":
                         token = request.state.token.credentials
                     elif form_data.auth_type == "system_oauth":
-                        try:
-                            if request.cookies.get("oauth_session_id", None):
-                                token = await request.app.state.oauth_manager.get_oauth_token(
-                                    user.id,
-                                    request.cookies.get("oauth_session_id", None),
+                        # Check if this is a BlueNexus MCP server
+                        oauth_provider = form_data.config.get("oauth_provider")
+
+                        if oauth_provider == "bluenexus" or (
+                            form_data.info and "bluenexus" in form_data.info.get("id", "")
+                        ):
+                            # Get BlueNexus OAuth session token
+                            session = OAuthSessions.get_session_by_provider_and_user_id(
+                                provider="bluenexus", user_id=user.id
+                            )
+                            if session:
+                                token = session.token
+                            else:
+                                log.warning(
+                                    f"No BlueNexus OAuth session found for user {user.id}"
                                 )
-                        except Exception as e:
-                            pass
+                        else:
+                            # Use standard system_oauth
+                            try:
+                                if request.cookies.get("oauth_session_id", None):
+                                    token = await request.app.state.oauth_manager.get_oauth_token(
+                                        user.id,
+                                        request.cookies.get("oauth_session_id", None),
+                                    )
+                            except Exception as e:
+                                pass
 
                     if token:
-                        headers = {"Authorization": f"Bearer {token}"}
+                        if isinstance(token, dict):
+                            # OAuth token object
+                            headers = {"Authorization": f"Bearer {token.get('access_token', '')}"}
+                        else:
+                            # String token
+                            headers = {"Authorization": f"Bearer {token}"}
 
                     await client.connect(form_data.url, headers=headers)
                     specs = await client.list_tool_specs()
@@ -323,6 +346,48 @@ async def verify_tool_servers_config(
             status_code=400,
             detail=f"Failed to connect to the tool server",
         )
+
+
+############################
+# BlueNexus MCP Servers
+############################
+
+# Import BlueNexus MCP models and handler from bluenexus module
+try:
+    from open_webui.utils.bluenexus.mcp import (
+        get_bluenexus_mcp_servers as _get_bluenexus_mcp_servers_impl,
+        BlueNexusMCPServer,
+        BlueNexusMCPServersResponse,
+    )
+except ImportError:
+    # Fallback models if bluenexus module is not available
+    class BlueNexusMCPServer(BaseModel):
+        model_config = ConfigDict(extra="allow")
+        slug: str
+        label: str
+        description: Optional[str] = None
+        isActive: Optional[bool] = None
+        url: str
+
+    class BlueNexusMCPServersResponse(BaseModel):
+        data: list[BlueNexusMCPServer]
+
+    async def _get_bluenexus_mcp_servers_impl(user_id: str):
+        return BlueNexusMCPServersResponse(data=[])
+
+
+@router.get("/bluenexus/mcp_servers", response_model=BlueNexusMCPServersResponse)
+async def get_bluenexus_mcp_servers(
+    request: Request, user=Depends(get_verified_user)
+):
+    """
+    Get available BlueNexus MCP servers for the authenticated user.
+    Requires BlueNexus OAuth connection with mcp-proxy scope.
+    """
+    log.info(f"[BlueNexus MCP] Request received for user {user.id} (role={user.role})")
+    result = await _get_bluenexus_mcp_servers_impl(user.id)
+    log.info(f"[BlueNexus MCP] Returning {len(result.data)} servers for user {user.id}")
+    return result
 
 
 ############################

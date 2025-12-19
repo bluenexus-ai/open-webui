@@ -56,6 +56,70 @@ class Chat(Base):
     )
 
 
+class SharedChatMapping(Base):
+    """
+    Maps share_id to owner_user_id for BlueNexus shared content access.
+    This allows looking up who owns a shared chat so we can use their
+    BlueNexus session to fetch the chat data.
+    """
+    __tablename__ = "shared_chat_mapping"
+
+    share_id = Column(String, primary_key=True)
+    owner_user_id = Column(String, nullable=False)
+    chat_id = Column(String, nullable=False)  # owui_id of the chat
+    created_at = Column(BigInteger, nullable=False)
+
+
+class SharedChatMappingTable:
+    def create_mapping(self, share_id: str, owner_user_id: str, chat_id: str) -> bool:
+        """Create or update a shared chat mapping."""
+        try:
+            with get_db() as db:
+                existing = db.query(SharedChatMapping).filter_by(share_id=share_id).first()
+                if existing:
+                    existing.owner_user_id = owner_user_id
+                    existing.chat_id = chat_id
+                else:
+                    mapping = SharedChatMapping(
+                        share_id=share_id,
+                        owner_user_id=owner_user_id,
+                        chat_id=chat_id,
+                        created_at=int(time.time()),
+                    )
+                    db.add(mapping)
+                db.commit()
+                return True
+        except Exception as e:
+            log.error(f"Error creating shared chat mapping: {e}")
+            return False
+
+    def get_owner_user_id(self, share_id: str) -> Optional[str]:
+        """Get the owner user_id for a share_id."""
+        try:
+            with get_db() as db:
+                mapping = db.query(SharedChatMapping).filter_by(share_id=share_id).first()
+                if mapping:
+                    return mapping.owner_user_id
+                return None
+        except Exception as e:
+            log.error(f"Error getting shared chat mapping: {e}")
+            return None
+
+    def delete_mapping(self, share_id: str) -> bool:
+        """Delete a shared chat mapping."""
+        try:
+            with get_db() as db:
+                result = db.query(SharedChatMapping).filter_by(share_id=share_id).delete()
+                db.commit()
+                return result > 0
+        except Exception as e:
+            log.error(f"Error deleting shared chat mapping: {e}")
+            return False
+
+
+SharedChatMappings = SharedChatMappingTable()
+
+
 class ChatModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -189,8 +253,14 @@ class ChatTable:
         try:
             with get_db() as db:
                 chat_item = db.get(Chat, id)
-                chat_item.chat = chat
-                chat_item.title = chat["title"] if "title" in chat else "New Chat"
+                if not chat_item:
+                    return None
+                # Merge incoming chat data with existing chat data
+                # This preserves existing fields (history, messages, etc.) when only updating title
+                existing_chat = chat_item.chat or {}
+                merged_chat = {**existing_chat, **chat}
+                chat_item.chat = merged_chat
+                chat_item.title = merged_chat.get("title", chat_item.title or "New Chat")
                 chat_item.updated_at = int(time.time())
                 db.commit()
                 db.refresh(chat_item)

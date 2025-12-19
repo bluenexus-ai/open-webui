@@ -8,7 +8,7 @@
 	import { getContext, onMount } from 'svelte';
 	const i18n = getContext('i18n');
 
-	import { settings } from '$lib/stores';
+	import { settings, config } from '$lib/stores';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
 	import Minus from '$lib/components/icons/Minus.svelte';
@@ -18,7 +18,12 @@
 	import Switch from '$lib/components/common/Switch.svelte';
 	import Tags from './common/Tags.svelte';
 	import { getToolServerData } from '$lib/apis';
-	import { verifyToolServerConnection, registerOAuthClient } from '$lib/apis/configs';
+	import {
+		verifyToolServerConnection,
+		registerOAuthClient,
+		getBlueNexusMCPServers,
+		type BlueNexusMCPServer
+	} from '$lib/apis/configs';
 	import AccessControl from './workspace/common/AccessControl.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
@@ -55,6 +60,51 @@
 
 	let enable = true;
 	let loading = false;
+
+	// BlueNexus MCP servers
+	let blueNexusMCPServers: BlueNexusMCPServer[] = [];
+	let selectedBlueNexusMCP: string = ''; // slug of selected server
+	let loadingBlueNexusMCP = false;
+
+	const fetchBlueNexusMCPServers = async () => {
+		// Check if BlueNexus is enabled before fetching
+		if (!$config?.features?.enable_bluenexus) {
+			console.debug('BlueNexus is disabled, skipping MCP servers fetch');
+			blueNexusMCPServers = [];
+			return;
+		}
+
+		loadingBlueNexusMCP = true;
+		try {
+			blueNexusMCPServers = await getBlueNexusMCPServers(localStorage.token);
+			console.debug('Fetched BlueNexus MCP servers:', blueNexusMCPServers);
+
+			if (blueNexusMCPServers.length === 0) {
+				console.warn('No BlueNexus MCP servers available. Make sure you are logged in with BlueNexus OAuth.');
+			}
+		} catch (err) {
+			console.error('Failed to fetch BlueNexus MCP servers:', err);
+			toast.error($i18n.t('Failed to fetch BlueNexus MCP servers. Please ensure you are logged in with BlueNexus.'));
+			blueNexusMCPServers = [];
+		} finally {
+			loadingBlueNexusMCP = false;
+		}
+	};
+
+	const selectBlueNexusMCPServer = () => {
+		const server = blueNexusMCPServers.find((s) => s.slug === selectedBlueNexusMCP);
+		if (!server) return;
+
+		// Pre-fill the form with BlueNexus MCP server details
+		url = server.url;
+		id = `bluenexus-${server.slug}`;
+		name = server.label;
+		description = server.description || '';
+		auth_type = 'system_oauth'; // Use system OAuth for BlueNexus
+		key = ''; // No API key needed
+
+		console.debug('Selected BlueNexus MCP server:', server);
+	};
 
 	const registerOAuthClientHandler = async () => {
 		if (url === '') {
@@ -268,7 +318,9 @@
 			key,
 			config: {
 				enable: enable,
-				access_control: accessControl
+				access_control: accessControl,
+				// Add oauth_provider if this is a BlueNexus MCP server
+				...(id.startsWith('bluenexus-') ? { oauth_provider: 'bluenexus' } : {})
 			},
 			info: {
 				id: id,
@@ -297,6 +349,9 @@
 		id = '';
 		name = '';
 		description = '';
+
+		selectedBlueNexusMCP = '';
+		blueNexusMCPServers = [];
 		oauthClientInfo = null;
 
 		enable = true;
@@ -327,6 +382,20 @@
 
 	$: if (show) {
 		init();
+		// Fetch BlueNexus MCP servers when modal opens and type is MCP
+		if (type === 'mcp' && !edit) {
+			fetchBlueNexusMCPServers();
+		}
+	}
+
+	// Watch for type changes to fetch BlueNexus MCP servers
+	$: if (type === 'mcp' && !edit && blueNexusMCPServers.length === 0) {
+		fetchBlueNexusMCPServers();
+	}
+
+	// Watch for selected BlueNexus MCP server changes
+	$: if (selectedBlueNexusMCP) {
+		selectBlueNexusMCPServer();
 	}
 
 	onMount(() => {
@@ -414,6 +483,59 @@
 											{/if}
 										</button>
 									</div>
+								</div>
+							</div>
+						{/if}
+
+						{#if type === 'mcp' && !edit && blueNexusMCPServers.length > 0}
+							<div class="flex gap-2 mb-2">
+								<div class="flex flex-col w-full">
+									<div class="flex justify-between items-center mb-0.5">
+										<label
+											for="bluenexus-mcp-select"
+											class={`text-xs ${($settings?.highContrastMode ?? false) ? 'text-gray-800 dark:text-gray-100' : 'text-gray-500'}`}
+										>
+											{$i18n.t('BlueNexus MCP Servers')}
+										</label>
+									</div>
+
+									<select
+										id="bluenexus-mcp-select"
+										class={`w-full text-sm bg-transparent pr-5 ${($settings?.highContrastMode ?? false) ? 'placeholder:text-gray-700 dark:placeholder:text-gray-100' : 'outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700'}`}
+										bind:value={selectedBlueNexusMCP}
+									>
+										<option value="">{$i18n.t('Select a BlueNexus MCP server...')}</option>
+										{#each blueNexusMCPServers as server}
+											<option value={server.slug} disabled={server.isActive === false}>
+												{server.label}
+												{#if server.isActive === false}
+													({$i18n.t('Inactive')})
+												{/if}
+											</option>
+										{/each}
+									</select>
+
+									{#if selectedBlueNexusMCP}
+										<div class="mt-1 text-xs text-gray-500">
+											{blueNexusMCPServers.find((s) => s.slug === selectedBlueNexusMCP)
+												?.description || ''}
+										</div>
+									{/if}
+								</div>
+							</div>
+						{/if}
+
+						{#if type === 'mcp' && !edit && loadingBlueNexusMCP}
+							<div class="flex gap-2 mb-2">
+								<div class="flex items-center gap-2 text-xs text-gray-500">
+									<Spinner className="size-3" />
+									{$i18n.t('Loading BlueNexus MCP servers...')}
+								</div>
+							</div>
+						{:else if type === 'mcp' && !edit && !loadingBlueNexusMCP && blueNexusMCPServers.length === 0}
+							<div class="flex gap-2 mb-2">
+								<div class="text-xs text-gray-500">
+									{$i18n.t('No BlueNexus MCP servers available. Please log in with BlueNexus OAuth to access MCP servers.')}
 								</div>
 							</div>
 						{/if}
