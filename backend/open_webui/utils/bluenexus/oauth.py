@@ -19,6 +19,7 @@ from open_webui.utils.bluenexus.config import (
     BLUENEXUS_API_BASE_URL,
     BLUENEXUS_AUTHORIZATION_URL,
     BLUENEXUS_TOKEN_URL,
+    BLUENEXUS_OIDC_DISCOVERY_URL,
     is_bluenexus_enabled,
     is_bluenexus_configured,
 )
@@ -97,11 +98,11 @@ def register_bluenexus_oauth(oauth: OAuth, oauth_timeout: str = ""):
         name="bluenexus",
         client_id=BLUENEXUS_CLIENT_ID.value,
         client_secret=BLUENEXUS_CLIENT_SECRET.value,
-        access_token_url=BLUENEXUS_TOKEN_URL.value,
+        # Keep authorize_url as explicit override (frontend runs on different port than backend)
         authorize_url=BLUENEXUS_AUTHORIZATION_URL.value,
         api_base_url=BLUENEXUS_API_BASE_URL.value,
-        userinfo_endpoint=f"{BLUENEXUS_API_BASE_URL.value}/api/v1/accounts/me",
-        server_metadata_url=None,
+        # Use OIDC Discovery to auto-discover token_endpoint, userinfo_endpoint, jwks_uri
+        server_metadata_url=BLUENEXUS_OIDC_DISCOVERY_URL.value,
         client_kwargs={
             "scope": BLUENEXUS_OAUTH_SCOPE.value,
             "code_challenge_method": "S256",
@@ -135,10 +136,10 @@ def get_bluenexus_oauth_provider_config(oauth_timeout: str = "") -> dict:
     return {
         "redirect_uri": BLUENEXUS_REDIRECT_URI.value,
         "register": lambda oauth: register_bluenexus_oauth(oauth, oauth_timeout),
-        "sub_claim": "id",
+        "sub_claim": "sub",  # OIDC standard claim
         "email_claim": "email",
         "username_claim": "name",
-        "picture_claim": "avatar",
+        "picture_claim": "picture",  # OIDC standard claim (was "avatar")
     }
 
 

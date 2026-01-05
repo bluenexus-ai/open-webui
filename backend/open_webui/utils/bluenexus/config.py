@@ -39,7 +39,7 @@ BLUENEXUS_CLIENT_SECRET = PersistentConfig(
 BLUENEXUS_OAUTH_SCOPE = PersistentConfig(
     "BLUENEXUS_OAUTH_SCOPE",
     "oauth.bluenexus.scope",
-    os.environ.get("BLUENEXUS_OAUTH_SCOPE", "account auth-sessions llm-all mcp-proxy user-data connections providers"),
+    os.environ.get("BLUENEXUS_OAUTH_SCOPE", "openid profile email account auth-sessions llm-all mcp-proxy user-data connections providers"),
 )
 
 BLUENEXUS_REDIRECT_URI = PersistentConfig(
@@ -75,6 +75,13 @@ BLUENEXUS_TOKEN_URL = PersistentConfig(
     "BLUENEXUS_TOKEN_URL",
     "oauth.bluenexus.token_url",
     os.environ.get("BLUENEXUS_TOKEN_URL", f"{_get_api_base()}/api/v1/auth/token"),
+)
+
+# OIDC Discovery URL: {API_BASE_URL}/.well-known/openid-configuration
+BLUENEXUS_OIDC_DISCOVERY_URL = PersistentConfig(
+    "BLUENEXUS_OIDC_DISCOVERY_URL",
+    "oauth.bluenexus.oidc_discovery_url",
+    os.environ.get("BLUENEXUS_OIDC_DISCOVERY_URL", f"{_get_api_base()}/.well-known/openid-configuration"),
 )
 
 # LLM API Base URL: {API_BASE_URL}/api/v1
