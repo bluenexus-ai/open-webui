@@ -70,6 +70,9 @@
 
 	let selectedTag = '';
 	let selectedConnectionType = '';
+	let showConfidentialOnly = false;
+
+	$: bluenexusEnabled = $config?.features?.enable_bluenexus ?? false;
 
 	let ollamaVersion = null;
 	let selectedModelIdx = 0;
@@ -137,6 +140,13 @@
 							return item.model?.direct;
 						}
 					})
+					.filter((item) => {
+						// Filter by confidential when BlueNexus is enabled
+						if (!showConfidentialOnly) {
+							return true;
+						}
+						return item.model?.confidential === true;
+					})
 			: items
 					.filter((item) => {
 						if (selectedTag === '') {
@@ -157,9 +167,16 @@
 							return item.model?.direct;
 						}
 					})
+					.filter((item) => {
+						// Filter by confidential when BlueNexus is enabled
+						if (!showConfidentialOnly) {
+							return true;
+						}
+						return item.model?.confidential === true;
+					})
 	).filter((item) => !(item.model?.info?.meta?.hidden ?? false));
 
-	$: if (selectedTag || selectedConnectionType) {
+	$: if (selectedTag || selectedConnectionType || showConfidentialOnly) {
 		resetView();
 	} else {
 		resetView();
@@ -477,83 +494,117 @@
 							class="flex gap-1 w-fit text-center text-sm rounded-full bg-transparent px-1.5 whitespace-nowrap"
 							bind:this={tagsContainerElement}
 						>
-							{#if items.find((item) => item.model?.connection_type === 'local') || items.find((item) => item.model?.connection_type === 'external') || items.find((item) => item.model?.direct) || tags.length > 0}
+							{#if bluenexusEnabled}
+								<!-- BlueNexus mode: Show only All and Confidential tabs -->
 								<button
-									class="min-w-fit outline-none px-1.5 py-0.5 {selectedTag === '' &&
-									selectedConnectionType === ''
+									class="min-w-fit outline-none px-1.5 py-0.5 {!showConfidentialOnly
 										? ''
 										: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
-									aria-pressed={selectedTag === '' && selectedConnectionType === ''}
+									aria-pressed={!showConfidentialOnly}
 									on:click={() => {
+										showConfidentialOnly = false;
 										selectedConnectionType = '';
 										selectedTag = '';
 									}}
 								>
 									{$i18n.t('All')}
 								</button>
-							{/if}
 
-							{#if items.find((item) => item.model?.connection_type === 'local')}
-								<button
-									class="min-w-fit outline-none px-1.5 py-0.5 {selectedConnectionType === 'local'
-										? ''
-										: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
-									aria-pressed={selectedConnectionType === 'local'}
-									on:click={() => {
-										selectedTag = '';
-										selectedConnectionType = 'local';
-									}}
-								>
-									{$i18n.t('Local')}
-								</button>
-							{/if}
-
-							{#if items.find((item) => item.model?.connection_type === 'external')}
-								<button
-									class="min-w-fit outline-none px-1.5 py-0.5 {selectedConnectionType === 'external'
-										? ''
-										: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
-									aria-pressed={selectedConnectionType === 'external'}
-									on:click={() => {
-										selectedTag = '';
-										selectedConnectionType = 'external';
-									}}
-								>
-									{$i18n.t('External')}
-								</button>
-							{/if}
-
-							{#if items.find((item) => item.model?.direct)}
-								<button
-									class="min-w-fit outline-none px-1.5 py-0.5 {selectedConnectionType === 'direct'
-										? ''
-										: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
-									aria-pressed={selectedConnectionType === 'direct'}
-									on:click={() => {
-										selectedTag = '';
-										selectedConnectionType = 'direct';
-									}}
-								>
-									{$i18n.t('Direct')}
-								</button>
-							{/if}
-
-							{#each tags as tag}
-								<Tooltip content={tag}>
+								{#if items.find((item) => item.model?.confidential === true)}
 									<button
-										class="min-w-fit outline-none px-1.5 py-0.5 {selectedTag === tag
+										class="min-w-fit outline-none px-1.5 py-0.5 {showConfidentialOnly
 											? ''
 											: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
-										aria-pressed={selectedTag === tag}
+										aria-pressed={showConfidentialOnly}
 										on:click={() => {
+											showConfidentialOnly = true;
 											selectedConnectionType = '';
-											selectedTag = tag;
+											selectedTag = '';
 										}}
 									>
-										{tag.length > 16 ? `${tag.slice(0, 16)}...` : tag}
+										{$i18n.t('Confidential')}
 									</button>
-								</Tooltip>
-							{/each}
+								{/if}
+							{:else}
+								<!-- Standard mode: Show Local, External, Direct, and tags -->
+								{#if items.find((item) => item.model?.connection_type === 'local') || items.find((item) => item.model?.connection_type === 'external') || items.find((item) => item.model?.direct) || tags.length > 0}
+									<button
+										class="min-w-fit outline-none px-1.5 py-0.5 {selectedTag === '' &&
+										selectedConnectionType === ''
+											? ''
+											: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
+										aria-pressed={selectedTag === '' && selectedConnectionType === ''}
+										on:click={() => {
+											selectedConnectionType = '';
+											selectedTag = '';
+										}}
+									>
+										{$i18n.t('All')}
+									</button>
+								{/if}
+
+								{#if items.find((item) => item.model?.connection_type === 'local')}
+									<button
+										class="min-w-fit outline-none px-1.5 py-0.5 {selectedConnectionType === 'local'
+											? ''
+											: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
+										aria-pressed={selectedConnectionType === 'local'}
+										on:click={() => {
+											selectedTag = '';
+											selectedConnectionType = 'local';
+										}}
+									>
+										{$i18n.t('Local')}
+									</button>
+								{/if}
+
+								{#if items.find((item) => item.model?.connection_type === 'external')}
+									<button
+										class="min-w-fit outline-none px-1.5 py-0.5 {selectedConnectionType === 'external'
+											? ''
+											: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
+										aria-pressed={selectedConnectionType === 'external'}
+										on:click={() => {
+											selectedTag = '';
+											selectedConnectionType = 'external';
+										}}
+									>
+										{$i18n.t('External')}
+									</button>
+								{/if}
+
+								{#if items.find((item) => item.model?.direct)}
+									<button
+										class="min-w-fit outline-none px-1.5 py-0.5 {selectedConnectionType === 'direct'
+											? ''
+											: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
+										aria-pressed={selectedConnectionType === 'direct'}
+										on:click={() => {
+											selectedTag = '';
+											selectedConnectionType = 'direct';
+										}}
+									>
+										{$i18n.t('Direct')}
+									</button>
+								{/if}
+
+								{#each tags as tag}
+									<Tooltip content={tag}>
+										<button
+											class="min-w-fit outline-none px-1.5 py-0.5 {selectedTag === tag
+												? ''
+												: 'text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'} transition capitalize"
+											aria-pressed={selectedTag === tag}
+											on:click={() => {
+												selectedConnectionType = '';
+												selectedTag = tag;
+											}}
+										>
+											{tag.length > 16 ? `${tag.slice(0, 16)}...` : tag}
+										</button>
+									</Tooltip>
+								{/each}
+							{/if}
 						</div>
 					</div>
 				{/if}
