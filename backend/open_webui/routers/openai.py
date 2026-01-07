@@ -650,6 +650,8 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
                             "openai": model,
                             "connection_type": model.get("connection_type", "external"),
                             "urlIdx": idx,
+                            # Map isConfidential from BlueNexus API to confidential for frontend
+                            "confidential": model.get("isConfidential", False),
                         }
 
         return models
