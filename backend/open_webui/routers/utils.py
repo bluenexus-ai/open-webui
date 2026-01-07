@@ -13,7 +13,6 @@ from starlette.responses import FileResponse
 from open_webui.utils.misc import get_gravatar_url
 from open_webui.utils.pdf_generator import PDFGenerator
 from open_webui.utils.auth import get_admin_user, get_verified_user
-from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.env import SRC_LOG_LEVELS
 
 
@@ -47,29 +46,11 @@ async def format_code(form_data: CodeForm, user=Depends(get_admin_user)):
 async def execute_code(
     request: Request, form_data: CodeForm, user=Depends(get_verified_user)
 ):
-    if request.app.state.config.CODE_EXECUTION_ENGINE == "jupyter":
-        output = await execute_code_jupyter(
-            request.app.state.config.CODE_EXECUTION_JUPYTER_URL,
-            form_data.code,
-            (
-                request.app.state.config.CODE_EXECUTION_JUPYTER_AUTH_TOKEN
-                if request.app.state.config.CODE_EXECUTION_JUPYTER_AUTH == "token"
-                else None
-            ),
-            (
-                request.app.state.config.CODE_EXECUTION_JUPYTER_AUTH_PASSWORD
-                if request.app.state.config.CODE_EXECUTION_JUPYTER_AUTH == "password"
-                else None
-            ),
-            request.app.state.config.CODE_EXECUTION_JUPYTER_TIMEOUT,
-        )
-
-        return output
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail="Code execution engine not supported",
-        )
+    # Code interpreter feature has been disabled
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Code interpreter is disabled",
+    )
 
 
 class MarkdownForm(BaseModel):

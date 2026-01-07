@@ -93,7 +93,6 @@
 		file_upload: true,
 		web_search: true,
 		image_generation: true,
-		code_interpreter: true,
 		citations: true,
 		status_updates: true,
 		usage: undefined
@@ -784,7 +783,7 @@
 						{@const availableFeatures = Object.entries(capabilities)
 							.filter(
 								([key, value]) =>
-									value && ['web_search', 'code_interpreter', 'image_generation'].includes(key)
+									value && ['web_search', 'image_generation'].includes(key)
 							)
 							.map(([key, value]) => key)}
 

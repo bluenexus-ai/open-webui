@@ -109,7 +109,6 @@ from open_webui.utils.filter import (
     get_sorted_filter_ids,
     process_filter_functions,
 )
-from open_webui.utils.code_interpreter import execute_code_jupyter
 from open_webui.utils.payload import apply_system_prompt_to_body
 from open_webui.utils.mcp.client import MCPClient
 
@@ -118,8 +117,6 @@ from open_webui.config import (
     CACHE_DIR,
     DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
     DEFAULT_TOOLS_EXECUTION_PLANNING_PROMPT_TEMPLATE,
-    DEFAULT_CODE_INTERPRETER_PROMPT,
-    CODE_INTERPRETER_BLOCKED_MODULES,
 )
 from open_webui.utils.workflow.react import ReActAgent, ReActConfig, ReActStatus
 from open_webui.env import (
@@ -1247,16 +1244,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         if "image_generation" in features and features["image_generation"]:
             form_data = await chat_image_generation_handler(
                 request, form_data, extra_params, user
-            )
-
-        if "code_interpreter" in features and features["code_interpreter"]:
-            form_data["messages"] = add_or_update_user_message(
-                (
-                    request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE
-                    if request.app.state.config.CODE_INTERPRETER_PROMPT_TEMPLATE != ""
-                    else DEFAULT_CODE_INTERPRETER_PROMPT
-                ),
-                form_data["messages"],
             )
 
     tool_ids = form_data.pop("tool_ids", None)
@@ -2689,9 +2676,8 @@ async def process_chat_response(
 
             reasoning_tags_param = metadata.get("params", {}).get("reasoning_tags")
             DETECT_REASONING_TAGS = reasoning_tags_param is not False
-            DETECT_CODE_INTERPRETER = metadata.get("features", {}).get(
-                "code_interpreter", False
-            )
+            # Code interpreter feature has been disabled
+            DETECT_CODE_INTERPRETER = False
 
             reasoning_tags = []
             if DETECT_REASONING_TAGS:
