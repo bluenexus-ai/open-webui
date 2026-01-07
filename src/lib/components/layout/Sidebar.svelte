@@ -19,7 +19,6 @@
 		scrollPaginationEnabled,
 		currentChatPage,
 		temporaryChatEnabled,
-		channels,
 		socket,
 		config,
 		isApp,
@@ -51,9 +50,6 @@
 	import Folder from '../common/Folder.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
 	import Folders from './Sidebar/Folders.svelte';
-	import { getChannels, createNewChannel } from '$lib/apis/channels';
-	import ChannelModal from './Sidebar/ChannelModal.svelte';
-	import ChannelItem from './Sidebar/ChannelItem.svelte';
 	import PencilSquare from '../icons/PencilSquare.svelte';
 	import Search from '../icons/Search.svelte';
 	import SearchModal from './SearchModal.svelte';
@@ -73,8 +69,6 @@
 
 	let selectedChatId = null;
 	let showPinnedChat = true;
-
-	let showCreateChannel = false;
 
 	// Pagination variables
 	let chatListLoading = false;
@@ -172,10 +166,6 @@
 			// newFolderId = res.id;
 			await initFolders();
 		}
-	};
-
-	const initChannels = async () => {
-		await channels.set(await getChannels(localStorage.token));
 	};
 
 	const initChatList = async () => {
@@ -413,10 +403,9 @@
 				}
 
 				if (value) {
-					console.log('[Sidebar] Calling initChannels and initChatList');
-					await initChannels();
+					console.log('[Sidebar] Calling initChatList');
 					await initChatList();
-					console.log('[Sidebar] Done with initChannels and initChatList');
+					console.log('[Sidebar] Done with initChatList');
 				}
 			})
 		];
@@ -438,7 +427,6 @@
 
 		// Always init chat list on mount to ensure it loads (even if sidebar is initially hidden)
 		console.log('[Sidebar] onMount - calling initChatList unconditionally');
-		await initChannels();
 		await initChatList();
 		console.log('[Sidebar] onMount - initChatList completed');
 	});
@@ -503,31 +491,6 @@
 	bind:show={$showArchivedChats}
 	onUpdate={async () => {
 		await initChatList();
-	}}
-/>
-
-<ChannelModal
-	bind:show={showCreateChannel}
-	onSubmit={async ({ name, access_control }) => {
-		name = name?.trim();
-		if (!name) {
-			toast.error($i18n.t('Channel name cannot be empty.'));
-			return;
-		}
-
-		const res = await createNewChannel(localStorage.token, {
-			name: name,
-			access_control: access_control
-		}).catch((error) => {
-			toast.error(`${error}`);
-			return null;
-		});
-
-		if (res) {
-			$socket.emit('join-channels', { auth: { token: $user?.token } });
-			await initChannels();
-			showCreateChannel = false;
-		}
 	}}
 />
 
@@ -930,34 +893,6 @@
 						dragAndDrop={false}
 					>
 						<PinnedModelList bind:selectedChatId {shiftKey} />
-					</Folder>
-				{/if}
-
-				{#if $config?.features?.enable_channels && ($user?.role === 'admin' || $channels.length > 0)}
-					<Folder
-						className="px-2 mt-0.5"
-						name={$i18n.t('Channels')}
-						chevron={false}
-						dragAndDrop={false}
-						onAdd={async () => {
-							if ($user?.role === 'admin') {
-								await tick();
-
-								setTimeout(() => {
-									showCreateChannel = true;
-								}, 0);
-							}
-						}}
-						onAddLabel={$i18n.t('Create Channel')}
-					>
-						{#each $channels as channel}
-							<ChannelItem
-								{channel}
-								onUpdate={async () => {
-									await initChannels();
-								}}
-							/>
-						{/each}
 					</Folder>
 				{/if}
 

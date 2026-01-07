@@ -1379,7 +1379,11 @@ class OAuthManager:
                         log.warning(f"Error fetching GitHub email: {e}")
                         raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
                 elif ENABLE_OAUTH_EMAIL_FALLBACK:
-                    email = f"{provider_sub}.local"
+                    # For BlueNexus, use {account_id}@bluenexus.ai format
+                    if provider == "bluenexus":
+                        email = f"{sub}@bluenexus.ai"
+                    else:
+                        email = f"{provider_sub}.local"
                 else:
                     log.warning(f"OAuth callback failed, email is missing: {user_data}")
                     raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)

@@ -76,8 +76,6 @@
 		width: '',
 		height: ''
 	};
-	let imageCompressionInChannels = true;
-
 	// chat export
 	let stylizedPdfExport = true;
 
@@ -243,7 +241,6 @@
 
 		imageCompression = $settings?.imageCompression ?? false;
 		imageCompressionSize = $settings?.imageCompressionSize ?? { width: '', height: '' };
-		imageCompressionInChannels = $settings?.imageCompressionInChannels ?? true;
 
 		defaultModelId = $settings?.models?.at(0) ?? '';
 		if ($config?.default_models) {
@@ -1211,26 +1208,6 @@
 				</div>
 			</div>
 
-			{#if imageCompression}
-				<div>
-					<div class=" py-0.5 flex w-full justify-between">
-						<div id="image-compression-in-channels-label" class=" self-center text-xs">
-							{$i18n.t('Compress Images in Channels')}
-						</div>
-
-						<div class="flex items-center gap-2 p-1">
-							<Switch
-								ariaLabelledbyId="image-compression-in-channels-label"
-								tooltip={true}
-								bind:state={imageCompressionInChannels}
-								on:change={() => {
-									saveSettings({ imageCompressionInChannels });
-								}}
-							/>
-						</div>
-					</div>
-				</div>
-			{/if}
 		</div>
 	</div>
 

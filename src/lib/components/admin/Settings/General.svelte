@@ -665,14 +665,6 @@
 
 					<div class="mb-2.5 flex w-full items-center justify-between pr-2">
 						<div class=" self-center text-xs font-medium">
-							{$i18n.t('Channels')} ({$i18n.t('Beta')})
-						</div>
-
-						<Switch bind:state={adminConfig.ENABLE_CHANNELS} />
-					</div>
-
-					<div class="mb-2.5 flex w-full items-center justify-between pr-2">
-						<div class=" self-center text-xs font-medium">
 							{$i18n.t('User Webhooks')}
 						</div>
 

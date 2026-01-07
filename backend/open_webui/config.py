@@ -1465,12 +1465,6 @@ USER_PERMISSIONS = PersistentConfig(
     DEFAULT_USER_PERMISSIONS,
 )
 
-ENABLE_CHANNELS = PersistentConfig(
-    "ENABLE_CHANNELS",
-    "channels.enable",
-    os.environ.get("ENABLE_CHANNELS", "False").lower() == "true",
-)
-
 ENABLE_NOTES = PersistentConfig(
     "ENABLE_NOTES",
     "notes.enable",

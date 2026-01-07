@@ -10,7 +10,6 @@ from redis import asyncio as aioredis
 import pycrdt as Y
 
 from open_webui.models.users import Users, UserNameResponse
-from open_webui.models.channels import Channels
 from open_webui.models.notes import Notes, NoteUpdateForm
 from open_webui.utils.bluenexus.chat_ops import (
     get_message_by_id_and_message_id,
@@ -308,33 +307,7 @@ async def user_join(sid, data):
     else:
         USER_POOL[user.id] = [sid]
 
-    # Join all the channels
-    channels = Channels.get_channels_by_user_id(user.id)
-    log.debug(f"{channels=}")
-    for channel in channels:
-        await sio.enter_room(sid, f"channel:{channel.id}")
     return {"id": user.id, "name": user.name}
-
-
-@sio.on("join-channels")
-async def join_channel(sid, data):
-    auth = data["auth"] if "auth" in data else None
-    if not auth or "token" not in auth:
-        return
-
-    data = decode_token(auth["token"])
-    if data is None or "id" not in data:
-        return
-
-    user = Users.get_user_by_id(data["id"])
-    if not user:
-        return
-
-    # Join all the channels
-    channels = Channels.get_channels_by_user_id(user.id)
-    log.debug(f"{channels=}")
-    for channel in channels:
-        await sio.enter_room(sid, f"channel:{channel.id}")
 
 
 @sio.on("join-note")
@@ -366,34 +339,6 @@ async def join_note(sid, data):
 
     log.debug(f"Joining note {note.id} for user {user.id}")
     await sio.enter_room(sid, f"note:{note.id}")
-
-
-@sio.on("events:channel")
-async def channel_events(sid, data):
-    room = f"channel:{data['channel_id']}"
-    participants = sio.manager.get_participants(
-        namespace="/",
-        room=room,
-    )
-
-    sids = [sid for sid, _ in participants]
-    if sid not in sids:
-        return
-
-    event_data = data["data"]
-    event_type = event_data["type"]
-
-    if event_type == "typing":
-        await sio.emit(
-            "events:channel",
-            {
-                "channel_id": data["channel_id"],
-                "message_id": data.get("message_id", None),
-                "data": event_data,
-                "user": UserNameResponse(**SESSION_POOL[sid]).model_dump(),
-            },
-            room=room,
-        )
 
 
 @sio.on("ydoc:document:join")
