@@ -75,6 +75,10 @@ class BlueNexusModelRepository(BaseModelRepository):
 
     def _normalize_model_data(self, model_data: dict) -> dict:
         """Normalize BlueNexus data to Open WebUI format."""
+        # Map owui_id back to id (BlueNexus record.id overwrites user-provided id)
+        if "owui_id" in model_data:
+            model_data["id"] = model_data.get("owui_id", model_data.get("id"))
+
         # Handle timestamp conversion
         if "createdAt" in model_data and model_data["createdAt"]:
             created = model_data["createdAt"]
@@ -102,6 +106,7 @@ class BlueNexusModelRepository(BaseModelRepository):
 
         client = self._get_client()
         if not client:
+            log.warning(f"BlueNexus client not available for user {user_id}")
             return []
 
         response = await client.query(
@@ -112,6 +117,8 @@ class BlueNexusModelRepository(BaseModelRepository):
                 sort_order=SortOrder.DESC,
             )
         )
+
+        log.info(f"BlueNexus get_list for user {user_id}: found {len(response.data) if response.data else 0} records")
 
         models = []
         for record in response.get_records():
@@ -149,12 +156,24 @@ class BlueNexusModelRepository(BaseModelRepository):
 
         client = self._get_client()
         if not client:
+            log.warning(f"BlueNexus client not available for get_by_id: {model_id}")
             return None
 
+        # Query by owui_id (user-provided model ID), not by BlueNexus record id
         response = await client.query(
             Collections.MODELS,
-            QueryOptions(filter={"id": model_id}, limit=1)
+            QueryOptions(filter={"owui_id": model_id}, limit=1)
         )
+
+        log.info(f"BlueNexus get_by_id for {model_id} (owui_id): found {len(response.data) if response.data else 0} records")
+
+        # Fallback: try querying by "id" field for backwards compatibility with old models
+        if not response.data or len(response.data) == 0:
+            response = await client.query(
+                Collections.MODELS,
+                QueryOptions(filter={"id": model_id}, limit=1)
+            )
+            log.info(f"BlueNexus get_by_id for {model_id} (id fallback): found {len(response.data) if response.data else 0} records")
 
         if response.data and len(response.data) > 0:
             record = response.get_records()[0]
@@ -168,10 +187,13 @@ class BlueNexusModelRepository(BaseModelRepository):
 
         client = self._get_client()
         if not client:
+            log.warning(f"BlueNexus client not available for create")
             return {}
 
+        model_id = data.get("id")
         new_model_data = {
-            "id": data.get("id"),
+            # Store user-provided id as owui_id to avoid BlueNexus record.id conflict
+            "owui_id": model_id,
             "user_id": user_id,
             "base_model_id": data.get("base_model_id"),
             "name": data.get("name"),
@@ -183,6 +205,7 @@ class BlueNexusModelRepository(BaseModelRepository):
             "updated_at": int(time.time()),
         }
 
+        log.info(f"BlueNexus create model with owui_id: {model_id}")
         record = await client.create(Collections.MODELS, new_model_data)
         result_data = record.model_dump()
         self._normalize_model_data(result_data)
@@ -194,13 +217,24 @@ class BlueNexusModelRepository(BaseModelRepository):
 
         client = self._get_client()
         if not client:
+            log.warning(f"BlueNexus client not available for update: {model_id}")
             return None
 
-        # Find existing model
+        # Find existing model by owui_id (user-provided model ID)
         response = await client.query(
             Collections.MODELS,
-            QueryOptions(filter={"id": model_id}, limit=1)
+            QueryOptions(filter={"owui_id": model_id}, limit=1)
         )
+
+        log.info(f"BlueNexus update for {model_id} (owui_id): found {len(response.data) if response.data else 0} records")
+
+        # Fallback: try querying by "id" field for backwards compatibility with old models
+        if not response.data or len(response.data) == 0:
+            response = await client.query(
+                Collections.MODELS,
+                QueryOptions(filter={"id": model_id}, limit=1)
+            )
+            log.info(f"BlueNexus update for {model_id} (id fallback): found {len(response.data) if response.data else 0} records")
 
         if not response.data or len(response.data) == 0:
             return None
@@ -208,11 +242,13 @@ class BlueNexusModelRepository(BaseModelRepository):
         record = response.get_records()[0]
         model_data = record.model_dump()
 
-        # Update fields
+        # Update fields (preserve owui_id)
         for key in ["base_model_id", "name", "meta", "params", "access_control", "is_active"]:
             if key in data:
                 model_data[key] = data[key]
         model_data["updated_at"] = int(time.time())
+        # Ensure owui_id is set (migrate old models to use owui_id)
+        model_data["owui_id"] = model_id
 
         updated_record = await client.update(Collections.MODELS, record.id, model_data)
         result_data = updated_record.model_dump()
@@ -225,16 +261,29 @@ class BlueNexusModelRepository(BaseModelRepository):
 
         client = self._get_client()
         if not client:
+            log.warning(f"BlueNexus client not available for delete: {model_id}")
             return False
 
+        # Find model by owui_id (user-provided model ID)
         response = await client.query(
             Collections.MODELS,
-            QueryOptions(filter={"id": model_id}, limit=1)
+            QueryOptions(filter={"owui_id": model_id}, limit=1)
         )
+
+        log.info(f"BlueNexus delete for {model_id} (owui_id): found {len(response.data) if response.data else 0} records")
+
+        # Fallback: try querying by "id" field for backwards compatibility with old models
+        if not response.data or len(response.data) == 0:
+            response = await client.query(
+                Collections.MODELS,
+                QueryOptions(filter={"id": model_id}, limit=1)
+            )
+            log.info(f"BlueNexus delete for {model_id} (id fallback): found {len(response.data) if response.data else 0} records")
 
         if not response.data or len(response.data) == 0:
             return False
 
         record = response.get_records()[0]
         await client.delete(Collections.MODELS, record.id)
+        log.info(f"BlueNexus deleted model with owui_id: {model_id}, record.id: {record.id}")
         return True

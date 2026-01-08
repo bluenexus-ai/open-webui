@@ -14,7 +14,6 @@
 		showSidebar,
 		knowledge as _knowledge,
 		config,
-		user,
 		settings
 	} from '$lib/stores';
 
@@ -47,8 +46,6 @@
 	import EllipsisVertical from '$lib/components/icons/EllipsisVertical.svelte';
 	import Drawer from '$lib/components/common/Drawer.svelte';
 	import ChevronLeft from '$lib/components/icons/ChevronLeft.svelte';
-	import LockClosed from '$lib/components/icons/LockClosed.svelte';
-	import AccessControlModal from '../common/AccessControlModal.svelte';
 	import Search from '$lib/components/icons/Search.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import FilesOverlay from '$lib/components/chat/MessageInput/FilesOverlay.svelte';
@@ -75,7 +72,6 @@
 
 	let showAddTextContentModal = false;
 	let showSyncConfirmModal = false;
-	let showAccessControlModal = false;
 
 	let inputFiles = null;
 
@@ -679,15 +675,6 @@
 
 <div class="flex flex-col w-full h-full translate-y-1" id="collection-container">
 	{#if id && knowledge}
-		<AccessControlModal
-			bind:show={showAccessControlModal}
-			bind:accessControl={knowledge.access_control}
-			allowPublic={$user?.permissions?.sharing?.public_knowledge || $user?.role === 'admin'}
-			onChange={() => {
-				changeDebounceHandler();
-			}}
-			accessRoles={['read', 'write']}
-		/>
 		<div class="w-full mb-2.5">
 			<div class=" flex w-full">
 				<div class="flex-1">
@@ -702,22 +689,6 @@
 									changeDebounceHandler();
 								}}
 							/>
-						</div>
-
-						<div class="self-center shrink-0">
-							<button
-								class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
-								type="button"
-								on:click={() => {
-									showAccessControlModal = true;
-								}}
-							>
-								<LockClosed strokeWidth="2.5" className="size-3.5" />
-
-								<div class="text-sm font-medium shrink-0">
-									{$i18n.t('Access')}
-								</div>
-							</button>
 						</div>
 					</div>
 

@@ -4,10 +4,6 @@
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import { toast } from 'svelte-sonner';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
-	import AccessControl from '../common/AccessControl.svelte';
-	import LockClosed from '$lib/components/icons/LockClosed.svelte';
-	import AccessControlModal from '../common/AccessControlModal.svelte';
-	import { user } from '$lib/stores';
 	import { slugify } from '$lib/utils';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 
@@ -23,10 +19,6 @@
 	let title = '';
 	let command = '';
 	let content = '';
-
-	let accessControl = {};
-
-	let showAccessControlModal = false;
 
 	let hasManualEdit = false;
 
@@ -47,7 +39,7 @@
 				title,
 				command,
 				content,
-				access_control: accessControl
+				access_control: {}
 			});
 		} else {
 			toast.error(
@@ -73,18 +65,9 @@
 
 			command = prompt.command.at(0) === '/' ? prompt.command.slice(1) : prompt.command;
 			content = prompt.content;
-
-			accessControl = prompt?.access_control === undefined ? {} : prompt?.access_control;
 		}
 	});
 </script>
-
-<AccessControlModal
-	bind:show={showAccessControlModal}
-	bind:accessControl
-	accessRoles={['read', 'write']}
-	allowPublic={$user?.permissions?.sharing?.public_prompts || $user?.role === 'admin'}
-/>
 
 <div class="w-full max-h-full flex justify-center">
 	<form
@@ -111,22 +94,6 @@
 							bind:value={title}
 							required
 						/>
-
-						<div class="self-center shrink-0">
-							<button
-								class="bg-gray-50 hover:bg-gray-100 text-black dark:bg-gray-850 dark:hover:bg-gray-800 dark:text-white transition px-2 py-1 rounded-full flex gap-1 items-center"
-								type="button"
-								on:click={() => {
-									showAccessControlModal = true;
-								}}
-							>
-								<LockClosed strokeWidth="2.5" className="size-3.5" />
-
-								<div class="text-sm font-medium shrink-0">
-									{$i18n.t('Access')}
-								</div>
-							</button>
-						</div>
 					</div>
 
 					<div class="flex gap-0.5 items-center text-xs text-gray-500">

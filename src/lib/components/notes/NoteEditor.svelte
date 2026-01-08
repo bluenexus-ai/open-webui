@@ -44,7 +44,6 @@
 	import Chat from './NoteEditor/Chat.svelte';
 
 	import NotePanel from '$lib/components/notes/NotePanel.svelte';
-	import AccessControlModal from '$lib/components/workspace/common/AccessControlModal.svelte';
 
 	async function loadLocale(locales) {
 		for (const locale of locales) {
@@ -70,7 +69,6 @@
 	import ChatBubbleOval from '../icons/ChatBubbleOval.svelte';
 
 	import Calendar from '../icons/Calendar.svelte';
-	import Users from '../icons/Users.svelte';
 
 	import Image from '../common/Image.svelte';
 	import FileItem from '../common/FileItem.svelte';
@@ -129,7 +127,6 @@
 	let selectedContent = null;
 
 	let showDeleteConfirm = false;
-	let showAccessControlModal = false;
 
 	let ignoreBlur = false;
 	let titleInputFocused = false;
@@ -841,17 +838,6 @@ Provide the enhanced notes in markdown format. Use markdown syntax for headings,
 	</title>
 </svelte:head>
 
-{#if note}
-	<AccessControlModal
-		bind:show={showAccessControlModal}
-		bind:accessControl={note.access_control}
-		accessRoles={['read', 'write']}
-		onChange={() => {
-			changeDebounceHandler();
-		}}
-	/>
-{/if}
-
 <FilesOverlay show={dragged} />
 
 <DeleteConfirmDialog
@@ -1097,18 +1083,6 @@ Provide the enhanced notes in markdown format. Use markdown syntax for headings,
 									{:else}
 										<span>{dayjs(note.created_at / 1000000).format($i18n.t('DD/MM/YYYY'))}</span>
 									{/if}
-								</button>
-
-								<button
-									class=" flex items-center gap-1 w-fit py-1 px-1.5 rounded-lg min-w-fit"
-									on:click={() => {
-										showAccessControlModal = true;
-									}}
-									disabled={note?.user_id !== $user?.id && $user?.role !== 'admin'}
-								>
-									<Users className="size-3.5" strokeWidth="2" />
-
-									<span> {note?.access_control ? $i18n.t('Private') : $i18n.t('Everyone')} </span>
 								</button>
 
 								{#if editor}

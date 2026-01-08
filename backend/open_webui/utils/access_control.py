@@ -112,7 +112,8 @@ def has_access(
     user_group_ids: Optional[Set[str]] = None,
     strict: bool = True,
 ) -> bool:
-    if access_control is None:
+    # Treat empty dict same as None (no access control restrictions)
+    if access_control is None or access_control == {}:
         if strict:
             return type == "read"
         else:

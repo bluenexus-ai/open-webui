@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 
 from open_webui.utils.auth import get_admin_user, get_verified_user
-from open_webui.utils.access_control import has_access, has_permission
+from open_webui.utils.access_control import has_permission
 from open_webui.utils.bluenexus.config import is_bluenexus_data_storage_enabled
 from open_webui.repositories import get_model_repository
 from open_webui.config import BYPASS_ADMIN_ACCESS_CONTROL, STATIC_DIR
@@ -92,12 +92,10 @@ async def get_models(id: Optional[str] = None, user=Depends(get_verified_user)):
             model_user = users_dict.get(model_data.get("user_id"))
             model_data["user"] = model_user.model_dump() if model_user else None
 
-            # Apply access control - user always has access to their own models
+            # Owner-only access: only model owner or admin can access
             if user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL:
                 models.append(ModelUserResponse(**model_data))
             elif model_data.get("user_id") == user.id:
-                models.append(ModelUserResponse(**model_data))
-            elif has_access(user.id, "read", model_data.get("access_control")):
                 models.append(ModelUserResponse(**model_data))
 
         return models
@@ -360,50 +358,39 @@ async def sync_models(
 # Note: We're not using the typical url path param here, but instead using a query parameter to allow '/' in the id
 @router.get("/model", response_model=Optional[ModelResponse])
 async def get_model_by_id(id: str, user=Depends(get_verified_user)):
+    model_data = None
+
+    # Try BlueNexus first if enabled
     if is_bluenexus_data_storage_enabled():
         repo = get_model_repository(user.id)
         model_data = await repo.get_by_id(id)
 
-        if not model_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+    # Fallback to PostgreSQL
+    if not model_data:
+        pg_model = Models.get_model_by_id(id)
+        if pg_model:
+            model_data = pg_model.model_dump()
 
-        model_data = _ensure_model_defaults(model_data)
+    if not model_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
-        # Check access
-        if (
-            (user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL)
-            or model_data.get("user_id") == user.id
-            or has_access(user.id, "read", model_data.get("access_control"))
-        ):
-            return ModelResponse(**model_data)
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+    model_data = _ensure_model_defaults(model_data)
+    model_user_id = model_data.get("user_id")
+
+    # Owner-only access: only model owner or admin can access
+    if (
+        (user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL)
+        or model_user_id == user.id
+    ):
+        return ModelResponse(**model_data)
     else:
-        # PostgreSQL path
-        model = Models.get_model_by_id(id)
-        if not model:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        if (
-            (user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL)
-            or model.user_id == user.id
-            or has_access(user.id, "read", model.access_control)
-        ):
-            return ModelResponse(**model.model_dump())
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
 
 ###########################
@@ -480,54 +467,50 @@ async def get_model_profile_image(id: str, user=Depends(get_verified_user)):
 
 @router.post("/model/toggle", response_model=Optional[ModelResponse])
 async def toggle_model_by_id(id: str, user=Depends(get_verified_user)):
+    model_data = None
+    use_bluenexus = False
+
+    # Try BlueNexus first if enabled
     if is_bluenexus_data_storage_enabled():
         repo = get_model_repository(user.id)
         model_data = await repo.get_by_id(id)
+        if model_data:
+            use_bluenexus = True
 
-        if not model_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+    # Fallback to PostgreSQL
+    if not model_data:
+        pg_model = Models.get_model_by_id(id)
+        if pg_model:
+            model_data = pg_model.model_dump()
+            use_bluenexus = False
 
-        # Check access
-        if not (
-            user.role == "admin"
-            or model_data.get("user_id") == user.id
-            or has_access(user.id, "write", model_data.get("access_control"))
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.UNAUTHORIZED,
-            )
+    if not model_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
-        # Toggle is_active field
+    model_user_id = model_data.get("user_id")
+
+    # Owner-only access: only model owner or admin can toggle
+    if not (
+        user.role == "admin"
+        or model_user_id == user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.UNAUTHORIZED,
+        )
+
+    # Toggle in appropriate storage
+    if use_bluenexus:
         model_data["is_active"] = not model_data.get("is_active", True)
-
         result = await repo.update(id, model_data)
         if result:
             result = _ensure_model_defaults(result)
             return ModelResponse(**result)
         return None
     else:
-        # PostgreSQL path
-        model = Models.get_model_by_id(id)
-        if not model:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        if not (
-            user.role == "admin"
-            or model.user_id == user.id
-            or has_access(user.id, "write", model.access_control)
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.UNAUTHORIZED,
-            )
-
         model = Models.toggle_model_active_by_id(id)
         if model:
             return ModelResponse(**model.model_dump())
@@ -545,28 +528,43 @@ async def update_model_by_id(
     form_data: ModelForm,
     user=Depends(get_verified_user),
 ):
+    model_data = None
+    use_bluenexus = False
+
+    # Try BlueNexus first if enabled
     if is_bluenexus_data_storage_enabled():
         repo = get_model_repository(user.id)
         model_data = await repo.get_by_id(id)
+        if model_data:
+            use_bluenexus = True
 
-        if not model_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+    # Fallback to PostgreSQL
+    if not model_data:
+        pg_model = Models.get_model_by_id(id)
+        if pg_model:
+            model_data = pg_model.model_dump()
+            use_bluenexus = False
 
-        # Check access
-        if (
-            model_data.get("user_id") != user.id
-            and not has_access(user.id, "write", model_data.get("access_control"))
-            and user.role != "admin"
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
-            )
+    if not model_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
-        # Update model
+    model_user_id = model_data.get("user_id")
+
+    # Owner-only access: only model owner or admin can update
+    if (
+        model_user_id != user.id
+        and user.role != "admin"
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    # Update in appropriate storage
+    if use_bluenexus:
         update_data = form_data.model_dump()
         result = await repo.update(id, update_data)
         if result:
@@ -574,24 +572,6 @@ async def update_model_by_id(
             return ModelModel(**result)
         return None
     else:
-        # PostgreSQL path
-        model = Models.get_model_by_id(id)
-        if not model:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        if (
-            model.user_id != user.id
-            and not has_access(user.id, "write", model.access_control)
-            and user.role != "admin"
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
-            )
-
         model = Models.update_model_by_id(id, form_data)
         return model
 
@@ -603,47 +583,50 @@ async def update_model_by_id(
 
 @router.delete("/model/delete", response_model=bool)
 async def delete_model_by_id(id: str, user=Depends(get_verified_user)):
+    model_data = None
+    use_bluenexus = False
+
+    # Try BlueNexus first if enabled
     if is_bluenexus_data_storage_enabled():
         repo = get_model_repository(user.id)
         model_data = await repo.get_by_id(id)
+        if model_data:
+            use_bluenexus = True
+            log.info(f"Delete model - found in BlueNexus: {id}")
 
-        if not model_data:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
+    # Fallback to PostgreSQL
+    if not model_data:
+        pg_model = Models.get_model_by_id(id)
+        if pg_model:
+            model_data = pg_model.model_dump()
+            use_bluenexus = False
+            log.info(f"Delete model - found in PostgreSQL: {id}")
 
-        # Check access
-        if (
-            user.role != "admin"
-            and model_data.get("user_id") != user.id
-            and not has_access(user.id, "write", model_data.get("access_control"))
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.UNAUTHORIZED,
-            )
+    if not model_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
 
+    # Debug logging
+    model_user_id = model_data.get("user_id") if isinstance(model_data, dict) else model_data.user_id
+    log.info(f"Delete model - user.id: {user.id}, user.role: {user.role}, model user_id: {model_user_id}")
+
+    # Owner-only access: only model owner or admin can delete
+    if (
+        user.role != "admin"
+        and model_user_id != user.id
+    ):
+        log.warning(f"Access denied - user.id ({user.id}) != model user_id ({model_user_id})")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.UNAUTHORIZED,
+        )
+
+    # Delete from appropriate storage
+    if use_bluenexus:
         return await repo.delete(id)
     else:
-        # PostgreSQL path
-        model = Models.get_model_by_id(id)
-        if not model:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.NOT_FOUND,
-            )
-
-        if (
-            user.role != "admin"
-            and model.user_id != user.id
-            and not has_access(user.id, "write", model.access_control)
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=ERROR_MESSAGES.UNAUTHORIZED,
-            )
-
         return Models.delete_model_by_id(id)
 
 

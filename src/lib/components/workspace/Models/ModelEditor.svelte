@@ -2,7 +2,7 @@
 	import { toast } from 'svelte-sonner';
 
 	import { onMount, getContext, tick } from 'svelte';
-	import { models, tools, functions, knowledge as knowledgeCollections, user } from '$lib/stores';
+	import { models, tools, functions, knowledge as knowledgeCollections } from '$lib/stores';
 	import { WEBUI_BASE_URL } from '$lib/constants';
 
 	import { getTools } from '$lib/apis/tools';
@@ -17,7 +17,6 @@
 	import ActionsSelector from '$lib/components/workspace/Models/ActionsSelector.svelte';
 	import Capabilities from '$lib/components/workspace/Models/Capabilities.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
-	import AccessControl from '../common/AccessControl.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
 	import DefaultFiltersSelector from './DefaultFiltersSelector.svelte';
@@ -100,7 +99,6 @@
 	let defaultFeatureIds = [];
 
 	let actionIds = [];
-	let accessControl = {};
 
 	const addUsage = (base_model_id) => {
 		const baseModel = $models.find((m) => m.id === base_model_id);
@@ -144,7 +142,6 @@
 
 		info.params = { ...info.params, ...params };
 
-		info.access_control = accessControl;
 		info.meta.capabilities = capabilities;
 
 		if (enableDescription) {
@@ -283,15 +280,6 @@
 
 			capabilities = { ...capabilities, ...(model?.meta?.capabilities ?? {}) };
 			defaultFeatureIds = model?.meta?.defaultFeatureIds ?? [];
-
-			if ('access_control' in model) {
-				accessControl = model.access_control;
-			} else {
-				accessControl = {};
-			}
-
-			console.log(model?.access_control);
-			console.log(accessControl);
 
 			info = {
 				...info,
@@ -581,16 +569,6 @@
 										info.meta.tags = [...info.meta.tags, { name: tagName }];
 									}
 								}}
-							/>
-						</div>
-					</div>
-
-					<div class="my-2">
-						<div class="px-4 py-3 bg-gray-50 dark:bg-gray-950 rounded-3xl">
-							<AccessControl
-								bind:accessControl
-								accessRoles={['read', 'write']}
-								allowPublic={$user?.permissions?.sharing?.public_models || $user?.role === 'admin'}
 							/>
 						</div>
 					</div>

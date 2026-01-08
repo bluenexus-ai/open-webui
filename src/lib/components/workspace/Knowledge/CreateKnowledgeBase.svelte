@@ -5,15 +5,13 @@
 
 	import { createNewKnowledge, getKnowledgeBases } from '$lib/apis/knowledge';
 	import { toast } from 'svelte-sonner';
-	import { knowledge, user } from '$lib/stores';
-	import AccessControl from '../common/AccessControl.svelte';
+	import { knowledge } from '$lib/stores';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 
 	let loading = false;
 
 	let name = '';
 	let description = '';
-	let accessControl = {};
 
 	const submitHandler = async () => {
 		loading = true;
@@ -30,7 +28,7 @@
 			localStorage.token,
 			name,
 			description,
-			accessControl
+			{}
 		).catch((e) => {
 			toast.error(`${e}`);
 		});
@@ -108,16 +106,6 @@
 						/>
 					</div>
 				</div>
-			</div>
-		</div>
-
-		<div class="mt-2">
-			<div class="px-4 py-3 bg-gray-50 dark:bg-gray-950 rounded-3xl">
-				<AccessControl
-					bind:accessControl
-					accessRoles={['read', 'write']}
-					allowPublic={$user?.permissions?.sharing?.public_knowledge || $user?.role === 'admin'}
-				/>
 			</div>
 		</div>
 
