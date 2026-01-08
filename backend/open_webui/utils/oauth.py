@@ -1311,7 +1311,31 @@ class OAuthManager:
                 or (auth_manager_config.OAUTH_EMAIL_CLAIM not in user_data)
                 or (auth_manager_config.OAUTH_USERNAME_CLAIM not in user_data)
             ):
-                user_data: UserInfo = await client.userinfo(token=token)
+                log.debug(f"Fetching userinfo from endpoint for provider {provider}")
+                try:
+                    user_data: UserInfo = await client.userinfo(token=token)
+                    log.debug(f"Userinfo response for {provider}: {user_data}")
+                except Exception as e:
+                    log.warning(f"Failed to fetch userinfo for provider {provider}: {e}")
+                    # For BlueNexus, try fetching userinfo manually with SSL disabled
+                    if provider == "bluenexus":
+                        try:
+                            from open_webui.utils.bluenexus.config import BLUENEXUS_API_BASE_URL
+                            userinfo_url = f"{BLUENEXUS_API_BASE_URL.value.rstrip('/')}/api/v1/auth/userinfo"
+                            access_token = token.get("access_token")
+                            async with aiohttp.ClientSession(trust_env=True) as session:
+                                async with session.get(
+                                    userinfo_url,
+                                    headers={"Authorization": f"Bearer {access_token}"},
+                                    ssl=_oauth_ssl_setting(provider),
+                                ) as resp:
+                                    if resp.ok:
+                                        user_data = await resp.json()
+                                        log.info(f"BlueNexus userinfo fetched manually: {user_data}")
+                                    else:
+                                        log.warning(f"BlueNexus userinfo fetch failed: {resp.status}")
+                        except Exception as e2:
+                            log.error(f"Failed to manually fetch BlueNexus userinfo: {e2}")
             if (
                 provider == "feishu"
                 and isinstance(user_data, dict)

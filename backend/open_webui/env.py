@@ -835,3 +835,26 @@ PIP_PACKAGE_INDEX_OPTIONS = os.getenv("PIP_PACKAGE_INDEX_OPTIONS", "").split()
 ####################################
 
 EXTERNAL_PWA_MANIFEST_URL = os.environ.get("EXTERNAL_PWA_MANIFEST_URL")
+
+
+####################################
+# AUTHLIB OIDC NONCE PATCH
+####################################
+
+# Patch authlib IDToken to skip nonce validation for OIDC providers
+# that don't include nonce in the ID token (e.g., BlueNexus)
+try:
+    from authlib.oidc.core.claims import IDToken
+
+    _original_validate_nonce = IDToken.validate_nonce
+
+    def _patched_validate_nonce(self):
+        # Skip nonce validation if the token doesn't have a nonce claim
+        # This allows OIDC providers that don't support nonce to work
+        if "nonce" not in self:
+            return  # Skip validation
+        return _original_validate_nonce(self)
+
+    IDToken.validate_nonce = _patched_validate_nonce
+except ImportError:
+    pass  # authlib not installed
