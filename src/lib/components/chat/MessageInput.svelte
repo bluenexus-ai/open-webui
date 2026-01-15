@@ -462,6 +462,9 @@
 		$config?.features?.enable_image_generation &&
 		($_user.role === 'admin' || $_user?.permissions?.features?.image_generation);
 
+	// Code interpreter disabled for security - variable kept to prevent undefined reference errors
+	let showCodeInterpreterButton = false;
+
 	const scrollToBottom = () => {
 		const element = document.getElementById('messages-container');
 		element.scrollTo({
