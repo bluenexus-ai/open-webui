@@ -11,6 +11,14 @@ on:
         description: "Branch or tag to build"
         required: true
         default: OWU-Sign-With-BlueNexus
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        default: staging
+        options:
+          - staging
+          - prod
 
 permissions:
   id-token: write
@@ -22,17 +30,29 @@ jobs:
     env:
       AWS_REGION: us-west-2
       ECR_REPOSITORY: custom/open-webui
+      # Account IDs stored as GitHub secrets
+      STAGING_ACCOUNT_ID: ${{ secrets.STAGING_AWS_ACCOUNT_ID }}
+      PROD_ACCOUNT_ID: ${{ secrets.PROD_AWS_ACCOUNT_ID }}
 
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref || github.ref_name }}
 
+      - name: Set AWS Account ID
+        id: set-account
+        run: |
+          if [ "${{ inputs.environment }}" == "prod" ]; then
+            echo "account_id=${{ env.PROD_ACCOUNT_ID }}" >> $GITHUB_OUTPUT
+          else
+            echo "account_id=${{ env.STAGING_ACCOUNT_ID }}" >> $GITHUB_OUTPUT
+          fi
+
       - uses: aws-actions/configure-aws-credentials@v5
         with:
           aws-region: ${{ env.AWS_REGION }}
-          role-to-assume: arn:aws:iam::664307504928:role/github-actions-robot
-          role-session-name: github-actions-force-refresh
+          role-to-assume: arn:aws:iam::${{ steps.set-account.outputs.account_id }}:role/github-actions-robot
+          role-session-name: github-actions-${{ inputs.environment || 'staging' }}
 
       - id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
