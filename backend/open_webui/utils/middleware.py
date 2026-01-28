@@ -4,6 +4,7 @@ import sys
 import os
 import base64
 import textwrap
+from datetime import datetime
 
 import asyncio
 from aiocache import cached
@@ -1780,6 +1781,13 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 },
             }
         )
+
+    # Inject current date/time context into system message
+    current_datetime = datetime.now()
+    date_context = f"Current date and time: {current_datetime.strftime('%Y-%m-%d %H:%M:%S')} ({current_datetime.strftime('%A')})"
+    form_data["messages"] = add_or_update_system_message(
+        date_context, form_data["messages"], append=True
+    )
 
     return form_data, metadata, events
 

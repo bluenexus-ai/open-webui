@@ -16,6 +16,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set
 from uuid import uuid4
@@ -126,6 +127,8 @@ class ReActResult:
 
 # System prompt for the ReAct agent
 REACT_SYSTEM_PROMPT = """You are a ReAct (Reasoning and Acting) agent that solves tasks by thinking step-by-step and using tools.
+
+Current Date: {current_date}
 
 For each step, you must respond in one of these formats:
 
@@ -843,6 +846,7 @@ Your response:"""
         system_prompt = REACT_SYSTEM_PROMPT.format(
             tools=tools_description,
             conversation_history=conversation_section,
+            current_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S %A"),
         )
 
         while iteration < self.config.max_iterations:
