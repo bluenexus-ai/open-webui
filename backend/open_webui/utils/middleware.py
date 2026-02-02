@@ -752,16 +752,31 @@ async def chat_image_generation_handler(
     prompt = user_message
     input_images = get_last_images(message_list)
 
+    # Check if agent data is available for image generation
+    agent_data_for_image = metadata.get("_agent_data_for_image")
+    if agent_data_for_image:
+        log.info(f"[Image Generation] Using agent data for prompt: {agent_data_for_image[:100]}...")
+
     system_message_content = ""
     if len(input_images) == 0:
         # Create image(s)
         if request.app.state.config.ENABLE_IMAGE_PROMPT_GENERATION:
             try:
+                # Prepare messages for prompt generation
+                messages_for_prompt = form_data["messages"].copy()
+
+                # If agent data is available, inject it into messages for prompt generation
+                if agent_data_for_image:
+                    messages_for_prompt = add_or_update_user_message(
+                        f"\n[Data for image generation]\n{agent_data_for_image}",
+                        messages_for_prompt,
+                    )
+
                 res = await generate_image_prompt(
                     request,
                     {
                         "model": form_data["model"],
-                        "messages": form_data["messages"],
+                        "messages": messages_for_prompt,
                     },
                     user,
                 )
@@ -792,6 +807,11 @@ async def chat_image_generation_handler(
                 user=user,
             )
 
+            # Log generated images for debugging
+            log.info(f"[Image Generation] Generated {len(images)} images with prompt: {prompt[:100]}...")
+            for idx, image in enumerate(images):
+                log.debug(f"[Image Generation] Image {idx}: {image.get('url', 'NO URL')[:100]}...")
+
             await __event_emitter__(
                 {
                     "type": "status",
@@ -814,9 +834,19 @@ async def chat_image_generation_handler(
                 }
             )
 
-            system_message_content = "<context>The requested image has been created and is now being shown to the user. Let them know that it has been generated.</context>"
+            if agent_data_for_image:
+                # When agent data was used, suppress ALL text output - just show the image
+                # Replace all messages with minimal instruction to output nothing
+                form_data["messages"] = [
+                    {"role": "system", "content": "Output ONLY: ✓"},
+                    {"role": "user", "content": "Acknowledge."}
+                ]
+                system_message_content = ""  # No additional system message needed
+                metadata["_image_only_response"] = True
+            else:
+                system_message_content = "<context>The requested image has been created and is now being shown to the user. Let them know that it has been generated.</context>"
         except Exception as e:
-            log.debug(e)
+            log.exception(e)
 
             error_message = ""
             if isinstance(e, HTTPException):
@@ -1242,10 +1272,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 request, form_data, extra_params, user
             )
 
-        if "image_generation" in features and features["image_generation"]:
-            form_data = await chat_image_generation_handler(
-                request, form_data, extra_params, user
-            )
+        # NOTE: image_generation is deferred until AFTER Universal MCP agent
+        # so that images can be generated using data retrieved by the agent.
+        # See "DEFERRED IMAGE GENERATION" section below.
 
     tool_ids = form_data.pop("tool_ids", None)
     files = form_data.pop("files", None)
@@ -1297,6 +1326,16 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     if tool_ids:
         log.info(f"[MCP] Processing {len(tool_ids)} tool_ids: {tool_ids}")
+
+        # Check if Universal MCP is available - if so, skip individual BlueNexus MCP server loading
+        # Universal MCP handles all BlueNexus providers through a single agent
+        from open_webui.utils.bluenexus.universal_mcp import is_universal_mcp_available
+        if is_universal_mcp_available(user.id):
+            # Filter out BlueNexus MCP tool_ids - they're handled by Universal MCP
+            bluenexus_mcp_count = sum(1 for tid in tool_ids if tid.startswith("bluenexus_mcp:"))
+            if bluenexus_mcp_count > 0:
+                log.info(f"[Universal MCP] Skipping {bluenexus_mcp_count} individual BlueNexus MCP servers - Universal MCP will handle all tools")
+                tool_ids = [tid for tid in tool_ids if not tid.startswith("bluenexus_mcp:")]
 
         # Count MCP servers to load
         mcp_server_ids = [tid for tid in tool_ids if tid.startswith("bluenexus_mcp:") or tid.startswith("server:mcp:")]
@@ -1686,14 +1725,93 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         metadata["mcp_clients"] = mcp_clients
         log.info(f"[MCP] Stored {len(mcp_clients)} MCP clients in metadata")
 
-    if tools_dict:
+    # =========================================================================
+    # UNIVERSAL MCP AGENT - Replaces local ReACT agent
+    # When BlueNexus Universal MCP is available, delegate all tool execution
+    # to BlueNexus. This provides access to all connected MCP providers
+    # (GitHub, Notion, Slack, etc.) through a single agent.
+    # =========================================================================
+    from open_webui.utils.bluenexus.universal_mcp import (
+        is_universal_mcp_available,
+        call_universal_mcp_agent,
+    )
+
+    use_universal_mcp = is_universal_mcp_available(user.id)
+
+    if use_universal_mcp:
+        log.info("[Universal MCP] Using BlueNexus Universal MCP agent")
+
+        # Get user query
+        user_query = get_last_user_message(form_data["messages"]) or ""
+
+        # Get conversation history (exclude current message)
+        messages = form_data.get("messages", [])
+        conversation_history = messages[:-1] if len(messages) > 1 else []
+
+        # Check if image generation is enabled - if so, tell agent to only retrieve data
+        image_gen_enabled = bool(features and features.get("image_generation"))
+
+        # Call Universal MCP agent
+        universal_result = await call_universal_mcp_agent(
+            user_id=user.id,
+            prompt=user_query,
+            conversation_history=conversation_history,
+            event_emitter=event_emitter,
+            image_generation_enabled=image_gen_enabled,
+        )
+
+        if universal_result.success and universal_result.response:
+            if image_gen_enabled:
+                # Validate that agent returned actual data, not questions
+                response_lower = universal_result.response.lower()
+                is_question = (
+                    "?" in universal_result.response
+                    or "would you like" in response_lower
+                    or "what metric" in response_lower
+                    or "which date" in response_lower
+                    or "let me know" in response_lower
+                    or "i need a few details" in response_lower
+                )
+
+                if is_question:
+                    # Agent asked questions instead of fetching data - don't use for image
+                    log.warning("[Universal MCP] Agent returned questions instead of data, skipping image generation")
+                    # Clear the image generation flag so it doesn't run
+                    if features:
+                        features["image_generation"] = False
+                else:
+                    # For image generation: store data in metadata, don't show text
+                    metadata["_agent_data_for_image"] = universal_result.response
+                    log.info("[Universal MCP] Agent data stored for image generation (no text output)")
+            else:
+                # Normal mode: add agent result to messages
+                form_data["messages"] = add_or_update_user_message(
+                    f"\n[BlueNexus Agent Result]\n{universal_result.response}",
+                    form_data["messages"],
+                )
+                log.info("[Universal MCP] Agent completed successfully")
+        elif universal_result.error:
+            log.error(f"[Universal MCP] Agent failed: {universal_result.error}")
+            # Emit error status
+            if event_emitter:
+                await event_emitter({
+                    "type": "status",
+                    "data": {
+                        "action": "error",
+                        "description": f"BlueNexus Agent unavailable: {universal_result.error[:100]}",
+                        "done": True,
+                    },
+                })
+
+    elif tools_dict:
+        # Fallback to local tools when Universal MCP is not available
         mcp_tool_count = sum(1 for t in tools_dict.values() if t.get("type") == "mcp")
-        log.info(f"[MCP] Step 5: Passing {len(tools_dict)} tools to LLM ({mcp_tool_count} MCP tools)")
+        log.info(f"[MCP] Using local tools ({len(tools_dict)} tools, {mcp_tool_count} MCP)")
         log.debug(f"[MCP] All tool names: {list(tools_dict.keys())}")
 
         if metadata.get("params", {}).get("function_calling") == "native":
             # If the function calling is native, then call the tools function calling handler
-            log.info("[MCP] Step 5: Using NATIVE function calling mode")
+            log.info("[MCP] Using NATIVE function calling mode")
             metadata["tools"] = tools_dict
             form_data["tools"] = [
                 {"type": "function", "function": tool.get("spec", {})}
@@ -1708,6 +1826,16 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 sources.extend(flags.get("sources", []))
             except Exception as e:
                 log.exception(e)
+
+    # =========================================================================
+    # DEFERRED IMAGE GENERATION - Runs AFTER Universal MCP Agent
+    # This allows image generation to use data retrieved by the agent.
+    # =========================================================================
+    if features and "image_generation" in features and features["image_generation"]:
+        log.info("[Image Generation] Running deferred image generation (after Universal MCP)")
+        form_data = await chat_image_generation_handler(
+            request, form_data, extra_params, user
+        )
 
     try:
         form_data, flags = await chat_completion_files_handler(

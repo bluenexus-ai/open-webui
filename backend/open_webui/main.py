@@ -1610,6 +1610,17 @@ async def chat_completion(
                     request, form_data, user, metadata, model
                 )
 
+                # Skip LLM call if image-only response (image was generated with agent data)
+                if metadata.get("_image_only_response"):
+                    log.info("[Image Only] Skipping LLM call - image already displayed")
+                    # Return minimal streaming response
+                    async def empty_stream():
+                        yield "data: " + json.dumps({
+                            "choices": [{"delta": {"content": ""}, "finish_reason": "stop"}]
+                        }) + "\n\n"
+                        yield "data: [DONE]\n\n"
+                    return StreamingResponse(empty_stream(), media_type="text/event-stream")
+
                 response = await chat_completion_handler(request, form_data, user)
                 if metadata.get("chat_id") and metadata.get("message_id"):
                     try:

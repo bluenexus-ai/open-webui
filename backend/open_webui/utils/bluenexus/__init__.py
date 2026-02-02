@@ -54,6 +54,11 @@ if TYPE_CHECKING:
         BlueNexusMCPServer,
         BlueNexusMCPServersResponse,
     )
+    from open_webui.utils.bluenexus.universal_mcp import (  # noqa: F401
+        is_universal_mcp_available,
+        call_universal_mcp_agent,
+        UniversalMcpResult,
+    )
     from open_webui.utils.bluenexus.auth import (  # noqa: F401
         refresh_oauth_token,
         OAuthTokenStatusResponse,
@@ -105,6 +110,9 @@ __all__ = [
     "get_bluenexus_mcp_oauth_token",
     "BlueNexusMCPServer",
     "BlueNexusMCPServersResponse",
+    "is_universal_mcp_available",
+    "call_universal_mcp_agent",
+    "UniversalMcpResult",
     "refresh_oauth_token",
     "OAuthTokenStatusResponse",
     "BlueNexusDataClient",
@@ -171,6 +179,14 @@ def __getattr__(name):
     }:
         from open_webui.utils.bluenexus import mcp as _mcp
         return getattr(_mcp, name)
+
+    if name in {
+        "is_universal_mcp_available",
+        "call_universal_mcp_agent",
+        "UniversalMcpResult",
+    }:
+        from open_webui.utils.bluenexus import universal_mcp as _universal_mcp
+        return getattr(_universal_mcp, name)
 
     if name in {"refresh_oauth_token", "OAuthTokenStatusResponse"}:
         from open_webui.utils.bluenexus import auth as _auth
