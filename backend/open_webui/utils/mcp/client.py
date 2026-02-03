@@ -92,8 +92,8 @@ class MCPClient:
                     self._session_context
                 )
 
-                log.debug(f"[MCP Client] Initializing session (timeout: 10s)...")
-                with anyio.fail_after(10):
+                log.debug(f"[MCP Client] Initializing session (timeout: 30s)...")
+                with anyio.fail_after(30):
                     await self.session.initialize()
 
                 self.exit_stack = exit_stack.pop_all()
@@ -242,7 +242,9 @@ class MCPClient:
 
     async def disconnect(self):
         # Clean up and close the session
-        await self.exit_stack.aclose()
+        if self.exit_stack is not None:
+            await self.exit_stack.aclose()
+            self.exit_stack = None
 
     async def __aenter__(self):
         await self.exit_stack.__aenter__()
