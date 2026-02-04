@@ -229,10 +229,18 @@ async def update_default_user_permissions(
 
 @router.get("/user/settings", response_model=Optional[UserSettings])
 async def get_user_settings_by_session_user(user=Depends(get_verified_user)):
-    user = Users.get_user_by_id(user.id)
-    if user:
-        return user.settings
+    import time
+    start_time = time.time()
+    log.info(f"[get_user_settings] START user={user.id}")
+
+    db_user = Users.get_user_by_id(user.id)
+    if db_user:
+        elapsed = time.time() - start_time
+        log.info(f"[get_user_settings] END user={user.id}, has_settings={db_user.settings is not None}, elapsed={elapsed:.3f}s")
+        return db_user.settings
     else:
+        elapsed = time.time() - start_time
+        log.info(f"[get_user_settings] END user={user.id}, user_not_found=True, elapsed={elapsed:.3f}s")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.USER_NOT_FOUND,

@@ -87,6 +87,7 @@ async def call_universal_mcp_agent(
     connection: Optional[str] = None,
     event_emitter: Optional[Callable] = None,
     image_generation_enabled: bool = False,
+    web_search_context: Optional[str] = None,
 ) -> UniversalMcpResult:
     """
     Call the BlueNexus Universal MCP agent with a prompt.
@@ -101,6 +102,7 @@ async def call_universal_mcp_agent(
         connection: Optional filter to specific MCP provider (e.g., "github", "notion")
         event_emitter: Optional callback for status updates
         image_generation_enabled: If True, instruct agent to only retrieve data (not generate images)
+        web_search_context: Optional web search results to include in the prompt
 
     Returns:
         UniversalMcpResult with the agent's response
@@ -156,6 +158,17 @@ async def call_universal_mcp_agent(
 
         # Build the prompt with conversation context
         full_prompt = _build_prompt_with_context(prompt, conversation_history)
+
+        # Include web search context if available
+        if web_search_context:
+            full_prompt = (
+                f"[Web Search Results]\n"
+                f"The following information was retrieved from web search. "
+                f"Use this context to answer the user's question:\n\n"
+                f"{web_search_context}\n\n"
+                f"[User Query]\n{full_prompt}"
+            )
+            log.info(f"[Universal MCP] Including web search context ({len(web_search_context)} chars)")
 
         # If image generation is enabled, instruct agent to only retrieve data
         if image_generation_enabled:

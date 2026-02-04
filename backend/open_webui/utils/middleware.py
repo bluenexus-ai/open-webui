@@ -1751,6 +1751,48 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         # Check if image generation is enabled - if so, tell agent to only retrieve data
         image_gen_enabled = bool(features and features.get("image_generation"))
 
+        # Extract web search context from files (if any)
+        web_search_context = None
+        files = metadata.get("files", [])
+        if files:
+            web_search_parts = []
+            for file_item in files:
+                if file_item.get("type") == "web_search":
+                    # Extract docs if available (bypass embedding mode)
+                    docs = file_item.get("docs", [])
+                    urls = file_item.get("urls", [])
+                    queries = file_item.get("queries", [])
+
+                    if docs:
+                        for doc in docs:
+                            if isinstance(doc, dict):
+                                # Document with metadata (from process_web_search)
+                                content = doc.get("content", doc.get("page_content", doc.get("text", "")))
+                                doc_metadata = doc.get("metadata", {})
+                                source = doc_metadata.get("source", doc_metadata.get("url", doc.get("source", "")))
+                                title = doc_metadata.get("title", "")
+                                if content:
+                                    header = f"Source: {source}" if source else ""
+                                    if title:
+                                        header = f"{title}\n{header}" if header else title
+                                    if header:
+                                        web_search_parts.append(f"{header}\n{content}")
+                                    else:
+                                        web_search_parts.append(content)
+                            elif isinstance(doc, str):
+                                web_search_parts.append(doc)
+
+                    # If no docs but has URLs, mention them
+                    elif urls:
+                        web_search_parts.append(
+                            f"Web search was performed for: {', '.join(queries)}\n"
+                            f"Sources found: {', '.join(urls[:5])}"
+                        )
+
+            if web_search_parts:
+                web_search_context = "\n\n---\n\n".join(web_search_parts)
+                log.info(f"[Universal MCP] Extracted web search context: {len(web_search_context)} chars from {len(web_search_parts)} sources")
+
         # Call Universal MCP agent
         universal_result = await call_universal_mcp_agent(
             user_id=user.id,
@@ -1758,6 +1800,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             conversation_history=conversation_history,
             event_emitter=event_emitter,
             image_generation_enabled=image_gen_enabled,
+            web_search_context=web_search_context,
         )
 
         if universal_result.success and universal_result.response:

@@ -100,6 +100,7 @@
 	export let chatIdProp = '';
 
 	let loading = true;
+	$: console.warn('[Chat] loading state changed to:', loading);
 
 	const eventTarget = new EventTarget();
 	let controlPane;
@@ -161,6 +162,7 @@
 	let params = {};
 
 	$: if (chatIdProp) {
+		console.warn('[Chat] Reactive: chatIdProp changed to:', chatIdProp);
 		navigateHandler();
 	}
 
@@ -180,8 +182,14 @@
 			`chat-input${chatIdProp ? `-${chatIdProp}` : ''}`
 		);
 
-		if (chatIdProp && (await loadChat())) {
+		console.warn('[navigateHandler] chatIdProp=', chatIdProp);
+		const loadChatResult = chatIdProp ? await loadChat() : null;
+		console.warn('[navigateHandler] loadChat result=', loadChatResult);
+
+		console.warn('[navigateHandler] Checking condition: chatIdProp=', chatIdProp, 'loadChatResult=', loadChatResult);
+		if (chatIdProp && loadChatResult) {
 			await tick();
+			console.warn('[navigateHandler] Setting loading=false');
 			loading = false;
 			window.setTimeout(() => scrollToBottom(), 0);
 
@@ -1063,26 +1071,34 @@
 	};
 
 	const loadChat = async () => {
+		console.warn('[loadChat] START chatIdProp=', chatIdProp);
 		chatId.set(chatIdProp);
 
 		if ($temporaryChatEnabled) {
 			temporaryChatEnabled.set(false);
 		}
 
+		console.warn('[loadChat] Calling getChatById...');
 		chat = await getChatById(localStorage.token, $chatId).catch(async (error) => {
+			console.error('[loadChat] getChatById ERROR:', error);
 			await goto('/');
 			return null;
 		});
+		console.warn('[loadChat] getChatById returned:', chat ? 'chat object' : 'null', chat?.id);
 
 		if (chat) {
+			console.warn('[loadChat] Calling getTagsById...');
 			tags = await getTagsById(localStorage.token, $chatId).catch(async (error) => {
+				console.error('[loadChat] getTagsById ERROR:', error);
 				return [];
 			});
+			console.warn('[loadChat] Tags:', tags);
 
 			const chatContent = chat.chat;
+			console.warn('[loadChat] chatContent:', chatContent ? 'exists' : 'null/undefined', chatContent ? Object.keys(chatContent) : []);
 
 			if (chatContent) {
-				console.log(chatContent);
+				console.warn('[loadChat] Processing chatContent...', chatContent);
 
 				selectedModels =
 					(chatContent?.models ?? undefined) !== undefined
@@ -1099,6 +1115,30 @@
 					(chatContent?.history ?? undefined) !== undefined
 						? chatContent.history
 						: convertMessagesToHistory(chatContent.messages);
+
+				console.warn('[loadChat] history set:', {
+					currentId: history.currentId,
+					messagesKeys: Object.keys(history.messages || {}),
+					messageCount: Object.keys(history.messages || {}).length
+				});
+				console.warn('[loadChat] Current message data:', JSON.stringify(history.messages[history.currentId]));
+
+				// Handle malformed currentId - if the current message doesn't have an 'id' property, find a valid one
+				if (history.currentId && history.messages[history.currentId] && !history.messages[history.currentId].id) {
+					console.warn('[loadChat] Current message is malformed, searching for valid message...');
+					const validMessages = Object.values(history.messages).filter((m: any) => m.id && m.role);
+					if (validMessages.length > 0) {
+						// Find messages with no children (leaf nodes) to get the latest in the conversation
+						const leafMessages = validMessages.filter((m: any) => !m.childrenIds || m.childrenIds.length === 0);
+						if (leafMessages.length > 0) {
+							history.currentId = (leafMessages[leafMessages.length - 1] as any).id;
+							console.warn('[loadChat] Updated currentId to valid leaf message:', history.currentId);
+						} else {
+							history.currentId = (validMessages[validMessages.length - 1] as any).id;
+							console.warn('[loadChat] Updated currentId to last valid message:', history.currentId);
+						}
+					}
+				}
 
 				chatTitle.set(chatContent.title);
 
@@ -1134,10 +1174,14 @@
 
 				await tick();
 
+				console.warn('[loadChat] SUCCESS - returning true');
 				return true;
 			} else {
+				console.warn('[loadChat] FAILED - chatContent is null/undefined');
 				return null;
 			}
+		} else {
+			console.warn('[loadChat] FAILED - chat is null/undefined');
 		}
 	};
 

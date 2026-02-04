@@ -88,14 +88,17 @@
 	};
 
 	const setUserSettings = async (cb: () => Promise<void>) => {
+		console.warn('[setUserSettings] START');
 		let userSettings = await getUserSettings(localStorage.token).catch((error) => {
-			console.error(error);
+			console.error('[setUserSettings] getUserSettings error:', error);
 			return null;
 		});
+		console.warn('[setUserSettings] getUserSettings returned:', userSettings ? 'object' : 'null');
 
 		if (!userSettings) {
 			try {
 				userSettings = JSON.parse(localStorage.getItem('settings') ?? '{}');
+				console.warn('[setUserSettings] Loaded from localStorage');
 			} catch (e: unknown) {
 				console.error('Failed to parse settings from localStorage', e);
 				userSettings = {};
@@ -103,37 +106,62 @@
 		}
 
 		if (userSettings?.ui) {
+			console.warn('[setUserSettings] Setting ui settings');
 			settings.set(userSettings.ui);
 		}
 
+		console.warn('[setUserSettings] About to call callback, cb exists:', !!cb);
 		if (cb) {
-			await cb();
+			try {
+				console.warn('[setUserSettings] Calling callback NOW');
+				await cb();
+				console.warn('[setUserSettings] Callback completed successfully');
+			} catch (cbError) {
+				console.error('[setUserSettings] Callback threw error:', cbError);
+				throw cbError;
+			}
 		}
+		console.warn('[setUserSettings] END');
 	};
 
 	const setModels = async () => {
-		models.set(
-			await getModels(
+		console.warn('[setModels] START');
+		try {
+			const modelsData = await getModels(
 				localStorage.token,
 				$config?.features?.enable_direct_connections ? ($settings?.directConnections ?? null) : null
-			)
-		);
+			);
+			console.warn('[setModels] Got models:', modelsData?.length || 0);
+			models.set(modelsData);
+			console.warn('[setModels] END');
+		} catch (error) {
+			console.error('[setModels] Error:', error);
+			throw error;
+		}
 	};
 
 	const setToolServers = async () => {
-		let toolServersData = await getToolServersData($settings?.toolServers ?? []);
-		toolServersData = toolServersData.filter((data) => {
-			if (!data || data.error) {
-				toast.error(
-					$i18n.t(`Failed to connect to {{URL}} OpenAPI tool server`, {
-						URL: data?.url
-					})
-				);
-				return false;
-			}
-			return true;
-		});
-		toolServers.set(toolServersData);
+		console.warn('[setToolServers] START');
+		try {
+			let toolServersData = await getToolServersData($settings?.toolServers ?? []);
+			console.warn('[setToolServers] Got toolServersData:', toolServersData?.length || 0);
+			toolServersData = toolServersData.filter((data) => {
+				if (!data || data.error) {
+					toast.error(
+						$i18n.t(`Failed to connect to {{URL}} OpenAPI tool server`, {
+							URL: data?.url
+						})
+					);
+					return false;
+				}
+				return true;
+			});
+			toolServers.set(toolServersData);
+			console.warn('[setToolServers] END');
+		} catch (error) {
+			console.error('[setToolServers] Error:', error);
+			throw error;
+		}
 	};
 
 	const setBanners = async () => {
@@ -176,24 +204,36 @@
 	};
 
 	onMount(async () => {
+		console.warn('[Layout] onMount START');
 		if ($user === undefined || $user === null) {
+			console.warn('[Layout] User not found, redirecting to /auth');
 			await goto('/auth');
 			return;
 		}
 		if (!['user', 'admin'].includes($user?.role)) {
+			console.warn('[Layout] User role not valid:', $user?.role);
 			return;
 		}
 
+		console.warn('[Layout] Starting parallel init...');
 		clearChatInputStorage();
-		await Promise.all([
-			checkLocalDBChats(),
-			setBanners(),
-			setTools(),
-			setBluenexusMcpServers(),
-			setUserSettings(async () => {
-				await Promise.all([setModels(), setToolServers()]);
-			})
-		]);
+		try {
+			await Promise.all([
+				checkLocalDBChats().then(() => console.warn('[Layout] checkLocalDBChats done')).catch(e => { console.error('[Layout] checkLocalDBChats error:', e); throw e; }),
+				setBanners().then(() => console.warn('[Layout] setBanners done')).catch(e => { console.error('[Layout] setBanners error:', e); throw e; }),
+				setTools().then(() => console.warn('[Layout] setTools done')).catch(e => { console.error('[Layout] setTools error:', e); throw e; }),
+				setBluenexusMcpServers().then(() => console.warn('[Layout] setBluenexusMcpServers done')).catch(e => { console.error('[Layout] setBluenexusMcpServers error:', e); throw e; }),
+				setUserSettings(async () => {
+					console.warn('[Layout] setUserSettings callback - loading models and tool servers...');
+					await Promise.all([setModels(), setToolServers()]);
+					console.warn('[Layout] setUserSettings callback done');
+				}).then(() => console.warn('[Layout] setUserSettings done')).catch(e => { console.error('[Layout] setUserSettings error:', e); throw e; })
+			]);
+			console.warn('[Layout] All parallel init done');
+		} catch (initError) {
+			console.error('[Layout] Promise.all FAILED with error:', initError);
+			// Continue anyway to show UI with partial data
+		}
 
 		// Helper function to check if the pressed keys match the shortcut definition
 		const isShortcutMatch = (event: KeyboardEvent, shortcut): boolean => {
@@ -320,6 +360,7 @@
 		}
 		await tick();
 
+		console.warn('[Layout] Setting loaded=true');
 		loaded = true;
 	});
 
