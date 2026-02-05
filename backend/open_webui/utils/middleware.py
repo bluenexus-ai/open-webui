@@ -1325,18 +1325,19 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     mcp_clients = {}
     mcp_tools_dict = {}
 
+    # Track if user explicitly selected MCP servers - if so, use local ReAct instead of Universal MCP
+    user_selected_mcp_servers = False
+
     if tool_ids:
         log.info(f"[MCP] Processing {len(tool_ids)} tool_ids: {tool_ids}")
 
-        # Check if Universal MCP is available - if so, skip individual BlueNexus MCP server loading
-        # Universal MCP handles all BlueNexus providers through a single agent
-        from open_webui.utils.bluenexus.universal_mcp import is_universal_mcp_available
-        if is_universal_mcp_available(user.id):
-            # Filter out BlueNexus MCP tool_ids - they're handled by Universal MCP
-            bluenexus_mcp_count = sum(1 for tid in tool_ids if tid.startswith("bluenexus_mcp:"))
-            if bluenexus_mcp_count > 0:
-                log.info(f"[Universal MCP] Skipping {bluenexus_mcp_count} individual BlueNexus MCP servers - Universal MCP will handle all tools")
-                tool_ids = [tid for tid in tool_ids if not tid.startswith("bluenexus_mcp:")]
+        # Check if user explicitly selected any MCP servers (BlueNexus or local)
+        bluenexus_mcp_count = sum(1 for tid in tool_ids if tid.startswith("bluenexus_mcp:"))
+        local_mcp_count = sum(1 for tid in tool_ids if tid.startswith("server:mcp:"))
+
+        if bluenexus_mcp_count > 0 or local_mcp_count > 0:
+            user_selected_mcp_servers = True
+            log.info(f"[MCP] User explicitly selected {bluenexus_mcp_count} BlueNexus MCP + {local_mcp_count} local MCP servers - will use local ReAct agent")
 
         # Count MCP servers to load
         mcp_server_ids = [tid for tid in tool_ids if tid.startswith("bluenexus_mcp:") or tid.startswith("server:mcp:")]
@@ -1728,16 +1729,25 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # =========================================================================
     # UNIVERSAL MCP AGENT - Replaces local ReACT agent
-    # When BlueNexus Universal MCP is available, delegate all tool execution
-    # to BlueNexus. This provides access to all connected MCP providers
-    # (GitHub, Notion, Slack, etc.) through a single agent.
+    # When BlueNexus Universal MCP is available AND user hasn't explicitly
+    # selected specific MCP servers, delegate all tool execution to BlueNexus.
+    # This provides access to all connected MCP providers through a single agent.
+    #
+    # If user explicitly selects MCP servers in the UI, use local ReAct agent
+    # with those specific tools instead, giving user more control.
     # =========================================================================
     from open_webui.utils.bluenexus.universal_mcp import (
         is_universal_mcp_available,
         call_universal_mcp_agent,
     )
 
-    use_universal_mcp = is_universal_mcp_available(user.id)
+    # Use Universal MCP only if:
+    # 1. Universal MCP is available (user authenticated with BlueNexus)
+    # 2. User did NOT explicitly select specific MCP servers
+    use_universal_mcp = is_universal_mcp_available(user.id) and not user_selected_mcp_servers
+
+    if user_selected_mcp_servers:
+        log.info("[MCP] User selected specific MCP servers - using local ReAct agent instead of Universal MCP")
 
     if use_universal_mcp:
         log.info("[Universal MCP] Using BlueNexus Universal MCP agent")
@@ -1849,7 +1859,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 })
 
     elif tools_dict:
-        # Fallback to local tools when Universal MCP is not available
+        # Use local ReAct agent when:
+        # 1. User explicitly selected MCP servers (wants specific tools)
+        # 2. Universal MCP is not available (not authenticated with BlueNexus)
         mcp_tool_count = sum(1 for t in tools_dict.values() if t.get("type") == "mcp")
         log.info(f"[MCP] Using local tools ({len(tools_dict)} tools, {mcp_tool_count} MCP)")
         log.debug(f"[MCP] All tool names: {list(tools_dict.keys())}")
