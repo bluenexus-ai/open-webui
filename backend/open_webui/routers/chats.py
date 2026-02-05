@@ -481,50 +481,11 @@ async def get_shared_chat_by_id(share_id: str, user=Depends(get_verified_user)):
 
 @router.get("/{id}", response_model=Optional[ChatResponse])
 async def get_chat_by_id(id: str, user=Depends(get_verified_user)):
-    import time
-    import json
-    start_time = time.time()
-    log.info(f"[get_chat_by_id] START chat_id={id}, user={user.id}")
     try:
         repo = get_chat_repository(user.id)
         chat = await repo.get_by_id(id, user.id)
 
         if chat:
-            chat_content = chat.get("chat", {})
-            has_history = "history" in chat_content
-            has_messages = "messages" in chat_content
-            history_obj = chat_content.get("history", {})
-            history_messages = history_obj.get("messages", {}) if history_obj else {}
-            history_messages_type = type(history_messages).__name__
-
-            # Count messages
-            messages_count = 0
-            if isinstance(history_messages, dict):
-                messages_count = len(history_messages)
-            elif isinstance(history_messages, list):
-                messages_count = len(history_messages)
-
-            # Log structure details
-            log.info(f"[get_chat_by_id] DATA chat_id={id}, title={chat.get('title', 'N/A')[:50]}, "
-                     f"has_history={has_history}, has_messages={has_messages}, "
-                     f"history_messages_type={history_messages_type}, messages_count={messages_count}")
-
-            # Log top-level keys
-            log.info(f"[get_chat_by_id] KEYS chat_id={id}, top_keys={list(chat.keys())}, "
-                     f"chat_keys={list(chat_content.keys()) if chat_content else []}")
-
-            # Log full response (truncated for large data)
-            try:
-                chat_json = json.dumps(chat, default=str)
-                if len(chat_json) > 2000:
-                    log.info(f"[get_chat_by_id] RESPONSE (truncated) chat_id={id}: {chat_json[:2000]}...")
-                else:
-                    log.info(f"[get_chat_by_id] RESPONSE chat_id={id}: {chat_json}")
-            except Exception as json_err:
-                log.info(f"[get_chat_by_id] RESPONSE serialization failed: {json_err}")
-
-            elapsed = time.time() - start_time
-            log.info(f"[get_chat_by_id] END chat_id={id}, elapsed={elapsed:.3f}s")
             return ChatResponse(**chat)
 
         raise HTTPException(
@@ -998,14 +959,9 @@ async def get_chat_pinned_status_by_id(id: str, user=Depends(get_verified_user))
 
 @router.get("/{id}/tags", response_model=list[TagModel])
 async def get_chat_tags_by_id(id: str, user=Depends(get_verified_user)):
-    import time
-    start_time = time.time()
-    log.info(f"[get_chat_tags_by_id] START chat_id={id}, user={user.id}")
     try:
         repo = get_chat_repository(user.id)
-        log.info(f"[get_chat_tags_by_id] calling repo.get_tags...")
         tag_names = await repo.get_tags(id, user.id)
-        log.info(f"[get_chat_tags_by_id] repo.get_tags returned: {tag_names}, elapsed={time.time() - start_time:.3f}s")
 
         if tag_names is None:
             raise HTTPException(
@@ -1013,15 +969,11 @@ async def get_chat_tags_by_id(id: str, user=Depends(get_verified_user)):
             )
 
         tags = []
-        log.info(f"[get_chat_tags_by_id] processing {len(tag_names) if tag_names else 0} tag names...")
         for tag_name in tag_names:
-            log.info(f"[get_chat_tags_by_id] looking up tag: {tag_name}")
             tag = Tags.get_tag_by_name_and_user_id(tag_name, user.id)
             if tag:
                 tags.append(tag)
 
-        elapsed = time.time() - start_time
-        log.info(f"[get_chat_tags_by_id] END chat_id={id}, tags_count={len(tags)}, elapsed={elapsed:.3f}s")
         return tags
 
     except HTTPException:

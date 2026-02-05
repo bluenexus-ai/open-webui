@@ -1396,12 +1396,7 @@ if audit_level != AuditLevel.NONE:
 async def get_models(
     request: Request, refresh: bool = False, user=Depends(get_verified_user)
 ):
-    import time
-    start_time = time.time()
-    log.info(f"[get_models] START user={user.id}, refresh={refresh}")
-
     all_models = await get_all_models(request, refresh=refresh, user=user)
-    log.info(f"[get_models] get_all_models returned {len(all_models)} models, elapsed={time.time() - start_time:.3f}s")
 
     models = []
     for model in all_models:
@@ -1448,8 +1443,6 @@ async def get_models(
     log.debug(
         f"/api/models returned filtered models accessible to the user: {json.dumps([model.get('id') for model in models])}"
     )
-    elapsed = time.time() - start_time
-    log.info(f"[get_models] END user={user.id}, models_count={len(models)}, elapsed={elapsed:.3f}s")
     return {"data": models}
 
 
@@ -1823,23 +1816,17 @@ async def list_tasks_endpoint(request: Request, user=Depends(get_verified_user))
 async def list_tasks_by_chat_id_endpoint(
     request: Request, chat_id: str, user=Depends(get_verified_user)
 ):
-    import time
-    start_time = time.time()
-    log.info(f"[list_tasks_by_chat_id] START chat_id={chat_id}, user={user.id}")
     # Use appropriate storage based on config
     if is_bluenexus_data_storage_enabled():
         chat = await bluenexus_get_chat_by_id(user.id, chat_id)
     else:
         chat = Chats.get_chat_by_id_and_user_id(chat_id, user.id)
     if chat is None:
-        elapsed = time.time() - start_time
-        log.info(f"[list_tasks_by_chat_id] END chat_id={chat_id}, chat_not_found=True, elapsed={elapsed:.3f}s")
         return {"task_ids": []}
 
     task_ids = await list_task_ids_by_item_id(request.app.state.redis, chat_id)
 
-    elapsed = time.time() - start_time
-    log.info(f"[list_tasks_by_chat_id] END chat_id={chat_id}, task_ids_count={len(task_ids)}, elapsed={elapsed:.3f}s")
+    log.debug(f"Task IDs for chat {chat_id}: {task_ids}")
     return {"task_ids": task_ids}
 
 
