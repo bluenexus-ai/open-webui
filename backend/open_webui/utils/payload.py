@@ -206,6 +206,9 @@ def convert_messages_openai_to_ollama(messages: list[dict]) -> list[dict]:
     ollama_messages = []
 
     for message in messages:
+        # Skip malformed messages without role
+        if not message.get("role"):
+            continue
         # Initialize the new message structure with the role
         new_message = {"role": message["role"]}
 

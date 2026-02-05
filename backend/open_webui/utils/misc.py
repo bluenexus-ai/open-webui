@@ -61,15 +61,16 @@ def get_message_list(messages_map, message_id):
 def get_messages_content(messages: list[dict]) -> str:
     return "\n".join(
         [
-            f"{message['role'].upper()}: {get_content_from_message(message)}"
+            f"{message.get('role', 'unknown').upper()}: {get_content_from_message(message)}"
             for message in messages
+            if message.get("role")  # Skip malformed messages without role
         ]
     )
 
 
 def get_last_user_message_item(messages: list[dict]) -> Optional[dict]:
     for message in reversed(messages):
-        if message["role"] == "user":
+        if message.get("role") == "user":
             return message
     return None
 
@@ -93,27 +94,27 @@ def get_last_user_message(messages: list[dict]) -> Optional[str]:
 
 def get_last_assistant_message_item(messages: list[dict]) -> Optional[dict]:
     for message in reversed(messages):
-        if message["role"] == "assistant":
+        if message.get("role") == "assistant":
             return message
     return None
 
 
 def get_last_assistant_message(messages: list[dict]) -> Optional[str]:
     for message in reversed(messages):
-        if message["role"] == "assistant":
+        if message.get("role") == "assistant":
             return get_content_from_message(message)
     return None
 
 
 def get_system_message(messages: list[dict]) -> Optional[dict]:
     for message in messages:
-        if message["role"] == "system":
+        if message.get("role") == "system":
             return message
     return None
 
 
 def remove_system_message(messages: list[dict]) -> list[dict]:
-    return [message for message in messages if message["role"] != "system"]
+    return [message for message in messages if message.get("role") != "system"]
 
 
 def pop_system_message(messages: list[dict]) -> tuple[Optional[dict], list[dict]]:
@@ -138,7 +139,7 @@ def update_message_content(message: dict, content: str, append: bool = True) -> 
 
 def replace_system_message_content(content: str, messages: list[dict]) -> dict:
     for message in messages:
-        if message["role"] == "system":
+        if message.get("role") == "system":
             message["content"] = content
             break
     return messages
@@ -188,7 +189,7 @@ def prepend_to_first_user_message_content(
     content: str, messages: list[dict]
 ) -> list[dict]:
     for message in messages:
-        if message["role"] == "user":
+        if message.get("role") == "user":
             message = update_message_content(message, content, append=False)
             break
     return messages

@@ -755,7 +755,7 @@ async def chat_image_generation_handler(
     # Check if agent data is available for image generation
     agent_data_for_image = metadata.get("_agent_data_for_image")
     if agent_data_for_image:
-        log.info(f"[Image Generation] Using agent data for prompt: {agent_data_for_image[:100]}...")
+        log.info(f"[Image Generation] Using agent data for prompt ({len(agent_data_for_image)} chars)")
 
     system_message_content = ""
     if len(input_images) == 0:
@@ -837,13 +837,16 @@ async def chat_image_generation_handler(
             if agent_data_for_image:
                 # When agent data was used, suppress ALL text output - just show the image
                 # Replace all messages with minimal instruction to output nothing
+                log.info(f"[Image Generation] agent_data_for_image is truthy, setting _image_only_response=True")
                 form_data["messages"] = [
                     {"role": "system", "content": "Output ONLY: ✓"},
                     {"role": "user", "content": "Acknowledge."}
                 ]
                 system_message_content = ""  # No additional system message needed
                 metadata["_image_only_response"] = True
+                log.info(f"[Image Generation] _image_only_response is now: {metadata.get('_image_only_response')}")
             else:
+                log.info(f"[Image Generation] agent_data_for_image is falsy: {agent_data_for_image}")
                 system_message_content = "<context>The requested image has been created and is now being shown to the user. Let them know that it has been generated.</context>"
         except Exception as e:
             log.exception(e)
@@ -1303,11 +1306,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         # Remove duplicate files based on their content
         files = list({json.dumps(f, sort_keys=True): f for f in files}.values())
 
-    metadata = {
-        **metadata,
-        "tool_ids": tool_ids,
-        "files": files,
-    }
+    # Update metadata in-place to preserve reference for extra_params["__metadata__"]
+    metadata["tool_ids"] = tool_ids
+    metadata["files"] = files
     form_data["metadata"] = metadata
 
     # Server side tools
@@ -1816,6 +1817,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     or "i need a few details" in response_lower
                 )
 
+                log.info(f"[Universal MCP] is_question={is_question}, response preview: {universal_result.response[:200] if universal_result.response else 'None'}...")
                 if is_question:
                     # Agent asked questions instead of fetching data - don't use for image
                     log.warning("[Universal MCP] Agent returned questions instead of data, skipping image generation")
@@ -1825,7 +1827,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 else:
                     # For image generation: store data in metadata, don't show text
                     metadata["_agent_data_for_image"] = universal_result.response
-                    log.info("[Universal MCP] Agent data stored for image generation (no text output)")
+                    log.info(f"[Universal MCP] Agent data stored for image generation, metadata id={id(metadata)}")
             else:
                 # Normal mode: add agent result to messages
                 form_data["messages"] = add_or_update_user_message(
@@ -1875,7 +1877,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # This allows image generation to use data retrieved by the agent.
     # =========================================================================
     if features and "image_generation" in features and features["image_generation"]:
-        log.info("[Image Generation] Running deferred image generation (after Universal MCP)")
         form_data = await chat_image_generation_handler(
             request, form_data, extra_params, user
         )
@@ -1889,7 +1890,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         log.exception(e)
 
     # If context is not empty, insert it into the messages
-    if len(sources) > 0:
+    # Skip RAG context injection if image-only response (messages were replaced with minimal content)
+    if len(sources) > 0 and not metadata.get("_image_only_response"):
         context_string = ""
         citation_idx_map = {}
 

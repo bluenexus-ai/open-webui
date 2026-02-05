@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS.get("MCP", SRC_LOG_LEVELS.get("MAIN", logging.INFO)))
 
 # Universal MCP Constants
-UNIVERSAL_MCP_ENDPOINT = "/api/v1/mcp"
+UNIVERSAL_MCP_ENDPOINT = "/mcp"
 UNIVERSAL_MCP_TOOL_NAME = "use-agent"
 
 
@@ -205,7 +205,7 @@ async def call_universal_mcp_agent(
         result = await mcp_client.call_tool(
             UNIVERSAL_MCP_TOOL_NAME,
             args,
-            timeout=300.0,  # 5 minute timeout for complex tasks
+            timeout=600.0,  # 10 minute timeout for complex tasks
         )
 
         # Emit complete status
