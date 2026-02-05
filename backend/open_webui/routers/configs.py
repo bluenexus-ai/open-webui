@@ -383,23 +383,10 @@ async def get_bluenexus_mcp_servers(
     """
     Get available BlueNexus MCP servers for the authenticated user.
     Requires BlueNexus OAuth connection with mcp-proxy scope.
-
-    Note: When Universal MCP is available, returns empty list since
-    all tools are handled automatically by the Universal MCP agent.
     """
-    # Check if Universal MCP is available - if so, hide individual MCP servers
-    # since they're all handled by the Universal MCP agent
-    try:
-        from open_webui.utils.bluenexus.universal_mcp import is_universal_mcp_available
-        if is_universal_mcp_available(user.id):
-            log.debug(f"[BlueNexus MCP] Universal MCP available - hiding individual servers for user {user.id}")
-            return BlueNexusMCPServersResponse(data=[])
-    except ImportError:
-        pass
-
-    log.debug(f"[BlueNexus MCP] Request received for user {user.id} (role={user.role})")
+    log.info(f"[BlueNexus MCP] Request received for user {user.id} (role={user.role})")
     result = await _get_bluenexus_mcp_servers_impl(user.id)
-    log.debug(f"[BlueNexus MCP] Returning {len(result.data)} servers for user {user.id}")
+    log.info(f"[BlueNexus MCP] Returning {len(result.data)} servers for user {user.id}")
     return result
 
 
