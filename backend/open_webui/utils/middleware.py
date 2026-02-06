@@ -81,7 +81,7 @@ from open_webui.models.users import UserModel
 from open_webui.models.functions import Functions
 from open_webui.models.models import Models
 
-from open_webui.retrieval.utils import get_sources_from_items
+from open_webui.retrieval.utils import get_sources_from_items, get_all_items_from_collections
 
 
 from open_webui.utils.chat import generate_chat_completion
@@ -595,6 +595,8 @@ async def chat_web_search_handler(
             files = form_data.get("files", [])
 
             if results.get("collection_names"):
+                web_docs = results.get("docs", [])
+                log.info(f"[Web Search] collection_names path: {len(web_docs)} docs returned from process_web_search")
                 for col_idx, collection_name in enumerate(
                     results.get("collection_names")
                 ):
@@ -605,6 +607,7 @@ async def chat_web_search_handler(
                             "type": "web_search",
                             "urls": results["filenames"],
                             "queries": queries,
+                            "docs": web_docs,
                         }
                     )
             elif results.get("docs"):
@@ -1304,7 +1307,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
         # files = [*files, *[{"type": "url", "url": url, "name": url} for url in urls]]
         # Remove duplicate files based on their content
-        files = list({json.dumps(f, sort_keys=True): f for f in files}.values())
+        # Use default=str to handle non-serializable types in web search doc metadata
+        files = list({json.dumps(f, sort_keys=True, default=str): f for f in files}.values())
 
     # Update metadata in-place to preserve reference for extra_params["__metadata__"]
     metadata["tool_ids"] = tool_ids
@@ -1762,25 +1766,27 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         # Check if image generation is enabled - if so, tell agent to only retrieve data
         image_gen_enabled = bool(features and features.get("image_generation"))
 
-        # Extract web search context from files (if any)
+        # Extract web search context by querying the vector DB directly
+        # This runs BEFORE the agent so it has the actual content
         web_search_context = None
         files = metadata.get("files", [])
         if files:
             web_search_parts = []
             for file_item in files:
                 if file_item.get("type") == "web_search":
-                    # Extract docs if available (bypass embedding mode)
                     docs = file_item.get("docs", [])
                     urls = file_item.get("urls", [])
-                    queries = file_item.get("queries", [])
+                    queries_list = file_item.get("queries", [])
+                    collection_name = file_item.get("collection_name")
 
                     if docs:
+                        # Bypass embedding mode - docs are already available
+                        log.info(f"[Universal MCP] Using {len(docs)} docs from bypass mode")
                         for doc in docs:
                             if isinstance(doc, dict):
-                                # Document with metadata (from process_web_search)
                                 content = doc.get("content", doc.get("page_content", doc.get("text", "")))
                                 doc_metadata = doc.get("metadata", {})
-                                source = doc_metadata.get("source", doc_metadata.get("url", doc.get("source", "")))
+                                source = doc_metadata.get("source", doc_metadata.get("url", ""))
                                 title = doc_metadata.get("title", "")
                                 if content:
                                     header = f"Source: {source}" if source else ""
@@ -1793,15 +1799,49 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             elif isinstance(doc, str):
                                 web_search_parts.append(doc)
 
-                    # If no docs but has URLs, mention them
-                    elif urls:
+                    elif collection_name:
+                        # Embedding mode - query vector DB to get the content
+                        log.info(f"[Universal MCP] Querying vector DB for web search collection: {collection_name}")
+                        try:
+                            loop = asyncio.get_running_loop()
+                            query_result = await loop.run_in_executor(
+                                None,
+                                lambda cn=collection_name: get_all_items_from_collections([cn])
+                            )
+                            if query_result and "documents" in query_result:
+                                doc_lists = query_result.get("documents", [])
+                                meta_lists = query_result.get("metadatas", [])
+                                for doc_list, meta_list in zip(doc_lists, meta_lists or [[]]):
+                                    for idx, doc_text in enumerate(doc_list):
+                                        if doc_text:
+                                            doc_meta = meta_list[idx] if idx < len(meta_list) and meta_list else {}
+                                            source = (doc_meta or {}).get("source", "")
+                                            title = (doc_meta or {}).get("title", "")
+                                            header = f"Source: {source}" if source else ""
+                                            if title:
+                                                header = f"{title}\n{header}" if header else title
+                                            if header:
+                                                web_search_parts.append(f"{header}\n{doc_text}")
+                                            else:
+                                                web_search_parts.append(doc_text)
+                                log.info(f"[Universal MCP] Retrieved {len(web_search_parts)} chunks from vector DB")
+                        except Exception as e:
+                            log.exception(f"[Universal MCP] Error querying vector DB for web search: {e}")
+
+                    # Fallback to URL listing
+                    if not web_search_parts and urls:
+                        log.warning("[Universal MCP] No content retrieved, falling back to URL listing")
                         web_search_parts.append(
-                            f"Web search was performed for: {', '.join(queries)}\n"
+                            f"Web search was performed for: {', '.join(queries_list)}\n"
                             f"Sources found: {', '.join(urls[:5])}"
                         )
 
             if web_search_parts:
                 web_search_context = "\n\n---\n\n".join(web_search_parts)
+                # Limit context size to avoid overwhelming the agent prompt
+                max_context_chars = 50000
+                if len(web_search_context) > max_context_chars:
+                    web_search_context = web_search_context[:max_context_chars] + "\n\n[Content truncated due to size]"
                 log.info(f"[Universal MCP] Extracted web search context: {len(web_search_context)} chars from {len(web_search_parts)} sources")
 
         # Call Universal MCP agent
@@ -1839,12 +1879,17 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     metadata["_agent_data_for_image"] = universal_result.response
                     log.info(f"[Universal MCP] Agent data stored for image generation, metadata id={id(metadata)}")
             else:
-                # Normal mode: add agent result to messages
-                form_data["messages"] = add_or_update_user_message(
-                    f"\n[BlueNexus Agent Result]\n{universal_result.response}",
-                    form_data["messages"],
-                )
+                # Normal mode: store agent result for system message injection (after RAG)
+                metadata["_agent_result"] = universal_result.response
                 log.info("[Universal MCP] Agent completed successfully")
+
+            # Remove web_search files from metadata so chat_completion_files_handler
+            # doesn't redundantly re-query the same vector DB collections
+            if metadata.get("files"):
+                metadata["files"] = [
+                    f for f in metadata["files"]
+                    if f.get("type") != "web_search"
+                ]
         elif universal_result.error:
             log.error(f"[Universal MCP] Agent failed: {universal_result.error}")
             # Emit error status
@@ -1965,6 +2010,20 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     "hidden": True,
                 },
             }
+        )
+
+    # Inject agent result into system message (after RAG so it doesn't get overwritten)
+    agent_result = metadata.get("_agent_result")
+    if agent_result:
+        agent_instruction = (
+            "\n\n[IMPORTANT: BlueNexus Agent Task Result]\n"
+            "The BlueNexus AI Agent has already executed the user's request and completed the task. "
+            "Present the agent's results below to the user. "
+            "Do NOT claim you cannot perform actions that the agent has already completed.\n\n"
+            f"{agent_result}"
+        )
+        form_data["messages"] = add_or_update_system_message(
+            agent_instruction, form_data["messages"], append=True
         )
 
     # Inject current date/time context into system message
