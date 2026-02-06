@@ -1283,6 +1283,11 @@ class OAuthManager:
         client = self.get_client(provider)
         if client is None:
             raise HTTPException(404)
+
+        # Debug logging for OAuth login - helps diagnose state/session issues
+        if provider == "bluenexus":
+            log.info(f"BlueNexus OAuth login initiated, redirect_uri={redirect_uri}")
+
         return await client.authorize_redirect(request, redirect_uri)
 
     async def handle_callback(self, request, provider, response):
@@ -1292,6 +1297,17 @@ class OAuthManager:
         error_message = None
         try:
             client = self.get_client(provider)
+
+            # Debug logging for OAuth callback - helps diagnose state/session issues
+            if provider == "bluenexus":
+                session = request.session if hasattr(request, "session") else {}
+                callback_state = request.query_params.get("state", "missing")
+                callback_code = request.query_params.get("code", "missing")
+                log.debug(
+                    f"BlueNexus OAuth callback: state={callback_state[:20] if len(callback_state) > 20 else callback_state}..., "
+                    f"code={'present' if callback_code != 'missing' else 'missing'}, "
+                    f"session_keys={list(session.keys()) if session else 'empty'}"
+                )
             try:
                 token = await client.authorize_access_token(request)
             except Exception as e:
@@ -1302,7 +1318,9 @@ class OAuthManager:
                     detailed_error,
                     exc_info=True,
                 )
-                raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
+                # Use the detailed error message instead of generic INVALID_CRED
+                # This helps users understand why OAuth failed (e.g., state mismatch, expired session)
+                raise HTTPException(400, detail=detailed_error)
 
             # Try to get userinfo from the token first, some providers include it there
             user_data: UserInfo = token.get("userinfo")
