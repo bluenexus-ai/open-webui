@@ -125,7 +125,10 @@
 			<div class=" flex justify-between dark:text-gray-300 px-5 pb-0.5">
 				<div class=" text-base font-medium self-center flex items-center gap-2">
 					{$i18n.t('BlueNexus MCP Servers')}
-					<span class="text-blue-500 text-xs font-medium px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 rounded">BN</span>
+					<span
+						class="text-blue-500 text-xs font-medium px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 rounded"
+						>BN</span
+					>
 				</div>
 			</div>
 
@@ -137,7 +140,9 @@
 					{#each selectedBluenexusMcpServers as mcpServer}
 						<Collapsible buttonClassName="w-full" chevron>
 							<div>
-								<div class="text-sm font-medium dark:text-gray-100 text-gray-800 flex items-center gap-2">
+								<div
+									class="text-sm font-medium dark:text-gray-100 text-gray-800 flex items-center gap-2"
+								>
 									{mcpServer?.info?.title ?? mcpServer?.slug}
 								</div>
 

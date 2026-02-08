@@ -104,7 +104,9 @@ class MCPClientPool:
                         await conn.client.disconnect()
                         cleaned += 1
                     except Exception as e:
-                        log.warning(f"[MCPPool] Error disconnecting expired connection: {e}")
+                        log.warning(
+                            f"[MCPPool] Error disconnecting expired connection: {e}"
+                        )
                     connections.remove(conn)
 
                 if not connections:
@@ -137,7 +139,9 @@ class MCPClientPool:
                             conn.in_use = True
                             conn.last_used = time.time()
                             conn.use_count += 1
-                            log.debug(f"[MCPPool] Reusing connection for {server_id} (use_count={conn.use_count})")
+                            log.debug(
+                                f"[MCPPool] Reusing connection for {server_id} (use_count={conn.use_count})"
+                            )
                             return conn.client, False
 
                 # Check if we can create a new connection
@@ -149,10 +153,14 @@ class MCPClientPool:
             # Max connections reached - wait and retry
             elapsed = time.time() - wait_start
             if elapsed >= max_wait_seconds:
-                log.error(f"[MCPPool] Timeout waiting for connection to {server_id} after {elapsed:.1f}s")
+                log.error(
+                    f"[MCPPool] Timeout waiting for connection to {server_id} after {elapsed:.1f}s"
+                )
                 raise TimeoutError(f"Timeout waiting for MCP connection to {server_id}")
 
-            log.debug(f"[MCPPool] Max connections ({self._max_per_server}) reached for {server_id}, waiting...")
+            log.debug(
+                f"[MCPPool] Max connections ({self._max_per_server}) reached for {server_id}, waiting..."
+            )
             await asyncio.sleep(0.5)  # Wait before retrying
 
         # Create new connection outside lock to avoid blocking other operations
@@ -207,7 +215,9 @@ class MCPClientPool:
                         try:
                             await conn.client.disconnect()
                         except Exception as e:
-                            log.warning(f"[MCPPool] Error disconnecting removed connection: {e}")
+                            log.warning(
+                                f"[MCPPool] Error disconnecting removed connection: {e}"
+                            )
                         log.debug(f"[MCPPool] Removed connection for {server_id}")
                         return
 
@@ -221,7 +231,9 @@ class MCPClientPool:
                         await conn.client.disconnect()
                         total += 1
                     except Exception as e:
-                        log.warning(f"[MCPPool] Error closing connection for {server_id}: {e}")
+                        log.warning(
+                            f"[MCPPool] Error closing connection for {server_id}: {e}"
+                        )
             self._pools.clear()
             log.info(f"[MCPPool] Closed {total} connections")
 

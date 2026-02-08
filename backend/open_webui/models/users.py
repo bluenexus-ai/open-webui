@@ -407,7 +407,9 @@ class UsersTable:
     def delete_user_by_id(self, id: str) -> bool:
         try:
             # Import inside function to avoid circular import
-            from open_webui.utils.bluenexus.chat_ops import delete_chats_by_user_id as bluenexus_delete_chats
+            from open_webui.utils.bluenexus.chat_ops import (
+                delete_chats_by_user_id as bluenexus_delete_chats,
+            )
 
             # Remove User from Groups
             Groups.remove_user_from_all_groups(id)

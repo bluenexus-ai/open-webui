@@ -2199,10 +2199,11 @@ async def process_web_search(
                 log.debug(f"error saving docs: {e}")
 
             serialized_docs = [
-                {"content": doc.page_content, "metadata": doc.metadata}
-                for doc in docs
+                {"content": doc.page_content, "metadata": doc.metadata} for doc in docs
             ]
-            log.info(f"[Web Search] Embedding path returning {len(serialized_docs)} docs, total content chars: {sum(len(d.get('content', '')) for d in serialized_docs)}")
+            log.info(
+                f"[Web Search] Embedding path returning {len(serialized_docs)} docs, total content chars: {sum(len(d.get('content', '')) for d in serialized_docs)}"
+            )
 
             return {
                 "status": True,

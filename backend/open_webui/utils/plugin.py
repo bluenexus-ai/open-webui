@@ -318,11 +318,15 @@ def install_tool_and_function_dependencies(user_id: str = None):
                 # Only install requirements for admin tools
                 user_data = tool.get("user", {})
                 if user_data and user_data.get("role") == "admin":
-                    frontmatter = extract_frontmatter(replace_imports(tool.get("content", "")))
+                    frontmatter = extract_frontmatter(
+                        replace_imports(tool.get("content", ""))
+                    )
                     if dependencies := frontmatter.get("requirements"):
                         all_dependencies += f"{dependencies}, "
         else:
-            log.info("Tool dependencies not installed at startup (requires user context for BlueNexus)")
+            log.info(
+                "Tool dependencies not installed at startup (requires user context for BlueNexus)"
+            )
 
         install_frontmatter_requirements(all_dependencies.strip(", "))
     except Exception as e:

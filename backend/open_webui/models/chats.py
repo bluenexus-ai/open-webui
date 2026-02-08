@@ -62,6 +62,7 @@ class SharedChatMapping(Base):
     This allows looking up who owns a shared chat so we can use their
     BlueNexus session to fetch the chat data.
     """
+
     __tablename__ = "shared_chat_mapping"
 
     share_id = Column(String, primary_key=True)
@@ -75,7 +76,9 @@ class SharedChatMappingTable:
         """Create or update a shared chat mapping."""
         try:
             with get_db() as db:
-                existing = db.query(SharedChatMapping).filter_by(share_id=share_id).first()
+                existing = (
+                    db.query(SharedChatMapping).filter_by(share_id=share_id).first()
+                )
                 if existing:
                     existing.owner_user_id = owner_user_id
                     existing.chat_id = chat_id
@@ -97,7 +100,9 @@ class SharedChatMappingTable:
         """Get the owner user_id for a share_id."""
         try:
             with get_db() as db:
-                mapping = db.query(SharedChatMapping).filter_by(share_id=share_id).first()
+                mapping = (
+                    db.query(SharedChatMapping).filter_by(share_id=share_id).first()
+                )
                 if mapping:
                     return mapping.owner_user_id
                 return None
@@ -109,7 +114,9 @@ class SharedChatMappingTable:
         """Delete a shared chat mapping."""
         try:
             with get_db() as db:
-                result = db.query(SharedChatMapping).filter_by(share_id=share_id).delete()
+                result = (
+                    db.query(SharedChatMapping).filter_by(share_id=share_id).delete()
+                )
                 db.commit()
                 return result > 0
         except Exception as e:
@@ -260,7 +267,9 @@ class ChatTable:
                 existing_chat = chat_item.chat or {}
                 merged_chat = {**existing_chat, **chat}
                 chat_item.chat = merged_chat
-                chat_item.title = merged_chat.get("title", chat_item.title or "New Chat")
+                chat_item.title = merged_chat.get(
+                    "title", chat_item.title or "New Chat"
+                )
                 chat_item.updated_at = int(time.time())
                 db.commit()
                 db.refresh(chat_item)
@@ -806,29 +815,23 @@ class ChatTable:
 
                 # Check if there are any tags to filter, it should have all the tags
                 if "none" in tag_ids:
-                    query = query.filter(
-                        text(
-                            """
+                    query = query.filter(text("""
                             NOT EXISTS (
                                 SELECT 1
                                 FROM json_each(Chat.meta, '$.tags') AS tag
                             )
-                            """
-                        )
-                    )
+                            """))
                 elif tag_ids:
                     query = query.filter(
                         and_(
                             *[
-                                text(
-                                    f"""
+                                text(f"""
                                     EXISTS (
                                         SELECT 1
                                         FROM json_each(Chat.meta, '$.tags') AS tag
                                         WHERE tag.value = :tag_id_{tag_idx}
                                     )
-                                    """
-                                ).params(**{f"tag_id_{tag_idx}": tag_id})
+                                    """).params(**{f"tag_id_{tag_idx}": tag_id})
                                 for tag_idx, tag_id in enumerate(tag_ids)
                             ]
                         )
@@ -858,29 +861,23 @@ class ChatTable:
 
                 # Check if there are any tags to filter, it should have all the tags
                 if "none" in tag_ids:
-                    query = query.filter(
-                        text(
-                            """
+                    query = query.filter(text("""
                             NOT EXISTS (
                                 SELECT 1
                                 FROM json_array_elements_text(Chat.meta->'tags') AS tag
                             )
-                            """
-                        )
-                    )
+                            """))
                 elif tag_ids:
                     query = query.filter(
                         and_(
                             *[
-                                text(
-                                    f"""
+                                text(f"""
                                     EXISTS (
                                         SELECT 1
                                         FROM json_array_elements_text(Chat.meta->'tags') AS tag
                                         WHERE tag = :tag_id_{tag_idx}
                                     )
-                                    """
-                                ).params(**{f"tag_id_{tag_idx}": tag_id})
+                                    """).params(**{f"tag_id_{tag_idx}": tag_id})
                                 for tag_idx, tag_id in enumerate(tag_ids)
                             ]
                         )

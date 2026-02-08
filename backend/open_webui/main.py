@@ -61,7 +61,9 @@ from open_webui.utils import logger
 from open_webui.utils.audit import AuditLevel, AuditLoggingMiddleware
 from open_webui.utils.logger import start_logger
 from open_webui.utils.mcp.pool import init_mcp_pool, shutdown_mcp_pool
-from open_webui.utils.bluenexus.client import cleanup_session_pool as cleanup_bluenexus_sessions
+from open_webui.utils.bluenexus.client import (
+    cleanup_session_pool as cleanup_bluenexus_sessions,
+)
 from open_webui.socket.main import (
     app as socket_app,
     periodic_usage_pool_cleanup,
@@ -519,7 +521,6 @@ from open_webui.utils.redis import get_sentinels_from_env
 
 from open_webui.constants import ERROR_MESSAGES
 
-
 if SAFE_MODE:
     print("SAFE MODE ENABLED")
     Functions.deactivate_all_functions()
@@ -544,8 +545,7 @@ class SPAStaticFiles(StaticFiles):
                 raise ex
 
 
-print(
-    rf"""
+print(rf"""
  ██████╗ ██████╗ ███████╗███╗   ██╗    ██╗    ██╗███████╗██████╗ ██╗   ██╗██╗
 ██╔═══██╗██╔══██╗██╔════╝████╗  ██║    ██║    ██║██╔════╝██╔══██╗██║   ██║██║
 ██║   ██║██████╔╝█████╗  ██╔██╗ ██║    ██║ █╗ ██║█████╗  ██████╔╝██║   ██║██║
@@ -557,8 +557,7 @@ print(
 v{VERSION} - building the best AI user interface.
 {f"Commit: {WEBUI_BUILD_HASH}" if WEBUI_BUILD_HASH != "dev-build" else ""}
 https://github.com/open-webui/open-webui
-"""
-)
+""")
 
 
 @asynccontextmanager
@@ -715,6 +714,7 @@ try:
         BLUENEXUS_LLM_API_BASE_URL,
         BLUENEXUS_LLM_AUTO_ENABLE,
     )
+
     app.state.config.BLUENEXUS_LLM_API_BASE_URL = BLUENEXUS_LLM_API_BASE_URL
     app.state.config.BLUENEXUS_LLM_AUTO_ENABLE = BLUENEXUS_LLM_AUTO_ENABLE
 except ImportError:
@@ -1494,7 +1494,9 @@ async def chat_completion(
     # Only refresh models if cache is empty (relies on get_all_models internal caching)
     # This avoids expensive model refresh on every chat request
     if not request.app.state.MODELS or not request.app.state.BASE_MODELS:
-        log.debug(f"[chat_completion] Models cache empty, refreshing for user {user.id}")
+        log.debug(
+            f"[chat_completion] Models cache empty, refreshing for user {user.id}"
+        )
         await get_all_models(request, user=user)
 
     model_id = form_data.get("model", None)
@@ -1505,7 +1507,9 @@ async def chat_completion(
     try:
         if not model_item.get("direct", False):
             if model_id not in request.app.state.MODELS:
-                log.warning(f"[chat_completion] Model {model_id} not found in MODELS cache for user {user.id}. Available models: {list(request.app.state.MODELS.keys())[:10]}...")
+                log.warning(
+                    f"[chat_completion] Model {model_id} not found in MODELS cache for user {user.id}. Available models: {list(request.app.state.MODELS.keys())[:10]}..."
+                )
                 raise Exception("Model not found")
 
             model = request.app.state.MODELS[model_id]
@@ -1574,9 +1578,13 @@ async def chat_completion(
             if not metadata["chat_id"].startswith("local:"):
                 # Use appropriate storage based on config
                 if is_bluenexus_data_storage_enabled():
-                    chat = await bluenexus_get_chat_by_id_and_user_id(user.id, metadata["chat_id"])
+                    chat = await bluenexus_get_chat_by_id_and_user_id(
+                        user.id, metadata["chat_id"]
+                    )
                 else:
-                    chat = Chats.get_chat_by_id_and_user_id(metadata["chat_id"], user.id)
+                    chat = Chats.get_chat_by_id_and_user_id(
+                        metadata["chat_id"], user.id
+                    )
                 if chat is None and user.role != "admin":
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
@@ -1585,7 +1593,7 @@ async def chat_completion(
                 # Cache chat data in metadata to avoid redundant lookups
                 if chat:
                     # Convert ChatModel to dict if needed for consistent access
-                    if hasattr(chat, 'model_dump'):
+                    if hasattr(chat, "model_dump"):
                         metadata["_cached_chat_data"] = chat.model_dump()
                     else:
                         metadata["_cached_chat_data"] = chat
@@ -1613,13 +1621,21 @@ async def chat_completion(
                 # Skip LLM call if image-only response (image was generated with agent data)
                 if metadata.get("_image_only_response"):
                     log.info("[Image Only] Skipping LLM call - image already displayed")
+
                     # Return minimal streaming response
                     async def empty_stream():
-                        yield "data: " + json.dumps({
-                            "choices": [{"delta": {"content": ""}, "finish_reason": "stop"}]
-                        }) + "\n\n"
+                        yield "data: " + json.dumps(
+                            {
+                                "choices": [
+                                    {"delta": {"content": ""}, "finish_reason": "stop"}
+                                ]
+                            }
+                        ) + "\n\n"
                         yield "data: [DONE]\n\n"
-                    return StreamingResponse(empty_stream(), media_type="text/event-stream")
+
+                    return StreamingResponse(
+                        empty_stream(), media_type="text/event-stream"
+                    )
 
                 response = await chat_completion_handler(request, form_data, user)
                 if metadata.get("chat_id") and metadata.get("message_id"):
@@ -1643,29 +1659,39 @@ async def chat_completion(
                 )
             except asyncio.CancelledError:
                 import traceback
+
                 cancelled_retry_count += 1
-                log.info(f"Chat processing was cancelled (attempt {cancelled_retry_count}/{max_cancelled_retries + 1})")
-                log.debug(f"[CancelledError] Stack trace:\n{''.join(traceback.format_stack())}")
+                log.info(
+                    f"Chat processing was cancelled (attempt {cancelled_retry_count}/{max_cancelled_retries + 1})"
+                )
+                log.debug(
+                    f"[CancelledError] Stack trace:\n{''.join(traceback.format_stack())}"
+                )
 
                 # Clean up MCP clients before potential retry
                 try:
                     if mcp_clients := metadata.get("mcp_clients"):
-                        log.info(f"[CancelledError] Cleaning up {len(mcp_clients)} MCP clients...")
+                        log.info(
+                            f"[CancelledError] Cleaning up {len(mcp_clients)} MCP clients..."
+                        )
                         for client in reversed(mcp_clients.values()):
                             try:
                                 await asyncio.wait_for(
-                                    asyncio.shield(client.disconnect()),
-                                    timeout=5.0
+                                    asyncio.shield(client.disconnect()), timeout=5.0
                                 )
                             except asyncio.TimeoutError:
-                                log.warning("[CancelledError] MCP client disconnect timed out")
+                                log.warning(
+                                    "[CancelledError] MCP client disconnect timed out"
+                                )
                             except Exception as e:
                                 log.debug(f"[CancelledError] MCP disconnect error: {e}")
                         # Clear mcp_clients so they get re-initialized on retry
                         metadata.pop("mcp_clients", None)
                         log.info("[CancelledError] MCP clients cleaned up")
                 except Exception as cleanup_error:
-                    log.warning(f"[CancelledError] Error cleaning up MCP clients: {cleanup_error}")
+                    log.warning(
+                        f"[CancelledError] Error cleaning up MCP clients: {cleanup_error}"
+                    )
 
                 # Also clear any tool-related state that might cause issues on retry
                 metadata.pop("tool_ids", None)
@@ -1673,17 +1699,25 @@ async def chat_completion(
 
                 # Check if we should retry
                 if cancelled_retry_count <= max_cancelled_retries:
-                    log.info(f"[CancelledError] Auto-retrying chat processing (retry {cancelled_retry_count}/{max_cancelled_retries})...")
+                    log.info(
+                        f"[CancelledError] Auto-retrying chat processing (retry {cancelled_retry_count}/{max_cancelled_retries})..."
+                    )
                     # Shield the sleep from cancellation to ensure retry happens
                     try:
                         await asyncio.shield(asyncio.sleep(0.5))
                     except asyncio.CancelledError:
-                        log.warning("[CancelledError] Sleep was cancelled, retrying anyway...")
-                    log.info(f"[CancelledError] Starting retry attempt {cancelled_retry_count}...")
+                        log.warning(
+                            "[CancelledError] Sleep was cancelled, retrying anyway..."
+                        )
+                    log.info(
+                        f"[CancelledError] Starting retry attempt {cancelled_retry_count}..."
+                    )
                     continue  # Retry the loop
 
                 # Max retries exhausted, emit cancel event and re-raise
-                log.warning(f"[CancelledError] Max retries ({max_cancelled_retries}) exhausted, giving up")
+                log.warning(
+                    f"[CancelledError] Max retries ({max_cancelled_retries}) exhausted, giving up"
+                )
                 try:
                     event_emitter = get_event_emitter(metadata)
                     await asyncio.shield(
@@ -1728,7 +1762,10 @@ async def chat_completion(
             finally:
                 # Only clean up if we're not retrying (i.e., breaking out of the loop)
                 # The cleanup for retry case is handled in the CancelledError block
-                if cancelled_retry_count == 0 or cancelled_retry_count > max_cancelled_retries:
+                if (
+                    cancelled_retry_count == 0
+                    or cancelled_retry_count > max_cancelled_retries
+                ):
                     try:
                         if mcp_clients := metadata.get("mcp_clients"):
                             for client in reversed(mcp_clients.values()):
@@ -1872,6 +1909,7 @@ async def get_app_config(request: Request):
     # Filter OAuth providers based on ENABLE_BLUENEXUS flag
     try:
         from open_webui.utils.bluenexus.config import is_bluenexus_enabled
+
         oauth_providers = {
             name: config.get("name", name)
             for name, config in OAUTH_PROVIDERS.items()
@@ -1879,8 +1917,7 @@ async def get_app_config(request: Request):
         }
     except ImportError:
         oauth_providers = {
-            name: config.get("name", name)
-            for name, config in OAUTH_PROVIDERS.items()
+            name: config.get("name", name) for name, config in OAUTH_PROVIDERS.items()
         }
 
     return {
@@ -1889,9 +1926,7 @@ async def get_app_config(request: Request):
         "name": app.state.WEBUI_NAME,
         "version": VERSION,
         "default_locale": str(DEFAULT_LOCALE),
-        "oauth": {
-            "providers": oauth_providers
-        },
+        "oauth": {"providers": oauth_providers},
         "features": {
             "auth": WEBUI_AUTH,
             "auth_trusted_header": bool(app.state.AUTH_TRUSTED_EMAIL_HEADER),
@@ -1902,7 +1937,9 @@ async def get_app_config(request: Request):
             "enable_login_form": app.state.config.ENABLE_LOGIN_FORM,
             "enable_websocket": ENABLE_WEBSOCKET_SUPPORT,
             "enable_version_update_check": ENABLE_VERSION_UPDATE_CHECK,
-            "enable_bluenexus": is_bluenexus_enabled() if "is_bluenexus_enabled" in locals() else False,
+            "enable_bluenexus": (
+                is_bluenexus_enabled() if "is_bluenexus_enabled" in locals() else False
+            ),
             **(
                 {
                     "enable_direct_connections": app.state.config.ENABLE_DIRECT_CONNECTIONS,

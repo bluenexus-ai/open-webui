@@ -25,6 +25,7 @@ RETRY_DELAY_SECONDS = 1
 
 class OAuthTokenStatusResponse(BaseModel):
     """OAuth token status response model."""
+
     has_session: bool
     provider: Optional[str] = None
     expires_at: Optional[int] = None
@@ -33,7 +34,9 @@ class OAuthTokenStatusResponse(BaseModel):
     requires_reauth: bool = False  # True if user needs to re-login
 
 
-async def refresh_oauth_token(request: Request, user: UserModel) -> OAuthTokenStatusResponse:
+async def refresh_oauth_token(
+    request: Request, user: UserModel
+) -> OAuthTokenStatusResponse:
     """
     Refresh the OAuth token if it's close to expiring.
     This endpoint is designed to be called periodically by the frontend
@@ -57,19 +60,27 @@ async def refresh_oauth_token(request: Request, user: UserModel) -> OAuthTokenSt
     # Try to get session - first by cookie session ID, then fallback to provider lookup
     session = None
     if oauth_session_id:
-        log.info(f"Found oauth_session_id: {oauth_session_id[:8]}... for user {user.id}")
+        log.info(
+            f"Found oauth_session_id: {oauth_session_id[:8]}... for user {user.id}"
+        )
         session = OAuthSessions.get_session_by_id_and_user_id(oauth_session_id, user.id)
 
     # Fallback: lookup by provider if cookie session not found
     if not session:
         log.info(f"Session not found by ID, trying provider lookup for user {user.id}")
-        session = OAuthSessions.get_session_by_provider_and_user_id("bluenexus", user.id)
+        session = OAuthSessions.get_session_by_provider_and_user_id(
+            "bluenexus", user.id
+        )
         if session:
             oauth_session_id = session.id
-            log.info(f"Found BlueNexus session by provider lookup: {oauth_session_id[:8]}...")
+            log.info(
+                f"Found BlueNexus session by provider lookup: {oauth_session_id[:8]}..."
+            )
 
     if not session or not oauth_session_id:
-        log.info(f"No BlueNexus OAuth session found for user {user.id} - requires re-authentication")
+        log.info(
+            f"No BlueNexus OAuth session found for user {user.id} - requires re-authentication"
+        )
         # User has oauth_session_id cookie but no valid session - needs to re-login
         return OAuthTokenStatusResponse(has_session=False, requires_reauth=True)
 
@@ -92,7 +103,9 @@ async def refresh_oauth_token(request: Request, user: UserModel) -> OAuthTokenSt
 
                 provider = session.provider if session else "bluenexus"
 
-                log.info(f"OAuth token valid for user {user.id}, provider: {provider}, expires_in: {expires_in}s")
+                log.info(
+                    f"OAuth token valid for user {user.id}, provider: {provider}, expires_in: {expires_in}s"
+                )
 
                 return OAuthTokenStatusResponse(
                     has_session=True,
@@ -102,7 +115,9 @@ async def refresh_oauth_token(request: Request, user: UserModel) -> OAuthTokenSt
                     refreshed=(attempt > 0),
                 )
             else:
-                log.warning(f"OAuth token not found (attempt {attempt + 1}/{MAX_RETRIES}) for user {user.id}")
+                log.warning(
+                    f"OAuth token not found (attempt {attempt + 1}/{MAX_RETRIES}) for user {user.id}"
+                )
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_DELAY_SECONDS)
                     continue
@@ -111,11 +126,15 @@ async def refresh_oauth_token(request: Request, user: UserModel) -> OAuthTokenSt
 
         except Exception as e:
             last_error = e
-            log.warning(f"Error refreshing OAuth token (attempt {attempt + 1}/{MAX_RETRIES}) for user {user.id}: {e}")
+            log.warning(
+                f"Error refreshing OAuth token (attempt {attempt + 1}/{MAX_RETRIES}) for user {user.id}: {e}"
+            )
             if attempt < MAX_RETRIES - 1:
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
                 continue
 
-    log.error(f"Failed to refresh OAuth token after {MAX_RETRIES} attempts for user {user.id}: {last_error}")
+    log.error(
+        f"Failed to refresh OAuth token after {MAX_RETRIES} attempts for user {user.id}: {last_error}"
+    )
     # Session may have been deleted by oauth manager, user needs to re-authenticate
     return OAuthTokenStatusResponse(has_session=False, requires_reauth=True)

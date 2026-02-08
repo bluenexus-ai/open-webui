@@ -26,14 +26,18 @@ log = logging.getLogger(__name__)
 
 # Store record IDs alongside chat data in cache for fast updates
 # Format: {"data": chat_data, "record_id": bluenexus_record_id}
-def _cache_chat_with_record_id(user_id: str, chat_id: str, data: dict, record_id: str) -> None:
+def _cache_chat_with_record_id(
+    user_id: str, chat_id: str, data: dict, record_id: str
+) -> None:
     """Cache chat data along with its BlueNexus record ID."""
     cache_key = make_cache_key(user_id, "chats", chat_id)
     chat_cache.set(cache_key, {"data": data, "record_id": record_id})
     set_cached_record_id(user_id, "chats", chat_id, record_id)
 
 
-def _get_cached_chat(user_id: str, chat_id: str) -> tuple[Optional[dict], Optional[str]]:
+def _get_cached_chat(
+    user_id: str, chat_id: str
+) -> tuple[Optional[dict], Optional[str]]:
     """Get cached chat data and record ID. Returns (data, record_id)."""
     cache_key = make_cache_key(user_id, "chats", chat_id)
     cached = chat_cache.get(cache_key)
@@ -75,7 +79,9 @@ def _run_async(coro, timeout: float = 30.0):
                 try:
                     return future.result(timeout=timeout)
                 except concurrent.futures.TimeoutError:
-                    log.error(f"[_run_async] Timeout after {timeout}s waiting for coroutine")
+                    log.error(
+                        f"[_run_async] Timeout after {timeout}s waiting for coroutine"
+                    )
                     raise TimeoutError(f"Coroutine timed out after {timeout}s")
         except RuntimeError:
             # No running loop - we can use asyncio.run directly
@@ -85,7 +91,9 @@ def _run_async(coro, timeout: float = 30.0):
         raise
 
 
-async def get_chat_by_id(user_id: str, chat_id: str, use_cache: bool = True) -> Optional[dict]:
+async def get_chat_by_id(
+    user_id: str, chat_id: str, use_cache: bool = True
+) -> Optional[dict]:
     """Get a chat by its owui_id."""
     # Check cache first
     if use_cache:
@@ -102,7 +110,7 @@ async def get_chat_by_id(user_id: str, chat_id: str, use_cache: bool = True) -> 
     try:
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if response.data and len(response.data) > 0:
@@ -122,7 +130,9 @@ async def get_chat_by_id_and_user_id(user_id: str, chat_id: str) -> Optional[dic
     return await get_chat_by_id(user_id, chat_id)
 
 
-async def update_chat_by_id(user_id: str, chat_id: str, chat_data: dict) -> Optional[dict]:
+async def update_chat_by_id(
+    user_id: str, chat_id: str, chat_data: dict
+) -> Optional[dict]:
     """Update a chat by its owui_id. Optimized to use cached record ID."""
     client = get_bluenexus_client_for_user(user_id)
     if not client:
@@ -135,11 +145,15 @@ async def update_chat_by_id(user_id: str, chat_id: str, chat_data: dict) -> Opti
 
         if record_id and cached_data:
             # FAST PATH: Use cached record ID - only 1 API call (update)
-            log.debug(f"[BlueNexus] Fast update for chat {chat_id} using cached record_id")
+            log.debug(
+                f"[BlueNexus] Fast update for chat {chat_id} using cached record_id"
+            )
             existing_data = cached_data.copy()
             existing_data["chat"] = chat_data
 
-            updated_record = await client.update(Collections.CHATS, record_id, existing_data)
+            updated_record = await client.update(
+                Collections.CHATS, record_id, existing_data
+            )
             result = updated_record.model_dump()
 
             # Update cache (don't invalidate - just update)
@@ -147,10 +161,12 @@ async def update_chat_by_id(user_id: str, chat_id: str, chat_data: dict) -> Opti
             return result
 
         # SLOW PATH: Need to query for record ID first - 2 API calls (query + update)
-        log.debug(f"[BlueNexus] Slow update for chat {chat_id} - querying for record_id")
+        log.debug(
+            f"[BlueNexus] Slow update for chat {chat_id} - querying for record_id"
+        )
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -165,7 +181,9 @@ async def update_chat_by_id(user_id: str, chat_id: str, chat_data: dict) -> Opti
         existing_data["chat"] = chat_data
 
         # Update in BlueNexus
-        updated_record = await client.update(Collections.CHATS, record_id, existing_data)
+        updated_record = await client.update(
+            Collections.CHATS, record_id, existing_data
+        )
         result = updated_record.model_dump()
 
         # Cache with record ID for future fast updates
@@ -250,7 +268,9 @@ async def get_messages_map_by_chat_id(user_id: str, chat_id: str) -> Optional[di
     return chat.get("history", {}).get("messages", {})
 
 
-async def update_chat_title_by_id(user_id: str, chat_id: str, title: str) -> Optional[dict]:
+async def update_chat_title_by_id(
+    user_id: str, chat_id: str, title: str
+) -> Optional[dict]:
     """Update the title of a chat. Optimized to use cached record ID."""
     client = get_bluenexus_client_for_user(user_id)
     if not client:
@@ -268,7 +288,9 @@ async def update_chat_title_by_id(user_id: str, chat_id: str, title: str) -> Opt
             if "chat" in chat_data:
                 chat_data["chat"]["title"] = title
 
-            updated_record = await client.update(Collections.CHATS, record_id, chat_data)
+            updated_record = await client.update(
+                Collections.CHATS, record_id, chat_data
+            )
             result = updated_record.model_dump()
             _cache_chat_with_record_id(user_id, chat_id, result, record_id)
             return result
@@ -276,7 +298,7 @@ async def update_chat_title_by_id(user_id: str, chat_id: str, title: str) -> Opt
         # SLOW PATH: Query for record first
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -310,7 +332,9 @@ async def get_chat_title_by_id(user_id: str, chat_id: str) -> Optional[str]:
     return chat_data.get("title")
 
 
-async def update_chat_tags_by_id(user_id: str, chat_id: str, tags: list) -> Optional[dict]:
+async def update_chat_tags_by_id(
+    user_id: str, chat_id: str, tags: list
+) -> Optional[dict]:
     """Update the tags of a chat. Optimized to use cached record ID."""
     client = get_bluenexus_client_for_user(user_id)
     if not client:
@@ -327,7 +351,9 @@ async def update_chat_tags_by_id(user_id: str, chat_id: str, tags: list) -> Opti
             chat_data["meta"] = chat_data.get("meta", {})
             chat_data["meta"]["tags"] = tags
 
-            updated_record = await client.update(Collections.CHATS, record_id, chat_data)
+            updated_record = await client.update(
+                Collections.CHATS, record_id, chat_data
+            )
             result = updated_record.model_dump()
             _cache_chat_with_record_id(user_id, chat_id, result, record_id)
             return result
@@ -335,7 +361,7 @@ async def update_chat_tags_by_id(user_id: str, chat_id: str, tags: list) -> Opti
         # SLOW PATH: Query for record first
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -383,7 +409,9 @@ async def update_chat_title_and_tags(
 
         if record_id and cached_data:
             # FAST PATH: Use cached data and record ID - 1 API call
-            log.debug(f"[BlueNexus] Fast update title/tags for chat {chat_id} using cached record_id")
+            log.debug(
+                f"[BlueNexus] Fast update title/tags for chat {chat_id} using cached record_id"
+            )
             chat_data = cached_data.copy()
 
             if title is not None:
@@ -395,7 +423,9 @@ async def update_chat_title_and_tags(
                 chat_data["meta"] = chat_data.get("meta", {})
                 chat_data["meta"]["tags"] = tags
 
-            updated_record = await client.update(Collections.CHATS, record_id, chat_data)
+            updated_record = await client.update(
+                Collections.CHATS, record_id, chat_data
+            )
             result = updated_record.model_dump()
             _cache_chat_with_record_id(user_id, chat_id, result, record_id)
             return result
@@ -403,7 +433,7 @@ async def update_chat_title_and_tags(
         # SLOW PATH: Query for record first - 2 API calls
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -442,8 +472,7 @@ async def get_chat_by_share_id(user_id: str, share_id: str) -> Optional[dict]:
 
     try:
         response = await client.query(
-            Collections.CHATS,
-            QueryOptions(filter={"share_id": share_id}, limit=1)
+            Collections.CHATS, QueryOptions(filter={"share_id": share_id}, limit=1)
         )
 
         if response.data and len(response.data) > 0:
@@ -465,7 +494,7 @@ async def count_chats_by_folder_id_and_user_id(user_id: str, folder_id: str) -> 
     try:
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"folder_id": folder_id, "user_id": user_id})
+            QueryOptions(filter={"folder_id": folder_id, "user_id": user_id}),
         )
         return len(response.data) if response.data else 0
     except Exception as e:
@@ -484,7 +513,7 @@ async def delete_chats_by_user_id_and_folder_id(user_id: str, folder_id: str) ->
         # First get all chats in the folder
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"folder_id": folder_id, "user_id": user_id})
+            QueryOptions(filter={"folder_id": folder_id, "user_id": user_id}),
         )
 
         if not response.data:
@@ -510,8 +539,7 @@ async def delete_chats_by_user_id_async(user_id: str) -> bool:
     try:
         # Get all chats for the user
         response = await client.query(
-            Collections.CHATS,
-            QueryOptions(filter={"user_id": user_id})
+            Collections.CHATS, QueryOptions(filter={"user_id": user_id})
         )
 
         if not response.data:
@@ -540,6 +568,7 @@ def get_chat_by_id_sync(user_id: str, chat_id: str) -> Optional[dict]:
 # ============================================================================
 # Batched Message Updates - reduces API calls during streaming
 # ============================================================================
+
 
 class MessageUpdateBatcher:
     """
@@ -605,7 +634,7 @@ class MessageUpdateBatcher:
             if message_id in self._pending_updates:
                 self._pending_updates[message_id] = {
                     **self._pending_updates[message_id],
-                    **message
+                    **message,
                 }
             else:
                 self._pending_updates[message_id] = message
@@ -614,8 +643,8 @@ class MessageUpdateBatcher:
             # Check if we should flush
             now = asyncio.get_event_loop().time()
             should_flush = (
-                self._pending_count >= self.max_pending or
-                (now - self._last_flush) >= self.flush_interval
+                self._pending_count >= self.max_pending
+                or (now - self._last_flush) >= self.flush_interval
             )
 
             if should_flush:
@@ -647,7 +676,9 @@ class MessageUpdateBatcher:
         if not self._pending_updates or self._chat_data is None:
             return self._chat_data
 
-        log.debug(f"[BlueNexus Batcher] Flushing {len(self._pending_updates)} message updates for chat {self.chat_id}")
+        log.debug(
+            f"[BlueNexus Batcher] Flushing {len(self._pending_updates)} message updates for chat {self.chat_id}"
+        )
 
         # Apply all pending updates to chat data
         chat = self._chat_data.get("chat", {})

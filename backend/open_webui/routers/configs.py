@@ -274,7 +274,8 @@ async def verify_tool_servers_config(
                         oauth_provider = form_data.config.get("oauth_provider")
 
                         if oauth_provider == "bluenexus" or (
-                            form_data.info and "bluenexus" in form_data.info.get("id", "")
+                            form_data.info
+                            and "bluenexus" in form_data.info.get("id", "")
                         ):
                             # Get BlueNexus OAuth session token
                             session = OAuthSessions.get_session_by_provider_and_user_id(
@@ -300,7 +301,9 @@ async def verify_tool_servers_config(
                     if token:
                         if isinstance(token, dict):
                             # OAuth token object
-                            headers = {"Authorization": f"Bearer {token.get('access_token', '')}"}
+                            headers = {
+                                "Authorization": f"Bearer {token.get('access_token', '')}"
+                            }
                         else:
                             # String token
                             headers = {"Authorization": f"Bearer {token}"}
@@ -377,9 +380,7 @@ except ImportError:
 
 
 @router.get("/bluenexus/mcp_servers", response_model=BlueNexusMCPServersResponse)
-async def get_bluenexus_mcp_servers(
-    request: Request, user=Depends(get_verified_user)
-):
+async def get_bluenexus_mcp_servers(request: Request, user=Depends(get_verified_user)):
     """
     Get available BlueNexus MCP servers for the authenticated user.
     Requires BlueNexus OAuth connection with mcp-proxy scope.

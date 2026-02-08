@@ -155,7 +155,9 @@ def get_cached_record_id(user_id: str, collection: str, owui_id: str) -> Optiona
     return record_id_cache.get(key)
 
 
-def set_cached_record_id(user_id: str, collection: str, owui_id: str, record_id: str) -> None:
+def set_cached_record_id(
+    user_id: str, collection: str, owui_id: str, record_id: str
+) -> None:
     """Cache BlueNexus record ID for an owui_id."""
     key = make_record_id_key(user_id, collection, owui_id)
     record_id_cache.set(key, record_id)

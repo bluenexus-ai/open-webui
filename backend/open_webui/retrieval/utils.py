@@ -22,7 +22,9 @@ from open_webui.models.users import UserModel
 from open_webui.models.files import Files
 from open_webui.models.knowledge import Knowledges
 
-from open_webui.utils.bluenexus.chat_ops import get_chat_by_id_sync as bluenexus_get_chat
+from open_webui.utils.bluenexus.chat_ops import (
+    get_chat_by_id_sync as bluenexus_get_chat,
+)
 from open_webui.models.notes import Notes
 
 from open_webui.retrieval.vector.main import GetResult
@@ -613,7 +615,14 @@ def get_sources_from_items(
                     # User has access to the chat
                     query_result = {
                         "documents": [[message_history]],
-                        "metadatas": [[{"file_id": chat.get("owui_id", chat.get("id")), "name": chat.get("title")}]],
+                        "metadatas": [
+                            [
+                                {
+                                    "file_id": chat.get("owui_id", chat.get("id")),
+                                    "name": chat.get("title"),
+                                }
+                            ]
+                        ],
                     }
 
         elif item.get("type") == "url":

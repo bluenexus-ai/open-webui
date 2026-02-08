@@ -153,6 +153,7 @@ def __getattr__(name):
         "is_bluenexus_configured",
     }:
         from open_webui.utils.bluenexus import config as _cfg
+
         return getattr(_cfg, name)
 
     if name in {
@@ -161,6 +162,7 @@ def __getattr__(name):
         "should_disable_ssl_for_provider",
     }:
         from open_webui.utils.bluenexus import oauth as _oauth
+
         return getattr(_oauth, name)
 
     if name in {
@@ -169,6 +171,7 @@ def __getattr__(name):
         "get_bluenexus_oauth_token_for_headers",
     }:
         from open_webui.utils.bluenexus import llm as _llm
+
         return getattr(_llm, name)
 
     if name in {
@@ -178,6 +181,7 @@ def __getattr__(name):
         "BlueNexusMCPServersResponse",
     }:
         from open_webui.utils.bluenexus import mcp as _mcp
+
         return getattr(_mcp, name)
 
     if name in {
@@ -186,14 +190,17 @@ def __getattr__(name):
         "UniversalMcpResult",
     }:
         from open_webui.utils.bluenexus import universal_mcp as _universal_mcp
+
         return getattr(_universal_mcp, name)
 
     if name in {"refresh_oauth_token", "OAuthTokenStatusResponse"}:
         from open_webui.utils.bluenexus import auth as _auth
+
         return getattr(_auth, name)
 
     if name in {"BlueNexusDataClient"}:
         from open_webui.utils.bluenexus import client as _client
+
         return getattr(_client, name)
 
     if name in {
@@ -212,10 +219,12 @@ def __getattr__(name):
         "VerifyResponse",
     }:
         from open_webui.utils.bluenexus import types as _types
+
         return getattr(_types, name)
 
     if name in {"Collections", "MODEL_TO_COLLECTION"}:
         from open_webui.utils.bluenexus import collections as _collections
+
         return getattr(_collections, name)
 
     if name in {
@@ -225,11 +234,12 @@ def __getattr__(name):
         "BlueNexusClientContext",
     }:
         from open_webui.utils.bluenexus import factory as _factory
-        return getattr(_factory, name)
 
+        return getattr(_factory, name)
 
     if name in {"BlueNexusSyncService", "BlueNexusSync"}:
         from open_webui.utils.bluenexus import sync_service as _sync
+
         return getattr(_sync, name)
 
     raise AttributeError(name)

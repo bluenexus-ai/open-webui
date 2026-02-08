@@ -29,6 +29,7 @@ log.setLevel(SRC_LOG_LEVELS.get("MAIN", logging.INFO))
 
 class ReActStepType(Enum):
     """Type of step in the ReAct loop."""
+
     THOUGHT = "thought"
     ACTION = "action"
     OBSERVATION = "observation"
@@ -38,6 +39,7 @@ class ReActStepType(Enum):
 
 class ReActStatus(Enum):
     """Status of the ReAct execution."""
+
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -249,12 +251,14 @@ class ReActAgent:
             parameters = spec.get("parameters", {}).get("properties", {})
             required = spec.get("parameters", {}).get("required", [])
 
-            available.append({
-                "name": tool_name,
-                "description": description,
-                "parameters": parameters,
-                "required": required,
-            })
+            available.append(
+                {
+                    "name": tool_name,
+                    "description": description,
+                    "parameters": parameters,
+                    "required": required,
+                }
+            )
 
         return available
 
@@ -276,7 +280,9 @@ class ReActAgent:
             if step.step_type == ReActStepType.ACTION and step.tool_name:
                 tool_executions.append(f"- Called: {step.tool_name}")
             elif step.step_type == ReActStepType.OBSERVATION:
-                result_preview = str(step.content)[:500] if step.content else "No result"
+                result_preview = (
+                    str(step.content)[:500] if step.content else "No result"
+                )
                 if step.error:
                     tool_executions.append(f"  Result: ERROR - {step.error}")
                 else:
@@ -287,16 +293,29 @@ class ReActAgent:
 
         if not has_tool_calls:
             # Quick check: does the answer claim success?
-            success_indicators = ["successfully", "done", "completed", "added", "sent", "posted", "i've", "has been"]
+            success_indicators = [
+                "successfully",
+                "done",
+                "completed",
+                "added",
+                "sent",
+                "posted",
+                "i've",
+                "has been",
+            ]
             if any(ind in final_answer.lower() for ind in success_indicators):
-                log.warning("[ReAct] Verification: Answer claims success but no tools were called")
+                log.warning(
+                    "[ReAct] Verification: Answer claims success but no tools were called"
+                )
                 return (
                     "STOP! You claimed to have completed an action but you have NOT executed ANY tools. "
                     "You MUST call the appropriate tool to actually perform the requested action. "
                     f"Available tools: {list(self.tools.keys())[:10]}..."
                 )
 
-        tool_summary = "\n".join(tool_executions) if tool_executions else "No tools were executed."
+        tool_summary = (
+            "\n".join(tool_executions) if tool_executions else "No tools were executed."
+        )
 
         # Use LLM to verify
         verification_prompt = f"""You are a verification system. Your job is to check if the Final Answer is consistent with what tools were ACTUALLY executed.
@@ -332,7 +351,9 @@ Your response:"""
             response_clean = response.strip().upper()
 
             if response_clean.startswith("VALID"):
-                log.info("[ReAct] Verification passed: Answer is consistent with tool executions")
+                log.info(
+                    "[ReAct] Verification passed: Answer is consistent with tool executions"
+                )
                 return None
             elif response_clean.startswith("INVALID"):
                 # Extract reason after "INVALID:" or "INVALID"
@@ -373,14 +394,33 @@ Your response:"""
         """
         # Always verify if no tools were called but answer claims success
         has_tool_calls = any(s.step_type == ReActStepType.ACTION for s in steps)
-        success_indicators = ["successfully", "done", "completed", "added", "sent", "posted", "i've", "has been"]
+        success_indicators = [
+            "successfully",
+            "done",
+            "completed",
+            "added",
+            "sent",
+            "posted",
+            "i've",
+            "has been",
+        ]
         claims_success = any(ind in final_answer.lower() for ind in success_indicators)
 
         if not has_tool_calls and claims_success:
             return True
 
         # Check for action words in query that might need verification
-        action_words = ["send", "add", "create", "post", "schedule", "delete", "update", "react", "thumbsup"]
+        action_words = [
+            "send",
+            "add",
+            "create",
+            "post",
+            "schedule",
+            "delete",
+            "update",
+            "react",
+            "thumbsup",
+        ]
         query_has_action = any(w in query.lower() for w in action_words)
 
         if query_has_action and claims_success:
@@ -414,7 +454,7 @@ Your response:"""
             return ""
 
         # Get recent messages (configured limit)
-        recent = self.conversation_history[-self.config.max_history_messages:]
+        recent = self.conversation_history[-self.config.max_history_messages :]
 
         lines = []
         for msg in recent:
@@ -463,11 +503,17 @@ Your response:"""
             for param_name, param_info in tool["parameters"].items():
                 param_type = param_info.get("type", "any")
                 param_desc = param_info.get("description", "")
-                required = "(required)" if param_name in tool["required"] else "(optional)"
-                params_desc.append(f"    - {param_name} ({param_type}) {required}: {param_desc}")
+                required = (
+                    "(required)" if param_name in tool["required"] else "(optional)"
+                )
+                params_desc.append(
+                    f"    - {param_name} ({param_type}) {required}: {param_desc}"
+                )
 
             params_text = "\n".join(params_desc) if params_desc else "    No parameters"
-            lines.append(f"- {tool['name']}: {tool['description']}\n  Parameters:\n{params_text}")
+            lines.append(
+                f"- {tool['name']}: {tool['description']}\n  Parameters:\n{params_text}"
+            )
 
         return "\n\n".join(lines)
 
@@ -511,7 +557,9 @@ Your response:"""
         response = response.strip()
 
         # Check for Final Answer
-        final_match = re.search(r"Final Answer:\s*(.+)", response, re.DOTALL | re.IGNORECASE)
+        final_match = re.search(
+            r"Final Answer:\s*(.+)", response, re.DOTALL | re.IGNORECASE
+        )
         if final_match:
             return {
                 "type": "final_answer",
@@ -522,7 +570,7 @@ Your response:"""
         action_match = re.search(
             r"Action:\s*([^\n]+)\s*\nAction Input:\s*(.+?)(?=\n(?:Thought|Action|Final Answer|Observation):|$)",
             response,
-            re.DOTALL | re.IGNORECASE
+            re.DOTALL | re.IGNORECASE,
         )
         if action_match:
             tool_name = action_match.group(1).strip()
@@ -536,17 +584,17 @@ Your response:"""
                 # If that fails, try to find a JSON object (non-greedy match for balanced braces)
                 try:
                     # Find first { and try to parse from there
-                    brace_start = params_str.find('{')
+                    brace_start = params_str.find("{")
                     if brace_start != -1:
                         # Find matching closing brace by counting
                         depth = 0
                         for i, char in enumerate(params_str[brace_start:], brace_start):
-                            if char == '{':
+                            if char == "{":
                                 depth += 1
-                            elif char == '}':
+                            elif char == "}":
                                 depth -= 1
                                 if depth == 0:
-                                    json_str = params_str[brace_start:i+1]
+                                    json_str = params_str[brace_start : i + 1]
                                     tool_parameters = json.loads(json_str)
                                     break
                         else:
@@ -559,7 +607,9 @@ Your response:"""
                     tool_parameters = {"input": params_str}
 
             # Extract thought if present before action
-            thought_match = re.search(r"Thought:\s*(.+?)(?=\nAction:)", response, re.DOTALL | re.IGNORECASE)
+            thought_match = re.search(
+                r"Thought:\s*(.+?)(?=\nAction:)", response, re.DOTALL | re.IGNORECASE
+            )
             thought = thought_match.group(1).strip() if thought_match else None
 
             return {
@@ -570,7 +620,9 @@ Your response:"""
             }
 
         # Check for Thought only
-        thought_match = re.search(r"Thought:\s*(.+)", response, re.DOTALL | re.IGNORECASE)
+        thought_match = re.search(
+            r"Thought:\s*(.+)", response, re.DOTALL | re.IGNORECASE
+        )
         if thought_match:
             return {
                 "type": "thought",
@@ -602,7 +654,11 @@ Your response:"""
                     for item in content:
                         if isinstance(item, dict) and item.get("type") == "text":
                             error_texts.append(item.get("text", ""))
-                    return " ".join(error_texts) if error_texts else "MCP tool returned error"
+                    return (
+                        " ".join(error_texts)
+                        if error_texts
+                        else "MCP tool returned error"
+                    )
                 return str(content) if content else "MCP tool returned error"
 
             # Check for error in results array
@@ -629,15 +685,27 @@ Your response:"""
 
         # Detect validation errors and provide specific guidance
         if "must contain at least" in error_lower:
-            guidance.append("The parameter needs a non-empty value. Try using '*' for wildcard search or provide a specific term.")
-        if "required" in error_lower and ("missing" in error_lower or "field" in error_lower):
-            guidance.append("A required parameter is missing. Check the tool's parameter specification.")
+            guidance.append(
+                "The parameter needs a non-empty value. Try using '*' for wildcard search or provide a specific term."
+            )
+        if "required" in error_lower and (
+            "missing" in error_lower or "field" in error_lower
+        ):
+            guidance.append(
+                "A required parameter is missing. Check the tool's parameter specification."
+            )
         if "invalid" in error_lower or "validation" in error_lower:
-            guidance.append("Parameter format may be incorrect. Check the expected type and format.")
+            guidance.append(
+                "Parameter format may be incorrect. Check the expected type and format."
+            )
         if "timeout" in error_lower:
-            guidance.append("The operation took too long. Try with simpler parameters or break into smaller steps.")
+            guidance.append(
+                "The operation took too long. Try with simpler parameters or break into smaller steps."
+            )
         if "not found" in error_lower or "does not exist" in error_lower:
-            guidance.append("The resource may not exist. Verify the ID or name is correct.")
+            guidance.append(
+                "The resource may not exist. Verify the ID or name is correct."
+            )
 
         if guidance:
             return f"{error}\n\nRetry Guidance:\n- " + "\n- ".join(guidance)
@@ -658,7 +726,9 @@ Your response:"""
                     refreshed_tools = await self.tools_refresh_fn()
                     if refreshed_tools:
                         self.tools = refreshed_tools
-                        log.info(f"[ReAct] Tools refreshed, now have {len(self.tools)} tools")
+                        log.info(
+                            f"[ReAct] Tools refreshed, now have {len(self.tools)} tools"
+                        )
                 except Exception as e:
                     log.warning(f"[ReAct] Tool refresh failed: {e}")
 
@@ -680,7 +750,9 @@ Your response:"""
         allowed_params = spec.get("parameters", {}).get("properties", {}).keys()
         filtered_params = {k: v for k, v in parameters.items() if k in allowed_params}
 
-        log.info(f"[ReAct] Executing tool '{tool_name}' with params: {list(filtered_params.keys())}")
+        log.info(
+            f"[ReAct] Executing tool '{tool_name}' with params: {list(filtered_params.keys())}"
+        )
 
         try:
             if direct_tool and self.event_caller:
@@ -745,7 +817,9 @@ Your response:"""
             # Check for MCP-style errors in successful responses
             mcp_error = self._parse_mcp_error(tool_result)
             if mcp_error:
-                log.warning(f"[ReAct] Tool '{tool_name}' returned MCP error: {mcp_error}")
+                log.warning(
+                    f"[ReAct] Tool '{tool_name}' returned MCP error: {mcp_error}"
+                )
                 formatted_error = self._format_error_for_retry(mcp_error)
                 return {
                     "status": "error",
@@ -763,7 +837,9 @@ Your response:"""
             }
 
         except asyncio.TimeoutError:
-            log.error(f"[ReAct] Tool '{tool_name}' timed out after {self.config.tool_timeout}s")
+            log.error(
+                f"[ReAct] Tool '{tool_name}' timed out after {self.config.tool_timeout}s"
+            )
             return {
                 "status": "error",
                 "error": f"Tool execution timed out after {self.config.tool_timeout}s. Try again or use a different approach.",
@@ -807,7 +883,9 @@ Your response:"""
         """Get a human-readable description of a step."""
         if step.step_type == ReActStepType.THOUGHT:
             # Truncate long thoughts
-            content = step.content[:100] + "..." if len(step.content) > 100 else step.content
+            content = (
+                step.content[:100] + "..." if len(step.content) > 100 else step.content
+            )
             return f"Thinking: {content}"
         elif step.step_type == ReActStepType.ACTION:
             return f"Executing: {step.tool_name}"
@@ -839,7 +917,9 @@ Your response:"""
         tools_description = self._format_tools_for_prompt()
         conversation_context = self._format_conversation_history()
         if conversation_context:
-            conversation_section = f"Recent Conversation History:\n{conversation_context}"
+            conversation_section = (
+                f"Recent Conversation History:\n{conversation_context}"
+            )
         else:
             conversation_section = "No previous conversation history."
 
@@ -865,7 +945,9 @@ Your response:"""
                 if last_step.step_type == ReActStepType.OBSERVATION:
                     instruction = "Based on the observation above, think about what to do next or provide the final answer."
                 elif last_step.step_type == ReActStepType.THOUGHT:
-                    instruction = "Decide on your next action or provide the final answer."
+                    instruction = (
+                        "Decide on your next action or provide the final answer."
+                    )
                 else:
                     instruction = "Continue with your reasoning and actions."
 
@@ -887,7 +969,9 @@ Your response:"""
 
                 if parsed["type"] == "final_answer":
                     # Before accepting, verify with LLM that answer matches actual tool executions
-                    log.info("[ReAct] Verifying final answer against tool executions...")
+                    log.info(
+                        "[ReAct] Verifying final answer against tool executions..."
+                    )
 
                     # Check for hallucination using LLM-based verification
                     hallucination_correction = await self._detect_hallucination(
@@ -908,7 +992,9 @@ Your response:"""
                         result.steps.append(verification_step)
                         await self._emit_step(verification_step)
 
-                        log.warning("[ReAct] Verification rejected final answer, continuing...")
+                        log.warning(
+                            "[ReAct] Verification rejected final answer, continuing..."
+                        )
                         continue  # Skip to next iteration - agent will see verification failure in history
 
                     # Verification passed - Task complete!
@@ -957,7 +1043,9 @@ Your response:"""
                     if tool_result["status"] == "success":
                         # Safely serialize the result
                         try:
-                            observation_content = json.dumps(tool_result["result"], ensure_ascii=False, indent=2)
+                            observation_content = json.dumps(
+                                tool_result["result"], ensure_ascii=False, indent=2
+                            )
                         except (TypeError, ValueError):
                             # Handle non-serializable results
                             observation_content = str(tool_result["result"])
@@ -967,7 +1055,11 @@ Your response:"""
                         # Add to sources
                         tool = self.tools.get(parsed["tool_name"], {})
                         tool_id = tool.get("tool_id", "")
-                        source_name = f"{tool_id}/{parsed['tool_name']}" if tool_id else parsed["tool_name"]
+                        source_name = (
+                            f"{tool_id}/{parsed['tool_name']}"
+                            if tool_id
+                            else parsed["tool_name"]
+                        )
                         result.sources.append(
                             {
                                 "source": {"name": source_name},
@@ -984,14 +1076,18 @@ Your response:"""
                     else:
                         observation_content = f"Error: {tool_result['error']}"
                         consecutive_failures += 1
-                        result.errors.append({
-                            "iteration": iteration,
-                            "tool": parsed["tool_name"],
-                            "error": tool_result["error"],
-                        })
+                        result.errors.append(
+                            {
+                                "iteration": iteration,
+                                "tool": parsed["tool_name"],
+                                "error": tool_result["error"],
+                            }
+                        )
 
                         if consecutive_failures >= self.config.max_consecutive_failures:
-                            log.warning(f"[ReAct] Max consecutive failures reached ({consecutive_failures})")
+                            log.warning(
+                                f"[ReAct] Max consecutive failures reached ({consecutive_failures})"
+                            )
                             if not self.config.continue_on_failure:
                                 result.status = ReActStatus.FAILED
                                 result.final_answer = f"Task failed after {consecutive_failures} consecutive tool failures."
@@ -1020,10 +1116,12 @@ Your response:"""
 
             except Exception as e:
                 log.error(f"[ReAct] Error in iteration {iteration}: {e}")
-                result.errors.append({
-                    "iteration": iteration,
-                    "error": str(e),
-                })
+                result.errors.append(
+                    {
+                        "iteration": iteration,
+                        "error": str(e),
+                    }
+                )
                 consecutive_failures += 1
 
                 if consecutive_failures >= self.config.max_consecutive_failures:

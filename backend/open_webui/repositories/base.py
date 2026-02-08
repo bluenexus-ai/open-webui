@@ -90,7 +90,9 @@ class BaseChatRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_archived(self, user_id: str, page: int = 1, limit: int = 60) -> List[dict]:
+    async def get_archived(
+        self, user_id: str, page: int = 1, limit: int = 60
+    ) -> List[dict]:
         """Get archived chats for a user."""
         pass
 
@@ -100,7 +102,9 @@ class BaseChatRepository(ABC):
         pass
 
     @abstractmethod
-    async def search(self, user_id: str, query: str, page: int = 1, limit: int = 60) -> List[dict]:
+    async def search(
+        self, user_id: str, query: str, page: int = 1, limit: int = 60
+    ) -> List[dict]:
         """Search chats by title or content."""
         pass
 
@@ -112,17 +116,23 @@ class BaseChatRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_by_user_id_admin(self, user_id: str, page: int = 1, limit: int = 60, query: str = None) -> List[dict]:
+    async def get_by_user_id_admin(
+        self, user_id: str, page: int = 1, limit: int = 60, query: str = None
+    ) -> List[dict]:
         """Get chats for a specific user (admin only)."""
         pass
 
     @abstractmethod
-    async def get_by_folder_id(self, user_id: str, folder_id: str, page: int = 1, limit: int = 60) -> List[dict]:
+    async def get_by_folder_id(
+        self, user_id: str, folder_id: str, page: int = 1, limit: int = 60
+    ) -> List[dict]:
         """Get chats in a specific folder."""
         pass
 
     @abstractmethod
-    async def get_by_folder_ids(self, user_id: str, folder_ids: List[str]) -> List[dict]:
+    async def get_by_folder_ids(
+        self, user_id: str, folder_ids: List[str]
+    ) -> List[dict]:
         """Get chats in multiple folders."""
         pass
 
@@ -137,12 +147,16 @@ class BaseChatRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_by_tag(self, user_id: str, tag_name: str, skip: int = 0, limit: int = 50) -> List[dict]:
+    async def get_by_tag(
+        self, user_id: str, tag_name: str, skip: int = 0, limit: int = 50
+    ) -> List[dict]:
         """Get chats with a specific tag."""
         pass
 
     @abstractmethod
-    async def update_folder_id(self, chat_id: str, user_id: str, folder_id: str) -> Optional[dict]:
+    async def update_folder_id(
+        self, chat_id: str, user_id: str, folder_id: str
+    ) -> Optional[dict]:
         """Update chat folder."""
         pass
 
@@ -167,7 +181,9 @@ class BaseChatRepository(ABC):
         pass
 
     @abstractmethod
-    async def update_message(self, chat_id: str, user_id: str, message_id: str, content: str) -> Optional[dict]:
+    async def update_message(
+        self, chat_id: str, user_id: str, message_id: str, content: str
+    ) -> Optional[dict]:
         """Update a message in a chat."""
         pass
 

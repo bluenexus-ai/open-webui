@@ -153,7 +153,9 @@ class PostgresChatRepository(BaseChatRepository):
         }
         return await self.create(user_id, cloned_data)
 
-    async def get_archived(self, user_id: str, page: int = 1, limit: int = 60) -> List[dict]:
+    async def get_archived(
+        self, user_id: str, page: int = 1, limit: int = 60
+    ) -> List[dict]:
         skip = (page - 1) * limit
         chats = Chats.get_archived_chat_list_by_user_id(user_id, skip=skip, limit=limit)
         return [chat.model_dump() for chat in chats]
@@ -162,7 +164,9 @@ class PostgresChatRepository(BaseChatRepository):
         chats = Chats.get_pinned_chats_by_user_id(user_id)
         return [chat.model_dump() for chat in chats]
 
-    async def search(self, user_id: str, query: str, page: int = 1, limit: int = 60) -> List[dict]:
+    async def search(
+        self, user_id: str, query: str, page: int = 1, limit: int = 60
+    ) -> List[dict]:
         skip = (page - 1) * limit
         chats = Chats.get_chats_by_user_id_and_search_text(
             user_id, query, include_archived=False, skip=skip, limit=limit
@@ -176,21 +180,31 @@ class PostgresChatRepository(BaseChatRepository):
         chats = Chats.get_chats()
         return [chat.model_dump() for chat in chats]
 
-    async def get_by_user_id_admin(self, user_id: str, page: int = 1, limit: int = 60, query: str = None) -> List[dict]:
+    async def get_by_user_id_admin(
+        self, user_id: str, page: int = 1, limit: int = 60, query: str = None
+    ) -> List[dict]:
         """Get chats for a specific user (admin only)."""
         skip = (page - 1) * limit
         if query:
-            chats = Chats.get_chats_by_user_id_and_search_text(user_id, query, skip=skip, limit=limit)
+            chats = Chats.get_chats_by_user_id_and_search_text(
+                user_id, query, skip=skip, limit=limit
+            )
         else:
             chats = Chats.get_chats_by_user_id(user_id, page, limit)
         return [chat.model_dump() for chat in chats]
 
-    async def get_by_folder_id(self, user_id: str, folder_id: str, page: int = 1, limit: int = 60) -> List[dict]:
+    async def get_by_folder_id(
+        self, user_id: str, folder_id: str, page: int = 1, limit: int = 60
+    ) -> List[dict]:
         """Get chats in a specific folder."""
-        chats = Chats.get_chats_by_folder_id_and_user_id(folder_id, user_id, page, limit)
+        chats = Chats.get_chats_by_folder_id_and_user_id(
+            folder_id, user_id, page, limit
+        )
         return [chat.model_dump() for chat in chats]
 
-    async def get_by_folder_ids(self, user_id: str, folder_ids: List[str]) -> List[dict]:
+    async def get_by_folder_ids(
+        self, user_id: str, folder_ids: List[str]
+    ) -> List[dict]:
         """Get chats in multiple folders."""
         chats = Chats.get_chats_by_folder_ids_and_user_id(folder_ids, user_id)
         return [chat.model_dump() for chat in chats]
@@ -205,14 +219,20 @@ class PostgresChatRepository(BaseChatRepository):
         Chats.unarchive_all_chats_by_user_id(user_id)
         return True
 
-    async def get_by_tag(self, user_id: str, tag_name: str, skip: int = 0, limit: int = 50) -> List[dict]:
+    async def get_by_tag(
+        self, user_id: str, tag_name: str, skip: int = 0, limit: int = 50
+    ) -> List[dict]:
         """Get chats with a specific tag."""
         chats = Chats.get_chats_by_user_id_and_tag_name(user_id, tag_name, skip, limit)
         return [chat.model_dump() for chat in chats]
 
-    async def update_folder_id(self, chat_id: str, user_id: str, folder_id: str) -> Optional[dict]:
+    async def update_folder_id(
+        self, chat_id: str, user_id: str, folder_id: str
+    ) -> Optional[dict]:
         """Update chat folder."""
-        chat = Chats.update_chat_folder_id_by_id_and_user_id(chat_id, user_id, folder_id)
+        chat = Chats.update_chat_folder_id_by_id_and_user_id(
+            chat_id, user_id, folder_id
+        )
         return chat.model_dump() if chat else None
 
     async def get_tags(self, chat_id: str, user_id: str) -> List[str]:
@@ -252,7 +272,9 @@ class PostgresChatRepository(BaseChatRepository):
         Chats.update_chat_tags_by_id_and_user_id(chat_id, user_id, [])
         return True
 
-    async def update_message(self, chat_id: str, user_id: str, message_id: str, content: str) -> Optional[dict]:
+    async def update_message(
+        self, chat_id: str, user_id: str, message_id: str, content: str
+    ) -> Optional[dict]:
         """Update a message in a chat."""
         chat = Chats.get_chat_by_id(chat_id)
         if not chat:
@@ -288,6 +310,7 @@ class BlueNexusChatRepository(BaseChatRepository):
         """Get BlueNexus client for the user."""
         if self._client is None:
             from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
+
             self._client = get_bluenexus_client_for_user(self.user_id)
         return self._client
 
@@ -324,18 +347,24 @@ class BlueNexusChatRepository(BaseChatRepository):
             chat_data["chat"] = chat_content
 
         # Ensure history exists with proper structure
-        if "history" not in chat_content or not isinstance(chat_content.get("history"), dict):
+        if "history" not in chat_content or not isinstance(
+            chat_content.get("history"), dict
+        ):
             chat_content["history"] = {"currentId": None, "messages": {}}
         else:
             # Ensure history.messages is a dict
             history = chat_content["history"]
-            if "messages" not in history or not isinstance(history.get("messages"), dict):
+            if "messages" not in history or not isinstance(
+                history.get("messages"), dict
+            ):
                 history["messages"] = {}
             if "currentId" not in history:
                 history["currentId"] = None
 
         # Ensure messages array exists
-        if "messages" not in chat_content or not isinstance(chat_content.get("messages"), list):
+        if "messages" not in chat_content or not isinstance(
+            chat_content.get("messages"), list
+        ):
             chat_content["messages"] = []
 
         return chat_data
@@ -354,7 +383,9 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         client = self._get_client()
         if not client:
-            log.warning(f"[BlueNexusChatRepository.get_list] No client for user {user_id}, returning empty list")
+            log.warning(
+                f"[BlueNexusChatRepository.get_list] No client for user {user_id}, returning empty list"
+            )
             return []
 
         # Simplified filter - only filter by user_id and archived status
@@ -371,7 +402,7 @@ class BlueNexusChatRepository(BaseChatRepository):
                 sort_order=SortOrder.DESC,
                 limit=limit,
                 page=page,
-            )
+            ),
         )
 
         chats = []
@@ -391,7 +422,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if response.data and len(response.data) > 0:
@@ -418,8 +449,7 @@ class BlueNexusChatRepository(BaseChatRepository):
             return None
 
         response = await client.query(
-            Collections.CHATS,
-            QueryOptions(filter={"share_id": share_id}, limit=1)
+            Collections.CHATS, QueryOptions(filter={"share_id": share_id}, limit=1)
         )
 
         if response.data and len(response.data) > 0:
@@ -466,7 +496,7 @@ class BlueNexusChatRepository(BaseChatRepository):
         # Find existing chat
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -485,7 +515,9 @@ class BlueNexusChatRepository(BaseChatRepository):
                 chat_data["chat"] = existing_chat
             else:
                 chat_data["chat"] = incoming_chat
-            chat_data["title"] = chat_data["chat"].get("title", chat_data.get("title", "New Chat"))
+            chat_data["title"] = chat_data["chat"].get(
+                "title", chat_data.get("title", "New Chat")
+            )
 
         updated_record = await client.update(Collections.CHATS, record.id, chat_data)
         result_data = updated_record.model_dump()
@@ -502,7 +534,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -522,8 +554,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         while True:
             response = await client.query(
-                Collections.CHATS,
-                QueryOptions(filter={"user_id": user_id}, limit=100)
+                Collections.CHATS, QueryOptions(filter={"user_id": user_id}, limit=100)
             )
 
             if not response.data or len(response.data) == 0:
@@ -544,7 +575,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -580,7 +611,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -612,7 +643,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -643,7 +674,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -663,7 +694,9 @@ class BlueNexusChatRepository(BaseChatRepository):
         """Explicitly unpin - only unpin if currently pinned."""
         return await self._set_field(chat_id, user_id, "pinned", False)
 
-    async def _set_field(self, chat_id: str, user_id: str, field: str, value: bool) -> Optional[dict]:
+    async def _set_field(
+        self, chat_id: str, user_id: str, field: str, value: bool
+    ) -> Optional[dict]:
         from open_webui.utils.bluenexus.collections import Collections
         from open_webui.utils.bluenexus.types import QueryOptions
 
@@ -673,7 +706,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -697,7 +730,9 @@ class BlueNexusChatRepository(BaseChatRepository):
             "chat": {
                 **chat.get("chat", {}),
                 "originalChatId": chat_id,
-                "branchPointMessageId": chat.get("chat", {}).get("history", {}).get("currentId"),
+                "branchPointMessageId": chat.get("chat", {})
+                .get("history", {})
+                .get("currentId"),
                 "title": f"Clone of {chat.get('title', 'Chat')}",
             },
             "meta": chat.get("meta", {}),
@@ -705,7 +740,9 @@ class BlueNexusChatRepository(BaseChatRepository):
         }
         return await self.create(user_id, cloned_data)
 
-    async def get_archived(self, user_id: str, page: int = 1, limit: int = 60) -> List[dict]:
+    async def get_archived(
+        self, user_id: str, page: int = 1, limit: int = 60
+    ) -> List[dict]:
         from open_webui.utils.bluenexus.collections import Collections
         from open_webui.utils.bluenexus.types import QueryOptions, SortBy, SortOrder
 
@@ -721,7 +758,7 @@ class BlueNexusChatRepository(BaseChatRepository):
                 sort_order=SortOrder.DESC,
                 limit=limit,
                 page=page,
-            )
+            ),
         )
 
         chats = []
@@ -745,7 +782,7 @@ class BlueNexusChatRepository(BaseChatRepository):
                 filter={"user_id": user_id, "pinned": True, "archived": False},
                 sort_by=SortBy.UPDATED_AT,
                 sort_order=SortOrder.DESC,
-            )
+            ),
         )
 
         chats = []
@@ -755,7 +792,9 @@ class BlueNexusChatRepository(BaseChatRepository):
             chats.append(chat_data)
         return chats
 
-    async def search(self, user_id: str, query: str, page: int = 1, limit: int = 60) -> List[dict]:
+    async def search(
+        self, user_id: str, query: str, page: int = 1, limit: int = 60
+    ) -> List[dict]:
         from open_webui.utils.bluenexus.collections import Collections
         from open_webui.utils.bluenexus.types import QueryOptions, SortBy, SortOrder
 
@@ -792,12 +831,21 @@ class BlueNexusChatRepository(BaseChatRepository):
             is_archived = False
 
         # Remove special keywords from search text
-        title_search = " ".join([
-            word for word in search_words
-            if not word.startswith("tag:")
-            and not word.startswith("folder:")
-            and word not in ["pinned:true", "pinned:false", "archived:true", "archived:false"]
-        ]).strip()
+        title_search = " ".join(
+            [
+                word
+                for word in search_words
+                if not word.startswith("tag:")
+                and not word.startswith("folder:")
+                and word
+                not in [
+                    "pinned:true",
+                    "pinned:false",
+                    "archived:true",
+                    "archived:false",
+                ]
+            ]
+        ).strip()
 
         # Build filter - BlueNexus doesn't support $contains, so we filter client-side
         filter_dict = {"user_id": user_id}
@@ -821,7 +869,7 @@ class BlueNexusChatRepository(BaseChatRepository):
                 sort_order=SortOrder.DESC,
                 limit=fetch_limit,
                 page=page,
-            )
+            ),
         )
 
         chats = []
@@ -860,13 +908,18 @@ class BlueNexusChatRepository(BaseChatRepository):
     async def get_all(self) -> List[dict]:
         """Get all chats (admin only) - BlueNexus doesn't support cross-user queries."""
         # BlueNexus is per-user, so admin export falls back to PostgreSQL
-        log.warning("[BlueNexusChatRepository.get_all] Admin export not supported in BlueNexus mode")
+        log.warning(
+            "[BlueNexusChatRepository.get_all] Admin export not supported in BlueNexus mode"
+        )
         return []
 
-    async def get_by_user_id_admin(self, user_id: str, page: int = 1, limit: int = 60, query: str = None) -> List[dict]:
+    async def get_by_user_id_admin(
+        self, user_id: str, page: int = 1, limit: int = 60, query: str = None
+    ) -> List[dict]:
         """Get chats for a specific user (admin only)."""
         # For admin access to other users, we need a special client
         from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
+
         client = get_bluenexus_client_for_user(user_id)
         if not client:
             return []
@@ -886,7 +939,7 @@ class BlueNexusChatRepository(BaseChatRepository):
                 sort_order=SortOrder.DESC,
                 limit=limit,
                 page=page,
-            )
+            ),
         )
 
         chats = []
@@ -896,7 +949,9 @@ class BlueNexusChatRepository(BaseChatRepository):
             chats.append(chat_data)
         return chats
 
-    async def get_by_folder_id(self, user_id: str, folder_id: str, page: int = 1, limit: int = 60) -> List[dict]:
+    async def get_by_folder_id(
+        self, user_id: str, folder_id: str, page: int = 1, limit: int = 60
+    ) -> List[dict]:
         """Get chats in a specific folder."""
         from open_webui.utils.bluenexus.collections import Collections
         from open_webui.utils.bluenexus.types import QueryOptions, SortBy, SortOrder
@@ -913,7 +968,7 @@ class BlueNexusChatRepository(BaseChatRepository):
                 sort_order=SortOrder.DESC,
                 limit=limit,
                 page=page,
-            )
+            ),
         )
 
         chats = []
@@ -923,7 +978,9 @@ class BlueNexusChatRepository(BaseChatRepository):
             chats.append(chat_data)
         return chats
 
-    async def get_by_folder_ids(self, user_id: str, folder_ids: List[str]) -> List[dict]:
+    async def get_by_folder_ids(
+        self, user_id: str, folder_ids: List[str]
+    ) -> List[dict]:
         """Get chats in multiple folders."""
         from open_webui.utils.bluenexus.collections import Collections
         from open_webui.utils.bluenexus.types import QueryOptions, SortBy, SortOrder
@@ -939,7 +996,7 @@ class BlueNexusChatRepository(BaseChatRepository):
                 sort_by=SortBy.UPDATED_AT,
                 sort_order=SortOrder.DESC,
                 limit=100,
-            )
+            ),
         )
 
         chats = []
@@ -961,7 +1018,7 @@ class BlueNexusChatRepository(BaseChatRepository):
         while True:
             response = await client.query(
                 Collections.CHATS,
-                QueryOptions(filter={"user_id": user_id, "archived": False}, limit=100)
+                QueryOptions(filter={"user_id": user_id, "archived": False}, limit=100),
             )
 
             if not response.data or len(response.data) == 0:
@@ -986,7 +1043,7 @@ class BlueNexusChatRepository(BaseChatRepository):
         while True:
             response = await client.query(
                 Collections.CHATS,
-                QueryOptions(filter={"user_id": user_id, "archived": True}, limit=100)
+                QueryOptions(filter={"user_id": user_id, "archived": True}, limit=100),
             )
 
             if not response.data or len(response.data) == 0:
@@ -999,7 +1056,9 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         return True
 
-    async def get_by_tag(self, user_id: str, tag_name: str, skip: int = 0, limit: int = 50) -> List[dict]:
+    async def get_by_tag(
+        self, user_id: str, tag_name: str, skip: int = 0, limit: int = 50
+    ) -> List[dict]:
         """Get chats with a specific tag."""
         from open_webui.utils.bluenexus.collections import Collections
         from open_webui.utils.bluenexus.types import QueryOptions, SortBy, SortOrder
@@ -1016,7 +1075,7 @@ class BlueNexusChatRepository(BaseChatRepository):
                 sort_by=SortBy.UPDATED_AT,
                 sort_order=SortOrder.DESC,
                 limit=limit,
-            )
+            ),
         )
 
         chats = []
@@ -1026,7 +1085,9 @@ class BlueNexusChatRepository(BaseChatRepository):
             chats.append(chat_data)
         return chats[skip:] if skip > 0 else chats
 
-    async def update_folder_id(self, chat_id: str, user_id: str, folder_id: str) -> Optional[dict]:
+    async def update_folder_id(
+        self, chat_id: str, user_id: str, folder_id: str
+    ) -> Optional[dict]:
         """Update chat folder."""
         from open_webui.utils.bluenexus.collections import Collections
         from open_webui.utils.bluenexus.types import QueryOptions
@@ -1037,7 +1098,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -1070,7 +1131,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -1100,7 +1161,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -1130,7 +1191,7 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         response = await client.query(
             Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1)
+            QueryOptions(filter={"owui_id": chat_id, "user_id": user_id}, limit=1),
         )
 
         if not response.data or len(response.data) == 0:
@@ -1146,7 +1207,9 @@ class BlueNexusChatRepository(BaseChatRepository):
 
         return True
 
-    async def update_message(self, chat_id: str, user_id: str, message_id: str, content: str) -> Optional[dict]:
+    async def update_message(
+        self, chat_id: str, user_id: str, message_id: str, content: str
+    ) -> Optional[dict]:
         """Update a message in a chat."""
         from open_webui.utils.bluenexus.collections import Collections
         from open_webui.utils.bluenexus.types import QueryOptions
@@ -1156,8 +1219,7 @@ class BlueNexusChatRepository(BaseChatRepository):
             return None
 
         response = await client.query(
-            Collections.CHATS,
-            QueryOptions(filter={"owui_id": chat_id}, limit=1)
+            Collections.CHATS, QueryOptions(filter={"owui_id": chat_id}, limit=1)
         )
 
         if not response.data or len(response.data) == 0:

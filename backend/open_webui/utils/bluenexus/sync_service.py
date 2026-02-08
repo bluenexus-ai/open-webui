@@ -64,18 +64,24 @@ class BlueNexusSyncService:
             True if sync was successful, False otherwise
         """
         collection_name = getattr(collection, "value", collection)
-        log.debug(f"[BlueNexus Sync] sync_model_to_bluenexus called: collection={collection_name}, record_id={record_id}, operation={operation}")
+        log.debug(
+            f"[BlueNexus Sync] sync_model_to_bluenexus called: collection={collection_name}, record_id={record_id}, operation={operation}"
+        )
 
         # Check if BlueNexus is enabled
         if not ENABLE_BLUENEXUS.value or not ENABLE_BLUENEXUS_SYNC.value:
             log.debug(f"[BlueNexus Sync] Sync disabled")
             return False
 
-        log.debug(f"[BlueNexus Sync] Syncing {collection_name}/{record_id} (operation={operation})")
+        log.debug(
+            f"[BlueNexus Sync] Syncing {collection_name}/{record_id} (operation={operation})"
+        )
 
         client = get_bluenexus_client_for_user(user_id)
         if not client:
-            log.debug(f"[BlueNexus Sync] User {user_id} has no BlueNexus session, skipping sync")
+            log.debug(
+                f"[BlueNexus Sync] User {user_id} has no BlueNexus session, skipping sync"
+            )
             return False
 
         try:
@@ -83,32 +89,43 @@ class BlueNexusSyncService:
             async def find_bluenexus_id(owui_id: str) -> Optional[str]:
                 """Query BlueNexus to find the MongoDB ID for a given Open WebUI ID."""
                 try:
-                    log.debug(f"[BlueNexus Sync] Querying for record with owui_id={owui_id}")
+                    log.debug(
+                        f"[BlueNexus Sync] Querying for record with owui_id={owui_id}"
+                    )
                     response = await client.query(
                         collection_name,
-                        QueryOptions(filter={"owui_id": owui_id}, limit=1)
+                        QueryOptions(filter={"owui_id": owui_id}, limit=1),
                     )
                     if response.data and len(response.data) > 0:
                         # BlueNexus returns records with MongoDB's _id as "id"
                         bluenexus_id = response.get_records()[0].id
-                        log.debug(f"[BlueNexus Sync] Found BlueNexus ID {bluenexus_id} for Open WebUI ID {owui_id}")
+                        log.debug(
+                            f"[BlueNexus Sync] Found BlueNexus ID {bluenexus_id} for Open WebUI ID {owui_id}"
+                        )
                         return bluenexus_id
                     log.debug(f"[BlueNexus Sync] No record found with id={owui_id}")
                     return None
                 except Exception as e:
-                    log.error(f"[BlueNexus Sync] Error querying for record: {e}", exc_info=True)
+                    log.error(
+                        f"[BlueNexus Sync] Error querying for record: {e}",
+                        exc_info=True,
+                    )
                     return None
 
             if operation == "delete":
                 # Find the BlueNexus ID first by querying with Open WebUI ID
                 bluenexus_id = await find_bluenexus_id(record_id)
                 if not bluenexus_id:
-                    log.debug(f"[BlueNexus Sync] Delete skipped for {collection_name}/{record_id}: record not found in BlueNexus")
+                    log.debug(
+                        f"[BlueNexus Sync] Delete skipped for {collection_name}/{record_id}: record not found in BlueNexus"
+                    )
                     return True
 
                 # Delete using the BlueNexus MongoDB ID
                 await client.delete(collection_name, bluenexus_id)
-                log.info(f"[BlueNexus Sync] Deleted {collection_name}/{record_id} from BlueNexus")
+                log.info(
+                    f"[BlueNexus Sync] Deleted {collection_name}/{record_id} from BlueNexus"
+                )
                 return True
 
             # Ensure data has required fields
@@ -123,7 +140,9 @@ class BlueNexusSyncService:
             if operation == "create":
                 # Create new record in BlueNexus
                 result = await client.create(collection_name, sync_data)
-                log.info(f"[BlueNexus Sync] Created {collection_name}/{record_id} in BlueNexus")
+                log.info(
+                    f"[BlueNexus Sync] Created {collection_name}/{record_id} in BlueNexus"
+                )
                 return result is not None
 
             # For UPDATE operation, find existing record by Open WebUI ID
@@ -131,18 +150,27 @@ class BlueNexusSyncService:
 
             if not bluenexus_id:
                 # Record doesn't exist, create it instead
-                log.debug(f"[BlueNexus Sync] Record {collection_name}/{record_id} not found, creating instead of updating")
+                log.debug(
+                    f"[BlueNexus Sync] Record {collection_name}/{record_id} not found, creating instead of updating"
+                )
                 result = await client.create(collection_name, sync_data)
-                log.info(f"[BlueNexus Sync] Created {collection_name}/{record_id} in BlueNexus")
+                log.info(
+                    f"[BlueNexus Sync] Created {collection_name}/{record_id} in BlueNexus"
+                )
                 return result is not None
 
             # Update existing record using BlueNexus MongoDB ID
             result = await client.update(collection_name, bluenexus_id, sync_data)
-            log.info(f"[BlueNexus Sync] Updated {collection_name}/{record_id} in BlueNexus")
+            log.info(
+                f"[BlueNexus Sync] Updated {collection_name}/{record_id} in BlueNexus"
+            )
             return result is not None
 
         except Exception as e:
-            log.error(f"[BlueNexus Sync] Error syncing {collection_name}/{record_id} to BlueNexus: {e}", exc_info=True)
+            log.error(
+                f"[BlueNexus Sync] Error syncing {collection_name}/{record_id} to BlueNexus: {e}",
+                exc_info=True,
+            )
             return False
 
     def sync_model_to_bluenexus_background(
@@ -165,10 +193,14 @@ class BlueNexusSyncService:
         """
         try:
             collection_name = getattr(collection, "value", collection)
-            log.debug(f"[BlueNexus Sync] Background sync: {collection_name}/{record_id} ({operation})")
+            log.debug(
+                f"[BlueNexus Sync] Background sync: {collection_name}/{record_id} ({operation})"
+            )
 
             if operation != "delete" and not data:
-                log.warning(f"[BlueNexus Sync] Cannot sync {collection_name}/{record_id}: data required for {operation}")
+                log.warning(
+                    f"[BlueNexus Sync] Cannot sync {collection_name}/{record_id}: data required for {operation}"
+                )
                 return
 
             task_key = f"{collection_name}:{user_id}:{record_id}"
@@ -180,7 +212,9 @@ class BlueNexusSyncService:
             try:
                 loop = asyncio.get_event_loop()
                 task = loop.create_task(
-                    self.sync_model_to_bluenexus(collection, record_id, user_id, data or {}, operation)
+                    self.sync_model_to_bluenexus(
+                        collection, record_id, user_id, data or {}, operation
+                    )
                 )
                 self._sync_tasks[task_key] = task
 
@@ -188,14 +222,20 @@ class BlueNexusSyncService:
                     # Log task result or exception
                     try:
                         if _task.exception():
-                            log.error(f"[BlueNexus Sync] Task failed: {_task.exception()}", exc_info=_task.exception())
+                            log.error(
+                                f"[BlueNexus Sync] Task failed: {_task.exception()}",
+                                exc_info=_task.exception(),
+                            )
                         else:
                             result = _task.result()
                             log.debug(f"[BlueNexus Sync] Task completed: {result}")
                     except asyncio.CancelledError:
                         log.debug(f"[BlueNexus Sync] Task cancelled: {task_key}")
                     except Exception as e:
-                        log.error(f"[BlueNexus Sync] Error in cleanup callback: {e}", exc_info=True)
+                        log.error(
+                            f"[BlueNexus Sync] Error in cleanup callback: {e}",
+                            exc_info=True,
+                        )
                     finally:
                         if task_key in self._sync_tasks:
                             del self._sync_tasks[task_key]
@@ -205,7 +245,10 @@ class BlueNexusSyncService:
             except RuntimeError as e:
                 log.debug(f"[BlueNexus Sync] No event loop available: {e}")
         except Exception as e:
-            log.error(f"[BlueNexus Sync] Unexpected error in background sync: {e}", exc_info=True)
+            log.error(
+                f"[BlueNexus Sync] Unexpected error in background sync: {e}",
+                exc_info=True,
+            )
 
     # =========================================================================
     # High-Level Helper Methods
@@ -215,7 +258,7 @@ class BlueNexusSyncService:
         self,
         collection: Union[str, Collections],
         model_instance,
-        record_id: Optional[str] = None
+        record_id: Optional[str] = None,
     ) -> None:
         """
         Sync a newly created model instance to BlueNexus.
@@ -243,34 +286,30 @@ class BlueNexusSyncService:
         # Use explicit record_id if provided, otherwise try to get 'id' attribute
         if record_id is None:
             if is_dict:
-                record_id = model_instance.get('id') or model_instance.get('owui_id')
+                record_id = model_instance.get("id") or model_instance.get("owui_id")
             else:
-                record_id = getattr(model_instance, 'id', None)
+                record_id = getattr(model_instance, "id", None)
                 if record_id is None:
                     # Try 'command' for prompts
-                    record_id = getattr(model_instance, 'command', None)
+                    record_id = getattr(model_instance, "command", None)
 
         # Get user_id and data based on type
         if is_dict:
-            user_id = model_instance.get('user_id')
+            user_id = model_instance.get("user_id")
             data = model_instance
         else:
             user_id = model_instance.user_id
             data = model_instance.model_dump()
 
         self.sync_model_to_bluenexus_background(
-            collection,
-            record_id,
-            user_id,
-            data,
-            operation="create"
+            collection, record_id, user_id, data, operation="create"
         )
 
     def sync_update(
         self,
         collection: Union[str, Collections],
         model_instance,
-        record_id: Optional[str] = None
+        record_id: Optional[str] = None,
     ) -> None:
         """
         Sync an updated model instance to BlueNexus.
@@ -298,34 +337,27 @@ class BlueNexusSyncService:
         # Use explicit record_id if provided, otherwise try to get 'id' attribute
         if record_id is None:
             if is_dict:
-                record_id = model_instance.get('id') or model_instance.get('owui_id')
+                record_id = model_instance.get("id") or model_instance.get("owui_id")
             else:
-                record_id = getattr(model_instance, 'id', None)
+                record_id = getattr(model_instance, "id", None)
                 if record_id is None:
                     # Try 'command' for prompts
-                    record_id = getattr(model_instance, 'command', None)
+                    record_id = getattr(model_instance, "command", None)
 
         # Get user_id and data based on type
         if is_dict:
-            user_id = model_instance.get('user_id')
+            user_id = model_instance.get("user_id")
             data = model_instance
         else:
             user_id = model_instance.user_id
             data = model_instance.model_dump()
 
         self.sync_model_to_bluenexus_background(
-            collection,
-            record_id,
-            user_id,
-            data,
-            operation="update"
+            collection, record_id, user_id, data, operation="update"
         )
 
     def sync_delete(
-        self,
-        collection: Union[str, Collections],
-        record_id: str,
-        user_id: str
+        self, collection: Union[str, Collections], record_id: str, user_id: str
     ) -> None:
         """
         Sync a deletion to BlueNexus.
@@ -342,11 +374,7 @@ class BlueNexusSyncService:
             BlueNexusSync.sync_delete(Collections.PROMPTS, command, user_id)
         """
         self.sync_model_to_bluenexus_background(
-            collection,
-            record_id,
-            user_id,
-            None,
-            operation="delete"
+            collection, record_id, user_id, None, operation="delete"
         )
 
     # =========================================================================
@@ -358,7 +386,7 @@ class BlueNexusSyncService:
         chat_id: str,
         user_id: str,
         data: Optional[dict] = None,
-        operation: str = "update"
+        operation: str = "update",
     ) -> None:
         """Sync a chat to BlueNexus (background)."""
         self.sync_model_to_bluenexus_background(
@@ -370,7 +398,7 @@ class BlueNexusSyncService:
         message_id: str,
         user_id: str,
         data: Optional[dict] = None,
-        operation: str = "update"
+        operation: str = "update",
     ) -> None:
         """Sync a message to BlueNexus (background)."""
         self.sync_model_to_bluenexus_background(
@@ -382,7 +410,7 @@ class BlueNexusSyncService:
         command: str,
         user_id: str,
         data: Optional[dict] = None,
-        operation: str = "update"
+        operation: str = "update",
     ) -> None:
         """Sync a prompt to BlueNexus (background)."""
         self.sync_model_to_bluenexus_background(
@@ -394,7 +422,7 @@ class BlueNexusSyncService:
         memory_id: str,
         user_id: str,
         data: Optional[dict] = None,
-        operation: str = "update"
+        operation: str = "update",
     ) -> None:
         """Sync a memory to BlueNexus (background)."""
         self.sync_model_to_bluenexus_background(
@@ -406,7 +434,7 @@ class BlueNexusSyncService:
         note_id: str,
         user_id: str,
         data: Optional[dict] = None,
-        operation: str = "update"
+        operation: str = "update",
     ) -> None:
         """Sync a note to BlueNexus (background)."""
         self.sync_model_to_bluenexus_background(

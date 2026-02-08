@@ -73,7 +73,9 @@ log.setLevel(SRC_LOG_LEVELS["OPENAI"])
 
 # Import SSL context helper from bluenexus module (with fallback)
 try:
-    from open_webui.utils.bluenexus.llm import get_ssl_context_for_url as get_ssl_context
+    from open_webui.utils.bluenexus.llm import (
+        get_ssl_context_for_url as get_ssl_context,
+    )
 except ImportError:
     # Fallback implementation if bluenexus module is not available
     def get_ssl_context(url: str):
@@ -127,7 +129,9 @@ async def send_get_request(
     last_error = None
     for attempt in range(max_retries):
         try:
-            async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with aiohttp.ClientSession(
+                timeout=timeout, trust_env=True
+            ) as session:
                 async with session.get(
                     url,
                     headers=headers,
@@ -135,10 +139,16 @@ async def send_get_request(
                     ssl=get_ssl_context(url),
                 ) as response:
                     return await response.json()
-        except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, asyncio.TimeoutError) as e:
+        except (
+            aiohttp.ClientConnectorError,
+            aiohttp.ServerDisconnectedError,
+            asyncio.TimeoutError,
+        ) as e:
             last_error = e
             if attempt < max_retries - 1:
-                log.warning(f"Connection error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delay}s...")
+                log.warning(
+                    f"Connection error (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {retry_delay}s..."
+                )
                 await asyncio.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
             else:
@@ -239,9 +249,9 @@ async def get_headers_and_cookies(
             if oauth_provider == "bluenexus":
                 # Get BlueNexus OAuth session token
                 from open_webui.models.oauth_sessions import OAuthSessions
+
                 session = OAuthSessions.get_session_by_provider_and_user_id(
-                    provider="bluenexus",
-                    user_id=user.id
+                    provider="bluenexus", user_id=user.id
                 )
                 if session:
                     oauth_token = session.token
@@ -483,10 +493,14 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
             if not has_valid_session:
                 has_valid_session = has_bluenexus_session(user.id)
                 if has_valid_session:
-                    log.info(f"BlueNexus session found via database lookup for user {user.id}")
+                    log.info(
+                        f"BlueNexus session found via database lookup for user {user.id}"
+                    )
 
             if not has_valid_session:
-                log.debug(f"Skipping BlueNexus models for user {user.id} - no valid session")
+                log.debug(
+                    f"Skipping BlueNexus models for user {user.id} - no valid session"
+                )
                 request_tasks.append(asyncio.ensure_future(asyncio.sleep(0, None)))
                 continue
 
@@ -967,7 +981,9 @@ async def generate_chat_completion(
             # Check if this is a BlueNexus model by checking if user has session
             if has_bluenexus_session(user.id):
                 # Allow BlueNexus users to use runtime BlueNexus models
-                log.info(f"Allowing BlueNexus model access for user {user.id} (model not in DB)")
+                log.info(
+                    f"Allowing BlueNexus model access for user {user.id} (model not in DB)"
+                )
             else:
                 raise HTTPException(
                     status_code=403,
@@ -1023,8 +1039,12 @@ async def generate_chat_completion(
     # Add default max_tokens for Anthropic models (they require it)
     model_name = payload.get("model", "")
     model_name_lower = model_name.lower()
-    is_anthropic_model = "anthropic/" in model_name_lower or "claude" in model_name_lower
-    log.info(f"Chat completion model: {model_name}, is_anthropic: {is_anthropic_model}, max_tokens in payload: {'max_tokens' in payload}")
+    is_anthropic_model = (
+        "anthropic/" in model_name_lower or "claude" in model_name_lower
+    )
+    log.info(
+        f"Chat completion model: {model_name}, is_anthropic: {is_anthropic_model}, max_tokens in payload: {'max_tokens' in payload}"
+    )
     if (
         is_anthropic_model
         and "max_tokens" not in payload
@@ -1075,7 +1095,8 @@ async def generate_chat_completion(
                 session = None
 
             session = aiohttp.ClientSession(
-                trust_env=True, timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT)
+                trust_env=True,
+                timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT),
             )
 
             r = await session.request(
@@ -1115,9 +1136,14 @@ async def generate_chat_completion(
 
                 return response
 
-        except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, ConnectionResetError, OSError) as e:
+        except (
+            aiohttp.ClientConnectorError,
+            aiohttp.ServerDisconnectedError,
+            ConnectionResetError,
+            OSError,
+        ) as e:
             if attempt < max_retries:
-                retry_delay = 0.5 * (2 ** attempt)  # Exponential backoff: 0.5s, 1s, 2s
+                retry_delay = 0.5 * (2**attempt)  # Exponential backoff: 0.5s, 1s, 2s
                 log.warning(
                     f"[OpenAI API] Connection error (attempt {attempt + 1}/{max_retries + 1}): {type(e).__name__}: {e}. Retrying in {retry_delay}s..."
                 )
@@ -1126,7 +1152,9 @@ async def generate_chat_completion(
             else:
                 # Clean up before raising exception
                 await cleanup_response(r, session)
-                log.error(f"[OpenAI API] Connection failed after {max_retries + 1} attempts: {e}")
+                log.error(
+                    f"[OpenAI API] Connection failed after {max_retries + 1} attempts: {e}"
+                )
                 raise HTTPException(
                     status_code=503,
                     detail=f"Open WebUI: Server Connection Error after {max_retries + 1} attempts",

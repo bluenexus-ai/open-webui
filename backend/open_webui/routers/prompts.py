@@ -116,7 +116,11 @@ async def create_new_prompt(
         )
 
     # Normalize command to always have leading slash
-    command = form_data.command if form_data.command.startswith("/") else f"/{form_data.command}"
+    command = (
+        form_data.command
+        if form_data.command.startswith("/")
+        else f"/{form_data.command}"
+    )
 
     if is_bluenexus_data_storage_enabled():
         repo = get_prompt_repository(user.id)

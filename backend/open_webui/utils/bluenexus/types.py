@@ -10,18 +10,21 @@ from pydantic import BaseModel, Field
 
 class SortOrder(str, Enum):
     """Sort order for query results"""
+
     ASC = "asc"
     DESC = "desc"
 
 
 class SortBy(str, Enum):
     """Fields available for sorting"""
+
     CREATED_AT = "createdAt"
     UPDATED_AT = "updatedAt"
 
 
 class QueryOptions(BaseModel):
     """Options for querying records from BlueNexus"""
+
     filter: Optional[dict[str, Any]] = None
     sort_by: SortBy = SortBy.CREATED_AT
     sort_order: SortOrder = SortOrder.DESC
@@ -34,6 +37,7 @@ class QueryOptions(BaseModel):
 
 class PaginationInfo(BaseModel):
     """Pagination metadata from BlueNexus response"""
+
     page: int
     limit: int
     total: int
@@ -48,6 +52,7 @@ class BlueNexusRecord(BaseModel):
 
     All records have these system fields plus any custom fields.
     """
+
     id: str
     createdAt: datetime
     updatedAt: datetime
@@ -84,6 +89,7 @@ T = TypeVar("T", bound=BlueNexusRecord)
 
 class PaginatedResponse(BaseModel, Generic[T]):
     """Paginated response from BlueNexus query endpoint"""
+
     data: list[dict[str, Any]]  # Raw data, convert to records as needed
     pagination: PaginationInfo
 
@@ -94,6 +100,7 @@ class PaginatedResponse(BaseModel, Generic[T]):
 
 class ValidationError(BaseModel):
     """Validation error from schema validation"""
+
     field: str
     message: str
     value: Optional[Any] = None
@@ -101,13 +108,20 @@ class ValidationError(BaseModel):
 
 class VerifyResponse(BaseModel):
     """Response from data verification endpoint"""
+
     valid: bool
     errors: Optional[list[ValidationError]] = None
 
 
 class BlueNexusError(Exception):
     """Base exception for BlueNexus API errors"""
-    def __init__(self, message: str, status_code: Optional[int] = None, details: Optional[dict] = None):
+
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        details: Optional[dict] = None,
+    ):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
@@ -116,21 +130,27 @@ class BlueNexusError(Exception):
 
 class BlueNexusAuthError(BlueNexusError):
     """Authentication/authorization error (401/403)"""
+
     pass
 
 
 class BlueNexusNotFoundError(BlueNexusError):
     """Resource not found error (404)"""
+
     pass
 
 
 class BlueNexusValidationError(BlueNexusError):
     """Validation error (400)"""
-    def __init__(self, message: str, errors: Optional[list[ValidationError]] = None, **kwargs):
+
+    def __init__(
+        self, message: str, errors: Optional[list[ValidationError]] = None, **kwargs
+    ):
         super().__init__(message, **kwargs)
         self.errors = errors or []
 
 
 class BlueNexusConnectionError(BlueNexusError):
     """Connection/network error"""
+
     pass

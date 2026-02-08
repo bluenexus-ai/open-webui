@@ -80,11 +80,17 @@
 			console.debug('Fetched BlueNexus MCP servers:', blueNexusMCPServers);
 
 			if (blueNexusMCPServers.length === 0) {
-				console.warn('No BlueNexus MCP servers available. Make sure you are logged in with BlueNexus OAuth.');
+				console.warn(
+					'No BlueNexus MCP servers available. Make sure you are logged in with BlueNexus OAuth.'
+				);
 			}
 		} catch (err) {
 			console.error('Failed to fetch BlueNexus MCP servers:', err);
-			toast.error($i18n.t('Failed to fetch BlueNexus MCP servers. Please ensure you are logged in with BlueNexus.'));
+			toast.error(
+				$i18n.t(
+					'Failed to fetch BlueNexus MCP servers. Please ensure you are logged in with BlueNexus.'
+				)
+			);
 			blueNexusMCPServers = [];
 		} finally {
 			loadingBlueNexusMCP = false;
@@ -535,7 +541,9 @@
 						{:else if type === 'mcp' && !edit && !loadingBlueNexusMCP && blueNexusMCPServers.length === 0}
 							<div class="flex gap-2 mb-2">
 								<div class="text-xs text-gray-500">
-									{$i18n.t('No BlueNexus MCP servers available. Please log in with BlueNexus OAuth to access MCP servers.')}
+									{$i18n.t(
+										'No BlueNexus MCP servers available. Please log in with BlueNexus OAuth to access MCP servers.'
+									)}
 								</div>
 							</div>
 						{/if}

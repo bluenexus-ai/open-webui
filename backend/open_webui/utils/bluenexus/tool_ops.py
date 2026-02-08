@@ -20,7 +20,9 @@ from open_webui.utils.bluenexus.cache import (
 log = logging.getLogger(__name__)
 
 # Simple in-memory cache for tool data (longer TTL since tools change less frequently)
-_tool_cache: dict[str, tuple[dict, str, float]] = {}  # key -> (data, record_id, timestamp)
+_tool_cache: dict[str, tuple[dict, str, float]] = (
+    {}
+)  # key -> (data, record_id, timestamp)
 _TOOL_CACHE_TTL = 60  # 60 seconds
 
 
@@ -31,7 +33,9 @@ def _cache_tool(user_id: str, tool_id: str, data: dict, record_id: str) -> None:
     set_cached_record_id(user_id, "tools", tool_id, record_id)
 
 
-def _get_cached_tool(user_id: str, tool_id: str) -> tuple[Optional[dict], Optional[str]]:
+def _get_cached_tool(
+    user_id: str, tool_id: str
+) -> tuple[Optional[dict], Optional[str]]:
     """Get cached tool data and record ID."""
     key = f"{user_id}:tools:{tool_id}"
     if key in _tool_cache:
@@ -58,6 +62,7 @@ def _run_async(coro):
         loop = asyncio.get_event_loop()
         if loop.is_running():
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(asyncio.run, coro)
                 return future.result()
@@ -81,8 +86,7 @@ async def get_tool_by_id(user_id: str, tool_id: str) -> Optional[dict]:
 
     try:
         response = await client.query(
-            Collections.TOOLS,
-            QueryOptions(filter={"owui_id": tool_id}, limit=1)
+            Collections.TOOLS, QueryOptions(filter={"owui_id": tool_id}, limit=1)
         )
 
         if response.data and len(response.data) > 0:
@@ -126,7 +130,9 @@ async def get_user_valves_by_id_and_user_id(
         return {}
 
 
-async def update_tool_by_id(user_id: str, tool_id: str, update_data: dict) -> Optional[dict]:
+async def update_tool_by_id(
+    user_id: str, tool_id: str, update_data: dict
+) -> Optional[dict]:
     """Update a tool by its ID. Optimized with record ID caching."""
     client = get_bluenexus_client_for_user(user_id)
     if not client:
@@ -139,20 +145,23 @@ async def update_tool_by_id(user_id: str, tool_id: str, update_data: dict) -> Op
 
         if record_id and cached_data:
             # FAST PATH: Use cached record ID - only 1 API call
-            log.debug(f"[BlueNexus] Fast update for tool {tool_id} using cached record_id")
+            log.debug(
+                f"[BlueNexus] Fast update for tool {tool_id} using cached record_id"
+            )
             tool_data = cached_data.copy()
             for key, value in update_data.items():
                 tool_data[key] = value
 
-            updated_record = await client.update(Collections.TOOLS, record_id, tool_data)
+            updated_record = await client.update(
+                Collections.TOOLS, record_id, tool_data
+            )
             result = updated_record.model_dump()
             _cache_tool(user_id, tool_id, result, record_id)
             return result
 
         # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
-            Collections.TOOLS,
-            QueryOptions(filter={"owui_id": tool_id}, limit=1)
+            Collections.TOOLS, QueryOptions(filter={"owui_id": tool_id}, limit=1)
         )
 
         if not response.data or len(response.data) == 0:
@@ -184,8 +193,7 @@ async def get_tools(user_id: str) -> list[dict]:
 
     try:
         response = await client.query(
-            Collections.TOOLS,
-            QueryOptions(limit=1000)  # Get all tools
+            Collections.TOOLS, QueryOptions(limit=1000)  # Get all tools
         )
 
         if response.data:
@@ -211,10 +219,14 @@ def get_user_valves_by_id_and_user_id_sync(
     user_id: str, tool_id: str, target_user_id: str
 ) -> dict:
     """Get user valves (sync wrapper)."""
-    return _run_async(get_user_valves_by_id_and_user_id(user_id, tool_id, target_user_id))
+    return _run_async(
+        get_user_valves_by_id_and_user_id(user_id, tool_id, target_user_id)
+    )
 
 
-def update_tool_by_id_sync(user_id: str, tool_id: str, update_data: dict) -> Optional[dict]:
+def update_tool_by_id_sync(
+    user_id: str, tool_id: str, update_data: dict
+) -> Optional[dict]:
     """Update a tool (sync wrapper)."""
     return _run_async(update_tool_by_id(user_id, tool_id, update_data))
 

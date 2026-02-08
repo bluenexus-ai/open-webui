@@ -85,7 +85,9 @@
 			const validMessages = Object.values(history.messages).filter((m: any) => m.id && m.role);
 			if (validMessages.length > 0) {
 				// Find messages with no children (leaf nodes)
-				const leafMessages = validMessages.filter((m: any) => !m.childrenIds || m.childrenIds.length === 0);
+				const leafMessages = validMessages.filter(
+					(m: any) => !m.childrenIds || m.childrenIds.length === 0
+				);
 				if (leafMessages.length > 0) {
 					message = leafMessages[leafMessages.length - 1];
 				} else {
@@ -94,7 +96,11 @@
 			}
 		}
 
-		while (message && message.id && (messagesCount !== null ? _messages.length <= messagesCount : true)) {
+		while (
+			message &&
+			message.id &&
+			(messagesCount !== null ? _messages.length <= messagesCount : true)
+		) {
 			_messages.unshift({ ...message });
 			message = message.parentId !== null ? history.messages[message.parentId] : null;
 		}

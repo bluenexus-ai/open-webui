@@ -35,6 +35,7 @@ UNIVERSAL_MCP_TOOL_NAME = "use-agent"
 @dataclass
 class UniversalMcpResult:
     """Result from Universal MCP agent execution."""
+
     success: bool
     response: str
     error: Optional[str] = None
@@ -110,9 +111,7 @@ async def call_universal_mcp_agent(
     url = get_universal_mcp_url()
     if not url:
         return UniversalMcpResult(
-            success=False,
-            response="",
-            error="Universal MCP URL not configured"
+            success=False, response="", error="Universal MCP URL not configured"
         )
 
     access_token = get_user_access_token(user_id)
@@ -120,21 +119,23 @@ async def call_universal_mcp_agent(
         return UniversalMcpResult(
             success=False,
             response="",
-            error="Not authenticated with BlueNexus. Please connect your BlueNexus account."
+            error="Not authenticated with BlueNexus. Please connect your BlueNexus account.",
         )
 
     log.info(f"[Universal MCP] Calling agent for user {user_id}")
 
     # Emit connecting status
     if event_emitter:
-        await event_emitter({
-            "type": "status",
-            "data": {
-                "action": "universal_mcp_connecting",
-                "description": "Connecting to BlueNexus AI Agent...",
-                "done": False,
-            },
-        })
+        await event_emitter(
+            {
+                "type": "status",
+                "data": {
+                    "action": "universal_mcp_connecting",
+                    "description": "Connecting to BlueNexus AI Agent...",
+                    "done": False,
+                },
+            }
+        )
 
     mcp_client = MCPClient()
 
@@ -147,14 +148,16 @@ async def call_universal_mcp_agent(
 
         # Emit executing status
         if event_emitter:
-            await event_emitter({
-                "type": "status",
-                "data": {
-                    "action": "universal_mcp_executing",
-                    "description": "BlueNexus AI Agent is working...",
-                    "done": False,
-                },
-            })
+            await event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "action": "universal_mcp_executing",
+                        "description": "BlueNexus AI Agent is working...",
+                        "done": False,
+                    },
+                }
+            )
 
         # Build the prompt with conversation context
         full_prompt = _build_prompt_with_context(prompt, conversation_history)
@@ -168,7 +171,9 @@ async def call_universal_mcp_agent(
                 f"{web_search_context}\n\n"
                 f"[User Query]\n{full_prompt}"
             )
-            log.info(f"[Universal MCP] Including web search context ({len(web_search_context)} chars)")
+            log.info(
+                f"[Universal MCP] Including web search context ({len(web_search_context)} chars)"
+            )
 
         # If image generation is enabled, instruct agent to only retrieve data
         if image_generation_enabled:
@@ -193,7 +198,9 @@ async def call_universal_mcp_agent(
                 "- 'I can help with that...'\n\n"
                 "FETCH NOW: " + prompt
             )
-            log.info("[Universal MCP] Image generation mode: instructing agent to retrieve data only")
+            log.info(
+                "[Universal MCP] Image generation mode: instructing agent to retrieve data only"
+            )
 
         # Call use-agent tool
         log.info(f"[Universal MCP] Calling use-agent with prompt: {prompt[:100]}...")
@@ -210,14 +217,16 @@ async def call_universal_mcp_agent(
 
         # Emit complete status
         if event_emitter:
-            await event_emitter({
-                "type": "status",
-                "data": {
-                    "action": "universal_mcp_complete",
-                    "description": "BlueNexus AI Agent completed",
-                    "done": True,
-                },
-            })
+            await event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "action": "universal_mcp_complete",
+                        "description": "BlueNexus AI Agent completed",
+                        "done": True,
+                    },
+                }
+            )
 
         # Extract response text from MCP result
         response_text = _extract_response_text(result)
@@ -227,29 +236,28 @@ async def call_universal_mcp_agent(
         return UniversalMcpResult(
             success=True,
             response=response_text,
-            metadata={"raw_result": result} if isinstance(result, dict) else None
+            metadata={"raw_result": result} if isinstance(result, dict) else None,
         )
 
     except Exception as e:
         log.error(f"[Universal MCP] Agent call failed: {e}")
         import traceback
+
         log.error(f"[Universal MCP] Traceback:\n{traceback.format_exc()}")
 
         if event_emitter:
-            await event_emitter({
-                "type": "status",
-                "data": {
-                    "action": "universal_mcp_error",
-                    "description": f"Agent error: {str(e)[:100]}",
-                    "done": True,
-                },
-            })
+            await event_emitter(
+                {
+                    "type": "status",
+                    "data": {
+                        "action": "universal_mcp_error",
+                        "description": f"Agent error: {str(e)[:100]}",
+                        "done": True,
+                    },
+                }
+            )
 
-        return UniversalMcpResult(
-            success=False,
-            response="",
-            error=str(e)
-        )
+        return UniversalMcpResult(success=False, response="", error=str(e))
 
     finally:
         try:
@@ -259,8 +267,7 @@ async def call_universal_mcp_agent(
 
 
 def _build_prompt_with_context(
-    prompt: str,
-    conversation_history: Optional[List[Dict[str, Any]]] = None
+    prompt: str, conversation_history: Optional[List[Dict[str, Any]]] = None
 ) -> str:
     """Build the full prompt with conversation context."""
     if not conversation_history:
@@ -268,7 +275,11 @@ def _build_prompt_with_context(
 
     context_parts = []
     # Include last few messages for context (max 6)
-    recent = conversation_history[-6:] if len(conversation_history) > 6 else conversation_history
+    recent = (
+        conversation_history[-6:]
+        if len(conversation_history) > 6
+        else conversation_history
+    )
 
     for msg in recent:
         role = msg.get("role", "").upper()

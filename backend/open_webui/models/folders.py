@@ -11,7 +11,6 @@ from sqlalchemy import BigInteger, Column, Text, JSON, Boolean, func
 from open_webui.internal.db import Base, get_db
 from open_webui.env import SRC_LOG_LEVELS
 
-
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
 

@@ -58,5 +58,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Drop shared_chat_mapping table."""
     op.drop_index("ix_shared_chat_mapping_chat_id", table_name="shared_chat_mapping")
-    op.drop_index("ix_shared_chat_mapping_owner_user_id", table_name="shared_chat_mapping")
+    op.drop_index(
+        "ix_shared_chat_mapping_owner_user_id", table_name="shared_chat_mapping"
+    )
     op.drop_table("shared_chat_mapping")

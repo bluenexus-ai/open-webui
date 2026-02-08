@@ -114,34 +114,26 @@ class PgvectorClient(VectorDBBase):
             # Ensure the pgvector extension is available
             # Use a conditional check to avoid permission issues on Azure PostgreSQL
             if PGVECTOR_CREATE_EXTENSION:
-                self.session.execute(
-                    text(
-                        """
+                self.session.execute(text("""
                     DO $$
                     BEGIN
                     IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
                         CREATE EXTENSION IF NOT EXISTS vector;
                     END IF;
                     END $$;
-                """
-                    )
-                )
+                """))
 
             if PGVECTOR_PGCRYPTO:
                 # Ensure the pgcrypto extension is available for encryption
                 # Use a conditional check to avoid permission issues on Azure PostgreSQL
-                self.session.execute(
-                    text(
-                        """
+                self.session.execute(text("""
                     DO $$
                     BEGIN
                        IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pgcrypto') THEN
                           CREATE EXTENSION IF NOT EXISTS pgcrypto;
                        END IF;
                     END $$;
-                """
-                    )
-                )
+                """))
 
                 if not PGVECTOR_PGCRYPTO_KEY:
                     raise ValueError(
@@ -232,8 +224,7 @@ class PgvectorClient(VectorDBBase):
                     # Ensure metadata is converted to its JSON text representation
                     json_metadata = json.dumps(item["metadata"])
                     self.session.execute(
-                        text(
-                            """
+                        text("""
                             INSERT INTO document_chunk
                             (id, vector, collection_name, text, vmetadata)
                             VALUES (
@@ -242,8 +233,7 @@ class PgvectorClient(VectorDBBase):
                                 pgp_sym_encrypt(:metadata_text, :key)
                             )
                             ON CONFLICT (id) DO NOTHING
-                        """
-                        ),
+                        """),
                         {
                             "id": item["id"],
                             "vector": vector,
@@ -285,8 +275,7 @@ class PgvectorClient(VectorDBBase):
                     vector = self.adjust_vector_length(item["vector"])
                     json_metadata = json.dumps(item["metadata"])
                     self.session.execute(
-                        text(
-                            """
+                        text("""
                             INSERT INTO document_chunk
                             (id, vector, collection_name, text, vmetadata)
                             VALUES (
@@ -299,8 +288,7 @@ class PgvectorClient(VectorDBBase):
                               collection_name = EXCLUDED.collection_name,
                               text = EXCLUDED.text,
                               vmetadata = EXCLUDED.vmetadata
-                        """
-                        ),
+                        """),
                         {
                             "id": item["id"],
                             "vector": vector,
