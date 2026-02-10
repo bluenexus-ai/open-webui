@@ -2086,7 +2086,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     )
             else:
                 # Normal mode: store agent result for system message injection (after RAG)
-                metadata["_agent_result"] = universal_result.response
+                metadata["_direct_agent_response"] = universal_result.response
                 log.info("[Universal MCP] Agent completed successfully")
 
             # Remove web_search files from metadata so chat_completion_files_handler
@@ -2219,20 +2219,6 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     "hidden": True,
                 },
             }
-        )
-
-    # Inject agent result into system message (after RAG so it doesn't get overwritten)
-    agent_result = metadata.get("_agent_result")
-    if agent_result:
-        agent_instruction = (
-            "\n\n[IMPORTANT: BlueNexus Agent Task Result]\n"
-            "The BlueNexus AI Agent has already executed the user's request and completed the task. "
-            "Present the agent's results below to the user. "
-            "Do NOT claim you cannot perform actions that the agent has already completed.\n\n"
-            f"{agent_result}"
-        )
-        form_data["messages"] = add_or_update_system_message(
-            agent_instruction, form_data["messages"], append=True
         )
 
     # Inject current date/time context into system message

@@ -1637,6 +1637,40 @@ async def chat_completion(
                         empty_stream(), media_type="text/event-stream"
                     )
 
+                # Skip LLM call if agent already produced a complete response
+                if metadata.get("_direct_agent_response"):
+                    agent_text = metadata["_direct_agent_response"]
+                    log.info(
+                        f"[Agent Direct] Streaming agent response directly ({len(agent_text)} chars)"
+                    )
+
+                    async def agent_stream():
+                        yield "data: " + json.dumps(
+                            {
+                                "choices": [
+                                    {
+                                        "delta": {"content": agent_text},
+                                        "finish_reason": "stop",
+                                    }
+                                ]
+                            }
+                        ) + "\n\n"
+                        yield "data: [DONE]\n\n"
+
+                    response = StreamingResponse(
+                        agent_stream(), media_type="text/event-stream"
+                    )
+                    return await process_chat_response(
+                        request,
+                        response,
+                        form_data,
+                        user,
+                        metadata,
+                        model,
+                        events,
+                        tasks,
+                    )
+
                 response = await chat_completion_handler(request, form_data, user)
                 if metadata.get("chat_id") and metadata.get("message_id"):
                     try:
