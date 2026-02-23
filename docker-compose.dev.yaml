@@ -27,11 +27,11 @@ services:
       - SEARXNG_QUERY_URL=http://searxng:8080/search
       - S3_ENDPOINT_URL=http://minio:9000
       # Override localhost URLs to access host machine from container
-      - BLUENEXUS_API_BASE_URL=https://api.staging.bluenexus.ai
+      - BLUENEXUS_API_BASE_URL=https://api.bluenexus.ai
       # BLUENEXUS_AUTHORIZATION_URL must stay as localhost - it's accessed by browser, not container
       # - BLUENEXUS_AUTHORIZATION_URL=http://localhost:3001/oauth/authorize
-      - BLUENEXUS_TOKEN_URL=https://api.staging.bluenexus.ai/api/v1/auth/token
-      - OPENID_PROVIDER_URL=https://api.staging.bluenexus.ai/.well-known/oauth-authorization-server
+      - BLUENEXUS_TOKEN_URL=https://api.bluenexus.ai/api/v1/auth/token
+      - OPENID_PROVIDER_URL=https://api.bluenexus.ai/.well-known/oauth-authorization-server
       # SSL/TLS configuration for self-signed certificates (disable verification for self-signed certs)
       - OAUTH_SSL_VERIFY=false
       # MinIO credentials (for local development)
