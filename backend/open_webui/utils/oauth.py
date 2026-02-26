@@ -1300,6 +1300,30 @@ class OAuthManager:
     async def handle_login(self, request, provider):
         if provider not in OAUTH_PROVIDERS:
             raise HTTPException(404)
+
+        # Session warmup: ensure the session cookie is established before starting
+        # the OAuth flow. On the very first login attempt (no session cookie yet),
+        # the OAuth state stored in the session can be lost during the cross-origin
+        # redirect chain, causing a "mismatching_state" error. By redirecting once
+        # to ourselves first, the Set-Cookie header is sent and the browser stores
+        # the session cookie before we redirect to the OAuth provider.
+        session_cookie_name = "owui-session"
+        has_session_cookie = session_cookie_name in request.cookies
+        is_warmup_redirect = request.query_params.get("_session_init") == "1"
+
+        if not has_session_cookie and not is_warmup_redirect:
+            log.info(f"{provider} OAuth login: session warmup redirect (no session cookie yet)")
+            # Write a marker to the session so the cookie gets created
+            request.session["_oauth_warmup"] = True
+            # Build the warmup redirect URL with _session_init=1
+            warmup_url = str(request.url)
+            separator = "&" if "?" in warmup_url else "?"
+            warmup_url = f"{warmup_url}{separator}_session_init=1"
+            return RedirectResponse(url=warmup_url)
+
+        # Clean up warmup marker from session if present
+        request.session.pop("_oauth_warmup", None)
+
         # If the provider has a custom redirect URL, use that, otherwise automatically generate one
         redirect_uri = OAUTH_PROVIDERS[provider].get("redirect_uri") or request.url_for(
             "oauth_login_callback", provider=provider
