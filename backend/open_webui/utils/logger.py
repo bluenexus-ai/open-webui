@@ -15,7 +15,6 @@ from open_webui.env import (
     ENABLE_OTEL_LOGS,
 )
 
-
 if TYPE_CHECKING:
     from loguru import Record
 

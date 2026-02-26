@@ -60,6 +60,7 @@ class BlueNexusToolRepository(BaseToolRepository):
         """Get BlueNexus client for the user."""
         if self._client is None:
             from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
+
             self._client = get_bluenexus_client_for_user(self.user_id)
         return self._client
 
@@ -100,7 +101,7 @@ class BlueNexusToolRepository(BaseToolRepository):
                 filter={"user_id": user_id},
                 sort_by=SortBy.UPDATED_AT,
                 sort_order=SortOrder.DESC,
-            )
+            ),
         )
 
         tools = []
@@ -123,7 +124,7 @@ class BlueNexusToolRepository(BaseToolRepository):
             QueryOptions(
                 sort_by=SortBy.UPDATED_AT,
                 sort_order=SortOrder.DESC,
-            )
+            ),
         )
 
         tools = []
@@ -142,8 +143,7 @@ class BlueNexusToolRepository(BaseToolRepository):
             return None
 
         response = await client.query(
-            Collections.TOOLS,
-            QueryOptions(filter={"id": tool_id}, limit=1)
+            Collections.TOOLS, QueryOptions(filter={"id": tool_id}, limit=1)
         )
 
         if response.data and len(response.data) > 0:
@@ -188,8 +188,7 @@ class BlueNexusToolRepository(BaseToolRepository):
 
         # Find existing tool
         response = await client.query(
-            Collections.TOOLS,
-            QueryOptions(filter={"id": tool_id}, limit=1)
+            Collections.TOOLS, QueryOptions(filter={"id": tool_id}, limit=1)
         )
 
         if not response.data or len(response.data) == 0:
@@ -218,8 +217,7 @@ class BlueNexusToolRepository(BaseToolRepository):
             return False
 
         response = await client.query(
-            Collections.TOOLS,
-            QueryOptions(filter={"id": tool_id}, limit=1)
+            Collections.TOOLS, QueryOptions(filter={"id": tool_id}, limit=1)
         )
 
         if not response.data or len(response.data) == 0:

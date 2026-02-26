@@ -164,7 +164,9 @@ async def get_session_user_chat_list(
     include_folders: Optional[bool] = False,
 ):
     try:
-        log.info(f"[get_session_user_chat_list] user={user.id}, page={page}, include_pinned={include_pinned}, include_folders={include_folders}")
+        log.info(
+            f"[get_session_user_chat_list] user={user.id}, page={page}, include_pinned={include_pinned}, include_folders={include_folders}"
+        )
         repo = get_chat_repository(user.id)
         page_num = page if page is not None else 1
 
@@ -417,7 +419,9 @@ async def get_user_chats_by_tag_name(
 ):
     try:
         repo = get_chat_repository(user.id)
-        chats = await repo.get_by_tag(user.id, form_data.name, form_data.skip, form_data.limit)
+        chats = await repo.get_by_tag(
+            user.id, form_data.name, form_data.skip, form_data.limit
+        )
         return [ChatTitleIdResponse(**chat) for chat in chats]
 
     except Exception as e:
@@ -486,12 +490,6 @@ async def get_chat_by_id(id: str, user=Depends(get_verified_user)):
         chat = await repo.get_by_id(id, user.id)
 
         if chat:
-            chat_content = chat.get("chat", {})
-            has_history = "history" in chat_content
-            has_messages = "messages" in chat_content
-            history_obj = chat_content.get("history", {})
-            history_messages_type = type(history_obj.get("messages")).__name__ if history_obj else "NoHistory"
-            log.info(f"[get_chat_by_id] chat_id={id}, has_history={has_history}, has_messages={has_messages}, history_messages_type={history_messages_type}")
             return ChatResponse(**chat)
 
         raise HTTPException(
@@ -583,7 +581,9 @@ async def import_chat(form_data: ChatImportForm, user=Depends(get_verified_user)
 
 
 @router.post("/{id}", response_model=Optional[ChatResponse])
-async def update_chat_by_id(id: str, form_data: ChatForm, user=Depends(get_verified_user)):
+async def update_chat_by_id(
+    id: str, form_data: ChatForm, user=Depends(get_verified_user)
+):
     try:
         repo = get_chat_repository(user.id)
 
@@ -591,11 +591,15 @@ async def update_chat_by_id(id: str, form_data: ChatForm, user=Depends(get_verif
             "chat": form_data.chat,
         }
 
-        log.info(f"[update_chat_by_id] chat_id={id}, title={form_data.chat.get('title') if isinstance(form_data.chat, dict) else 'N/A'}")
+        log.info(
+            f"[update_chat_by_id] chat_id={id}, title={form_data.chat.get('title') if isinstance(form_data.chat, dict) else 'N/A'}"
+        )
         chat = await repo.update(id, user.id, chat_data)
 
         if chat:
-            log.info(f"[update_chat_by_id] Updated chat_id={id}, new_title={chat.get('title')}")
+            log.info(
+                f"[update_chat_by_id] Updated chat_id={id}, new_title={chat.get('title')}"
+            )
             return ChatResponse(**chat)
 
         raise HTTPException(
@@ -701,7 +705,8 @@ async def clone_shared_chat_by_id(id: str, user=Depends(get_verified_user)):
 
         if not shared_chat:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.DEFAULT()
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.DEFAULT(),
             )
 
         # Clone to user's own storage
@@ -713,7 +718,9 @@ async def clone_shared_chat_by_id(id: str, user=Depends(get_verified_user)):
             "chat": {
                 **chat_content,
                 "originalChatId": original_id,
-                "branchPointMessageId": chat_content.get("history", {}).get("currentId"),
+                "branchPointMessageId": chat_content.get("history", {}).get(
+                    "currentId"
+                ),
                 "title": f"Clone of {shared_chat.get('title', 'Chat')}",
             },
             "meta": shared_chat.get("meta", {}),
@@ -868,7 +875,9 @@ async def share_chat_by_id(request: Request, id: str, user=Depends(get_verified_
         chat = await repo.share(id, user.id)
 
         if chat:
-            log.info(f"[share_chat_by_id] chat_id={id}, share_id={chat.get('share_id')}")
+            log.info(
+                f"[share_chat_by_id] chat_id={id}, share_id={chat.get('share_id')}"
+            )
             return ChatResponse(**chat)
 
         raise HTTPException(
@@ -971,7 +980,8 @@ async def get_chat_tags_by_id(id: str, user=Depends(get_verified_user)):
 
         if tag_names is None:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.NOT_FOUND
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.NOT_FOUND,
             )
 
         tags = []
@@ -1020,7 +1030,8 @@ async def add_tag_by_id_and_tag_name(
 
         if not tags:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.DEFAULT()
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.DEFAULT(),
             )
 
         # Return updated tags as TagModel objects
@@ -1088,7 +1099,8 @@ async def delete_all_tags_by_id(id: str, user=Depends(get_verified_user)):
 
         if not result:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail=ERROR_MESSAGES.DEFAULT()
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ERROR_MESSAGES.DEFAULT(),
             )
 
         return True
@@ -1113,7 +1125,9 @@ async def update_chat_message_by_id(
 ):
     try:
         repo = get_chat_repository(user.id)
-        updated_chat = await repo.update_message(id, user.id, message_id, form_data.content)
+        updated_chat = await repo.update_message(
+            id, user.id, message_id, form_data.content
+        )
 
         if not updated_chat:
             raise HTTPException(

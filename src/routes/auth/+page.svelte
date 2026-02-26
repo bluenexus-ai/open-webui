@@ -502,11 +502,12 @@
 											}}
 										>
 											<img
-												src="https://bluenexus.ai/images/bluenexus-logo.png"
+												src="https://assets.bluenexus.ai/branding/BlueNexus-Brandmark_Radial_512x512.png"
 												alt="BlueNexus"
 												class="size-6 mr-3"
 											/>
-											<span>{$i18n.t('Continue with {{provider}}', { provider: 'BlueNexus' })}</span>
+											<span>{$i18n.t('Continue with {{provider}}', { provider: 'BlueNexus' })}</span
+											>
 										</button>
 									{/if}
 									{#if $config?.oauth?.providers?.oidc}

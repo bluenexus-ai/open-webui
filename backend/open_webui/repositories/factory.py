@@ -26,8 +26,14 @@ from open_webui.repositories.base import (
     BaseToolRepository,
 )
 from open_webui.repositories.chat import PostgresChatRepository, BlueNexusChatRepository
-from open_webui.repositories.prompt import PostgresPromptRepository, BlueNexusPromptRepository
-from open_webui.repositories.model import PostgresModelRepository, BlueNexusModelRepository
+from open_webui.repositories.prompt import (
+    PostgresPromptRepository,
+    BlueNexusPromptRepository,
+)
+from open_webui.repositories.model import (
+    PostgresModelRepository,
+    BlueNexusModelRepository,
+)
 from open_webui.repositories.tool import PostgresToolRepository, BlueNexusToolRepository
 
 log = logging.getLogger(__name__)
@@ -45,7 +51,9 @@ def get_chat_repository(user_id: str) -> BaseChatRepository:
         BaseChatRepository: Either PostgresChatRepository or BlueNexusChatRepository
     """
     if is_bluenexus_data_storage_enabled():
-        log.debug(f"[Repository Factory] Using BlueNexus chat repository for user {user_id}")
+        log.debug(
+            f"[Repository Factory] Using BlueNexus chat repository for user {user_id}"
+        )
         return BlueNexusChatRepository(user_id)
     else:
         log.debug(f"[Repository Factory] Using PostgreSQL chat repository")
@@ -63,7 +71,9 @@ def get_prompt_repository(user_id: str) -> BasePromptRepository:
         BasePromptRepository: Either PostgresPromptRepository or BlueNexusPromptRepository
     """
     if is_bluenexus_data_storage_enabled():
-        log.debug(f"[Repository Factory] Using BlueNexus prompt repository for user {user_id}")
+        log.debug(
+            f"[Repository Factory] Using BlueNexus prompt repository for user {user_id}"
+        )
         return BlueNexusPromptRepository(user_id)
     else:
         log.debug(f"[Repository Factory] Using PostgreSQL prompt repository")
@@ -81,7 +91,9 @@ def get_model_repository(user_id: str) -> BaseModelRepository:
         BaseModelRepository: Either PostgresModelRepository or BlueNexusModelRepository
     """
     if is_bluenexus_data_storage_enabled():
-        log.debug(f"[Repository Factory] Using BlueNexus model repository for user {user_id}")
+        log.debug(
+            f"[Repository Factory] Using BlueNexus model repository for user {user_id}"
+        )
         return BlueNexusModelRepository(user_id)
     else:
         log.debug(f"[Repository Factory] Using PostgreSQL model repository")
@@ -99,7 +111,9 @@ def get_tool_repository(user_id: str) -> BaseToolRepository:
         BaseToolRepository: Either PostgresToolRepository or BlueNexusToolRepository
     """
     if is_bluenexus_data_storage_enabled():
-        log.debug(f"[Repository Factory] Using BlueNexus tool repository for user {user_id}")
+        log.debug(
+            f"[Repository Factory] Using BlueNexus tool repository for user {user_id}"
+        )
         return BlueNexusToolRepository(user_id)
     else:
         log.debug(f"[Repository Factory] Using PostgreSQL tool repository")

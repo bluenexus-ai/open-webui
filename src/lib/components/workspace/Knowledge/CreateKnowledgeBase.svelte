@@ -24,12 +24,7 @@
 			return;
 		}
 
-		const res = await createNewKnowledge(
-			localStorage.token,
-			name,
-			description,
-			{}
-		).catch((e) => {
+		const res = await createNewKnowledge(localStorage.token, name, description, {}).catch((e) => {
 			toast.error(`${e}`);
 		});
 

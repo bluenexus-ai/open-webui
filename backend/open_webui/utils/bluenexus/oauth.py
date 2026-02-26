@@ -85,14 +85,11 @@ def register_bluenexus_oauth(oauth: OAuth, oauth_timeout: str = ""):
             "ignore",
             message="Unverified HTTPS request",
             category=urllib3.exceptions.InsecureRequestWarning,
-            module="urllib3"
+            module="urllib3",
         )
 
     # Create httpx client with SSL verification based on environment
-    httpx_client = httpx.AsyncClient(
-        verify=not disable_ssl,
-        trust_env=not disable_ssl
-    )
+    httpx_client = httpx.AsyncClient(verify=not disable_ssl, trust_env=not disable_ssl)
 
     client = oauth.register(
         name="bluenexus",
@@ -108,11 +105,7 @@ def register_bluenexus_oauth(oauth: OAuth, oauth_timeout: str = ""):
             "code_challenge_method": "S256",
             "token_endpoint_auth_method": "client_secret_post",
             "verify": not disable_ssl,
-            **(
-                {"timeout": int(oauth_timeout)}
-                if oauth_timeout
-                else {}
-            ),
+            **({"timeout": int(oauth_timeout)} if oauth_timeout else {}),
         },
         redirect_uri=BLUENEXUS_REDIRECT_URI.value,
         client=httpx_client,

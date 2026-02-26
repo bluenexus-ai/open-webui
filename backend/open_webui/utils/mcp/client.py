@@ -50,7 +50,9 @@ def create_mcp_http_client_factory(url: str):
 
         # Disable SSL verification for localhost
         if is_localhost:
-            log.info(f"[MCP Client] Disabling SSL verification for localhost URL: {url}")
+            log.info(
+                f"[MCP Client] Disabling SSL verification for localhost URL: {url}"
+            )
             kwargs["verify"] = False
 
         return httpx.AsyncClient(**kwargs)
@@ -65,7 +67,9 @@ class MCPClient:
 
     async def connect(self, url: str, headers: Optional[dict] = None):
         log.info(f"[MCP Client] Connecting to {url}")
-        log.debug(f"[MCP Client] Headers provided: {list(headers.keys()) if headers else 'None'}")
+        log.debug(
+            f"[MCP Client] Headers provided: {list(headers.keys()) if headers else 'None'}"
+        )
 
         async with AsyncExitStack() as exit_stack:
             try:
@@ -99,13 +103,19 @@ class MCPClient:
                 self.exit_stack = exit_stack.pop_all()
                 log.info(f"[MCP Client] Successfully connected to {url}")
             except Exception as e:
-                log.error(f"[MCP Client] Connection FAILED to {url}: {type(e).__name__}: {e}")
+                log.error(
+                    f"[MCP Client] Connection FAILED to {url}: {type(e).__name__}: {e}"
+                )
                 # Log nested exceptions for TaskGroup errors
-                if hasattr(e, 'exceptions'):
+                if hasattr(e, "exceptions"):
                     for i, sub_exc in enumerate(e.exceptions):
-                        log.error(f"[MCP Client] Sub-exception {i}: {type(sub_exc).__name__}: {sub_exc}")
-                        if hasattr(sub_exc, '__cause__') and sub_exc.__cause__:
-                            log.error(f"[MCP Client] Sub-exception {i} cause: {type(sub_exc.__cause__).__name__}: {sub_exc.__cause__}")
+                        log.error(
+                            f"[MCP Client] Sub-exception {i}: {type(sub_exc).__name__}: {sub_exc}"
+                        )
+                        if hasattr(sub_exc, "__cause__") and sub_exc.__cause__:
+                            log.error(
+                                f"[MCP Client] Sub-exception {i} cause: {type(sub_exc.__cause__).__name__}: {sub_exc.__cause__}"
+                            )
                 await asyncio.shield(self.disconnect())
                 raise e
 
@@ -131,14 +141,15 @@ class MCPClient:
                 return await self.session.list_tools()
 
             result = await asyncio.wait_for(
-                asyncio.shield(_list_tools()),
-                timeout=timeout
+                asyncio.shield(_list_tools()), timeout=timeout
             )
         except asyncio.TimeoutError:
             log.error(f"[MCP Client] list_tools() timed out after {timeout}s")
             raise
         except asyncio.CancelledError:
-            log.warning("[MCP Client] list_tools() was cancelled but operation may have completed")
+            log.warning(
+                "[MCP Client] list_tools() was cancelled but operation may have completed"
+            )
             raise
 
         tools = result.tools
@@ -157,7 +168,9 @@ class MCPClient:
             tool_specs.append(
                 {"name": name, "description": description, "parameters": inputSchema}
             )
-            log.debug(f"[MCP Client] Tool: {name} - {description[:50] if description else 'No description'}...")
+            log.debug(
+                f"[MCP Client] Tool: {name} - {description[:50] if description else 'No description'}..."
+            )
 
         return tool_specs
 
@@ -179,7 +192,9 @@ class MCPClient:
         if not self.session:
             raise RuntimeError("MCP client is not connected.")
 
-        log.info(f"[MCP Client] Calling tool '{function_name}' with args: {list(function_args.keys())}")
+        log.info(
+            f"[MCP Client] Calling tool '{function_name}' with args: {list(function_args.keys())}"
+        )
         log.debug(f"[MCP Client] Full args: {function_args}")
 
         try:
@@ -189,14 +204,15 @@ class MCPClient:
                 return await self.session.call_tool(function_name, function_args)
 
             result = await asyncio.wait_for(
-                asyncio.shield(_call_tool()),
-                timeout=timeout
+                asyncio.shield(_call_tool()), timeout=timeout
             )
         except asyncio.TimeoutError:
             log.error(f"[MCP Client] Tool '{function_name}' timed out after {timeout}s")
             raise
         except asyncio.CancelledError:
-            log.warning(f"[MCP Client] Tool '{function_name}' was cancelled but operation may have completed")
+            log.warning(
+                f"[MCP Client] Tool '{function_name}' was cancelled but operation may have completed"
+            )
             raise
 
         if not result:
@@ -207,13 +223,23 @@ class MCPClient:
         result_content = result_dict.get("content", {})
 
         if result.isError:
-            log.error(f"[MCP Client] Tool '{function_name}' returned ERROR: {result_content}")
+            log.error(
+                f"[MCP Client] Tool '{function_name}' returned ERROR: {result_content}"
+            )
             raise Exception(result_content)
         else:
             content_type = type(result_content).__name__
-            content_length = len(result_content) if isinstance(result_content, (list, dict, str)) else "N/A"
-            log.info(f"[MCP Client] Tool '{function_name}' SUCCESS - result_type={content_type}, length={content_length}")
-            log.debug(f"[MCP Client] Tool '{function_name}' result: {str(result_content)[:500]}")
+            content_length = (
+                len(result_content)
+                if isinstance(result_content, (list, dict, str))
+                else "N/A"
+            )
+            log.info(
+                f"[MCP Client] Tool '{function_name}' SUCCESS - result_type={content_type}, length={content_length}"
+            )
+            log.debug(
+                f"[MCP Client] Tool '{function_name}' result: {str(result_content)[:500]}"
+            )
             return result_content
 
     async def list_resources(self, cursor: Optional[str] = None) -> Optional[dict]:

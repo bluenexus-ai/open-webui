@@ -39,7 +39,6 @@ from open_webui.env import (
 from fastapi import BackgroundTasks, Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["OAUTH"])
 

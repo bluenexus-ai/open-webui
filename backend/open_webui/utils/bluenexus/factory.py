@@ -55,13 +55,17 @@ def get_bluenexus_client_for_user(
 
     # Check if BlueNexus is enabled
     if not ENABLE_BLUENEXUS.value:
-        log.debug(f"[BlueNexus Factory] BlueNexus disabled, returning None for user {user_id}")
+        log.debug(
+            f"[BlueNexus Factory] BlueNexus disabled, returning None for user {user_id}"
+        )
         return None
 
     now = time.time()
 
     # Get BlueNexus OAuth session for user (always fetch to get current token)
-    log.debug(f"[BlueNexus Factory] Looking up BlueNexus OAuth session for user {user_id}")
+    log.debug(
+        f"[BlueNexus Factory] Looking up BlueNexus OAuth session for user {user_id}"
+    )
     session = OAuthSessions.get_session_by_provider_and_user_id(
         provider="bluenexus",
         user_id=user_id,
@@ -79,7 +83,9 @@ def get_bluenexus_client_for_user(
 
     access_token = token_data.get("access_token")
     if not access_token:
-        log.warning(f"[BlueNexus Factory] No access token in session for user {user_id}")
+        log.warning(
+            f"[BlueNexus Factory] No access token in session for user {user_id}"
+        )
         return None
 
     # Check cache - must match both TTL AND current token
@@ -92,7 +98,9 @@ def get_bluenexus_client_for_user(
                     log.debug(f"[BlueNexus Factory] Cache HIT for user {user_id}")
                     return cached_client
                 elif cached_token != access_token:
-                    log.info(f"[BlueNexus Factory] Token changed for user {user_id}, invalidating cache")
+                    log.info(
+                        f"[BlueNexus Factory] Token changed for user {user_id}, invalidating cache"
+                    )
 
     # Get base URL from config if not provided
     if base_url is None:
@@ -218,7 +226,9 @@ async def get_or_create_bluenexus_client(
                         access_token=token["access_token"],
                     )
             except Exception as e:
-                log.error(f"[BlueNexus Factory] Token refresh failed: {e}", exc_info=True)
+                log.error(
+                    f"[BlueNexus Factory] Token refresh failed: {e}", exc_info=True
+                )
 
     return None
 
@@ -245,7 +255,9 @@ class BlueNexusClientContext:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # Handle BlueNexus auth errors specially
         if exc_type is not None and issubclass(exc_type, BlueNexusAuthError):
-            log.warning(f"[BlueNexus Context] Auth error for user {self.user_id}: {exc_val}")
+            log.warning(
+                f"[BlueNexus Context] Auth error for user {self.user_id}: {exc_val}"
+            )
             # Don't suppress the exception
             return False
         return False

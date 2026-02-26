@@ -9,13 +9,7 @@
 
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import {
-		mobile,
-		showSidebar,
-		knowledge as _knowledge,
-		config,
-		settings
-	} from '$lib/stores';
+	import { mobile, showSidebar, knowledge as _knowledge, config, settings } from '$lib/stores';
 
 	import {
 		updateFileDataContentById,

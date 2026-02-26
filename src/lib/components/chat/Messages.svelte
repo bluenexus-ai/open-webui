@@ -77,7 +77,30 @@
 		let _messages = [];
 
 		let message = history.messages[history.currentId];
-		while (message && (messagesCount !== null ? _messages.length <= messagesCount : true)) {
+
+		// Handle malformed messages - find a valid starting point
+		// A valid message must have an 'id' property
+		if (message && !message.id) {
+			// Try to find a valid message by looking at all messages and finding the deepest one with childrenIds = []
+			const validMessages = Object.values(history.messages).filter((m: any) => m.id && m.role);
+			if (validMessages.length > 0) {
+				// Find messages with no children (leaf nodes)
+				const leafMessages = validMessages.filter(
+					(m: any) => !m.childrenIds || m.childrenIds.length === 0
+				);
+				if (leafMessages.length > 0) {
+					message = leafMessages[leafMessages.length - 1];
+				} else {
+					message = validMessages[validMessages.length - 1];
+				}
+			}
+		}
+
+		while (
+			message &&
+			message.id &&
+			(messagesCount !== null ? _messages.length <= messagesCount : true)
+		) {
 			_messages.unshift({ ...message });
 			message = message.parentId !== null ? history.messages[message.parentId] : null;
 		}
@@ -407,7 +430,7 @@
 			{#key chatId}
 				<section class="w-full" aria-labelledby="chat-conversation">
 					<h2 class="sr-only" id="chat-conversation">{$i18n.t('Chat Conversation')}</h2>
-					{#if messages.at(0)?.parentId !== null}
+					{#if messages.at(0)?.parentId}
 						<Loader
 							on:visible={(e) => {
 								console.log('visible');

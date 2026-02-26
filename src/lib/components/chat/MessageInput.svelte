@@ -446,7 +446,10 @@
 		.reduce((acc, filters) => acc.filter((f1) => filters.some((f2) => f2.id === f1.id)));
 
 	let showToolsButton = false;
-	$: showToolsButton = ($tools ?? []).length > 0 || ($toolServers ?? []).length > 0 || ($bluenexusMcpServers ?? []).length > 0;
+	$: showToolsButton =
+		($tools ?? []).length > 0 ||
+		($toolServers ?? []).length > 0 ||
+		($bluenexusMcpServers ?? []).length > 0;
 
 	let showWebSearchButton = false;
 	$: showWebSearchButton =

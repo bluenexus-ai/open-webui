@@ -7,7 +7,6 @@ from urllib.parse import quote
 from open_webui.env import ENABLE_FORWARD_USER_INFO_HEADERS, SRC_LOG_LEVELS
 from open_webui.retrieval.models.base_reranker import BaseReranker
 
-
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["RAG"])
 

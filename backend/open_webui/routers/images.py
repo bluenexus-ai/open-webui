@@ -240,7 +240,9 @@ async def update_config(
     request.app.state.config.AUTOMATIC1111_API_AUTH = form_data.AUTOMATIC1111_API_AUTH
     request.app.state.config.AUTOMATIC1111_PARAMS = form_data.AUTOMATIC1111_PARAMS
 
-    request.app.state.config.COMFYUI_BASE_URL = form_data.COMFYUI_BASE_URL.strip().strip("/")
+    request.app.state.config.COMFYUI_BASE_URL = (
+        form_data.COMFYUI_BASE_URL.strip().strip("/")
+    )
     request.app.state.config.COMFYUI_API_KEY = form_data.COMFYUI_API_KEY
     request.app.state.config.COMFYUI_WORKFLOW = form_data.COMFYUI_WORKFLOW
     request.app.state.config.COMFYUI_WORKFLOW_NODES = form_data.COMFYUI_WORKFLOW_NODES
@@ -475,7 +477,9 @@ def get_image_data(data: str, headers=None):
                 mime_type = content_type
                 return r.content, mime_type
             else:
-                log.error(f"URL does not point to an image. Content-Type: {content_type}")
+                log.error(
+                    f"URL does not point to an image. Content-Type: {content_type}"
+                )
                 return None, None
         else:
             if "," in data:
@@ -866,12 +870,12 @@ async def image_edits(
             log.info(f"Resized image to: {img.size}")
 
         # Convert to RGB if necessary (remove alpha channel)
-        if img.mode in ('RGBA', 'P'):
-            img = img.convert('RGB')
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
 
         # Save to BytesIO
         output = io.BytesIO()
-        img.save(output, format='PNG')
+        img.save(output, format="PNG")
         output.seek(0)
 
         return (
@@ -1017,7 +1021,9 @@ async def image_edits(
             try:
                 files = []
                 if isinstance(form_data.image, str):
-                    files = [get_image_file_item(form_data.image, max_size=max_image_size)]
+                    files = [
+                        get_image_file_item(form_data.image, max_size=max_image_size)
+                    ]
                 elif isinstance(form_data.image, list):
                     for img in form_data.image:
                         files.append(get_image_file_item(img, max_size=max_image_size))
@@ -1049,7 +1055,9 @@ async def image_edits(
                 edit_workflow = COMFYUI_DEFAULT_EDIT_WORKFLOW
 
             # Use default edit workflow nodes if not configured or if all nodes have empty node_ids
-            edit_workflow_nodes = request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES
+            edit_workflow_nodes = (
+                request.app.state.config.IMAGES_EDIT_COMFYUI_WORKFLOW_NODES
+            )
             if not edit_workflow_nodes or not any(
                 node.get("node_ids") if isinstance(node, dict) else node.node_ids
                 for node in edit_workflow_nodes
@@ -1078,7 +1086,9 @@ async def image_edits(
             log.info(f"ComfyUI edit result: {res}")
 
             if res is None:
-                raise Exception("ComfyUI workflow execution failed - no result returned")
+                raise Exception(
+                    "ComfyUI workflow execution failed - no result returned"
+                )
 
             if "data" not in res or not res["data"]:
                 raise Exception(f"ComfyUI workflow returned no images: {res}")
@@ -1099,9 +1109,7 @@ async def image_edits(
             for image_url in image_urls:
                 headers = None
                 if edit_api_key:
-                    headers = {
-                        "Authorization": f"Bearer {edit_api_key}"
-                    }
+                    headers = {"Authorization": f"Bearer {edit_api_key}"}
 
                 log.info(f"Fetching image from: {image_url}")
                 image_data, content_type = get_image_data(image_url, headers)

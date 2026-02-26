@@ -382,9 +382,8 @@ async def get_model_by_id(id: str, user=Depends(get_verified_user)):
 
     # Owner-only access: only model owner or admin can access
     if (
-        (user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL)
-        or model_user_id == user.id
-    ):
+        user.role == "admin" and BYPASS_ADMIN_ACCESS_CONTROL
+    ) or model_user_id == user.id:
         return ModelResponse(**model_data)
     else:
         raise HTTPException(
@@ -406,7 +405,9 @@ async def get_model_profile_image(id: str, user=Depends(get_verified_user)):
 
         if model_data:
             meta = model_data.get("meta", {})
-            profile_image_url = meta.get("profile_image_url") if isinstance(meta, dict) else None
+            profile_image_url = (
+                meta.get("profile_image_url") if isinstance(meta, dict) else None
+            )
 
             if profile_image_url:
                 if profile_image_url.startswith("http"):
@@ -423,7 +424,9 @@ async def get_model_profile_image(id: str, user=Depends(get_verified_user)):
                         return StreamingResponse(
                             image_buffer,
                             media_type="image/png",
-                            headers={"Content-Disposition": "inline; filename=image.png"},
+                            headers={
+                                "Content-Disposition": "inline; filename=image.png"
+                            },
                         )
                     except Exception:
                         pass
@@ -433,7 +436,11 @@ async def get_model_profile_image(id: str, user=Depends(get_verified_user)):
         # PostgreSQL path
         model = Models.get_model_by_id(id)
         if model and model.meta:
-            profile_image_url = model.meta.profile_image_url if hasattr(model.meta, 'profile_image_url') else None
+            profile_image_url = (
+                model.meta.profile_image_url
+                if hasattr(model.meta, "profile_image_url")
+                else None
+            )
             if not profile_image_url and isinstance(model.meta, dict):
                 profile_image_url = model.meta.get("profile_image_url")
 
@@ -452,7 +459,9 @@ async def get_model_profile_image(id: str, user=Depends(get_verified_user)):
                         return StreamingResponse(
                             image_buffer,
                             media_type="image/png",
-                            headers={"Content-Disposition": "inline; filename=image.png"},
+                            headers={
+                                "Content-Disposition": "inline; filename=image.png"
+                            },
                         )
                     except Exception:
                         pass
@@ -493,10 +502,7 @@ async def toggle_model_by_id(id: str, user=Depends(get_verified_user)):
     model_user_id = model_data.get("user_id")
 
     # Owner-only access: only model owner or admin can toggle
-    if not (
-        user.role == "admin"
-        or model_user_id == user.id
-    ):
+    if not (user.role == "admin" or model_user_id == user.id):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.UNAUTHORIZED,
@@ -554,10 +560,7 @@ async def update_model_by_id(
     model_user_id = model_data.get("user_id")
 
     # Owner-only access: only model owner or admin can update
-    if (
-        model_user_id != user.id
-        and user.role != "admin"
-    ):
+    if model_user_id != user.id and user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
@@ -609,15 +612,20 @@ async def delete_model_by_id(id: str, user=Depends(get_verified_user)):
         )
 
     # Debug logging
-    model_user_id = model_data.get("user_id") if isinstance(model_data, dict) else model_data.user_id
-    log.info(f"Delete model - user.id: {user.id}, user.role: {user.role}, model user_id: {model_user_id}")
+    model_user_id = (
+        model_data.get("user_id")
+        if isinstance(model_data, dict)
+        else model_data.user_id
+    )
+    log.info(
+        f"Delete model - user.id: {user.id}, user.role: {user.role}, model user_id: {model_user_id}"
+    )
 
     # Owner-only access: only model owner or admin can delete
-    if (
-        user.role != "admin"
-        and model_user_id != user.id
-    ):
-        log.warning(f"Access denied - user.id ({user.id}) != model user_id ({model_user_id})")
+    if user.role != "admin" and model_user_id != user.id:
+        log.warning(
+            f"Access denied - user.id ({user.id}) != model user_id ({model_user_id})"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.UNAUTHORIZED,

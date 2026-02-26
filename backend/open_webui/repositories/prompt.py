@@ -61,6 +61,7 @@ class BlueNexusPromptRepository(BasePromptRepository):
         """Get BlueNexus client for the user."""
         if self._client is None:
             from open_webui.utils.bluenexus.factory import get_bluenexus_client_for_user
+
             self._client = get_bluenexus_client_for_user(self.user_id)
         return self._client
 
@@ -92,7 +93,7 @@ class BlueNexusPromptRepository(BasePromptRepository):
                 filter={"user_id": user_id},
                 sort_by=SortBy.CREATED_AT,
                 sort_order=SortOrder.DESC,
-            )
+            ),
         )
 
         prompts = []
@@ -111,8 +112,7 @@ class BlueNexusPromptRepository(BasePromptRepository):
             return None
 
         response = await client.query(
-            Collections.PROMPTS,
-            QueryOptions(filter={"command": command}, limit=1)
+            Collections.PROMPTS, QueryOptions(filter={"command": command}, limit=1)
         )
 
         if response.data and len(response.data) > 0:
@@ -153,8 +153,7 @@ class BlueNexusPromptRepository(BasePromptRepository):
 
         # Find existing prompt
         response = await client.query(
-            Collections.PROMPTS,
-            QueryOptions(filter={"command": command}, limit=1)
+            Collections.PROMPTS, QueryOptions(filter={"command": command}, limit=1)
         )
 
         if not response.data or len(response.data) == 0:
@@ -166,10 +165,14 @@ class BlueNexusPromptRepository(BasePromptRepository):
         # Update fields
         prompt_data["title"] = data.get("title", prompt_data.get("title"))
         prompt_data["content"] = data.get("content", prompt_data.get("content"))
-        prompt_data["access_control"] = data.get("access_control", prompt_data.get("access_control"))
+        prompt_data["access_control"] = data.get(
+            "access_control", prompt_data.get("access_control")
+        )
         prompt_data["timestamp"] = int(time.time())
 
-        updated_record = await client.update(Collections.PROMPTS, record.id, prompt_data)
+        updated_record = await client.update(
+            Collections.PROMPTS, record.id, prompt_data
+        )
         result_data = updated_record.model_dump()
         self._normalize_prompt_data(result_data)
         return result_data
@@ -183,8 +186,7 @@ class BlueNexusPromptRepository(BasePromptRepository):
             return False
 
         response = await client.query(
-            Collections.PROMPTS,
-            QueryOptions(filter={"command": command}, limit=1)
+            Collections.PROMPTS, QueryOptions(filter={"command": command}, limit=1)
         )
 
         if not response.data or len(response.data) == 0:

@@ -180,7 +180,9 @@
 			`chat-input${chatIdProp ? `-${chatIdProp}` : ''}`
 		);
 
-		if (chatIdProp && (await loadChat())) {
+		const loadChatResult = chatIdProp ? await loadChat() : null;
+
+		if (chatIdProp && loadChatResult) {
 			await tick();
 			loading = false;
 			window.setTimeout(() => scrollToBottom(), 0);
@@ -1082,8 +1084,6 @@
 			const chatContent = chat.chat;
 
 			if (chatContent) {
-				console.log(chatContent);
-
 				selectedModels =
 					(chatContent?.models ?? undefined) !== undefined
 						? chatContent.models
@@ -1099,6 +1099,26 @@
 					(chatContent?.history ?? undefined) !== undefined
 						? chatContent.history
 						: convertMessagesToHistory(chatContent.messages);
+
+				// Handle malformed currentId - if the current message doesn't have an 'id' property, find a valid one
+				if (
+					history.currentId &&
+					history.messages[history.currentId] &&
+					!history.messages[history.currentId].id
+				) {
+					const validMessages = Object.values(history.messages).filter((m: any) => m.id && m.role);
+					if (validMessages.length > 0) {
+						// Find messages with no children (leaf nodes) to get the latest in the conversation
+						const leafMessages = validMessages.filter(
+							(m: any) => !m.childrenIds || m.childrenIds.length === 0
+						);
+						if (leafMessages.length > 0) {
+							history.currentId = (leafMessages[leafMessages.length - 1] as any).id;
+						} else {
+							history.currentId = (validMessages[validMessages.length - 1] as any).id;
+						}
+					}
+				}
 
 				chatTitle.set(chatContent.title);
 

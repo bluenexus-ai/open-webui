@@ -35,7 +35,9 @@ from open_webui.models.messages import (
 log = logging.getLogger(__name__)
 
 # Simple in-memory cache for message data (short TTL since messages change frequently)
-_message_cache: dict[str, tuple[dict, str, float]] = {}  # key -> (data, record_id, timestamp)
+_message_cache: dict[str, tuple[dict, str, float]] = (
+    {}
+)  # key -> (data, record_id, timestamp)
 _MESSAGE_CACHE_TTL = 30  # 30 seconds
 
 
@@ -46,7 +48,9 @@ def _cache_message(user_id: str, message_id: str, data: dict, record_id: str) ->
     set_cached_record_id(user_id, "messages", message_id, record_id)
 
 
-def _get_cached_message(user_id: str, message_id: str) -> tuple[Optional[dict], Optional[str]]:
+def _get_cached_message(
+    user_id: str, message_id: str
+) -> tuple[Optional[dict], Optional[str]]:
     """Get cached message data and record ID."""
     key = f"{user_id}:messages:{message_id}"
     if key in _message_cache:
@@ -73,6 +77,7 @@ def _run_async(coro):
         loop = asyncio.get_event_loop()
         if loop.is_running():
             import concurrent.futures
+
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(asyncio.run, coro)
                 return future.result()
@@ -134,8 +139,7 @@ async def get_message_by_id(user_id: str, message_id: str) -> Optional[dict]:
 
     try:
         response = await client.query(
-            Collections.MESSAGES,
-            QueryOptions(filter={"owui_id": message_id}, limit=1)
+            Collections.MESSAGES, QueryOptions(filter={"owui_id": message_id}, limit=1)
         )
 
         if response.data and len(response.data) > 0:
@@ -166,8 +170,8 @@ async def get_messages_by_channel_id(
                 filter={"channel_id": channel_id, "parent_id": None},
                 sort=[{"field": "created_at", "order": "desc"}],
                 skip=skip,
-                limit=limit
-            )
+                limit=limit,
+            ),
         )
 
         if response.data:
@@ -190,8 +194,7 @@ async def get_messages_by_parent_id(
     try:
         # Get the parent message first
         parent_response = await client.query(
-            Collections.MESSAGES,
-            QueryOptions(filter={"owui_id": parent_id}, limit=1)
+            Collections.MESSAGES, QueryOptions(filter={"owui_id": parent_id}, limit=1)
         )
 
         parent = None
@@ -208,8 +211,8 @@ async def get_messages_by_parent_id(
                 filter={"channel_id": channel_id, "parent_id": parent_id},
                 sort=[{"field": "created_at", "order": "desc"}],
                 skip=skip,
-                limit=limit
-            )
+                limit=limit,
+            ),
         )
 
         messages = []
@@ -238,8 +241,8 @@ async def get_thread_replies_by_message_id(user_id: str, message_id: str) -> lis
             Collections.MESSAGES,
             QueryOptions(
                 filter={"parent_id": message_id},
-                sort=[{"field": "created_at", "order": "desc"}]
-            )
+                sort=[{"field": "created_at", "order": "desc"}],
+            ),
         )
 
         if response.data:
@@ -273,8 +276,8 @@ async def batch_get_thread_replies(user_id: str, message_ids: list[str]) -> list
                 filter={"parent_id": {"$in": message_ids}},
                 sort_by=SortBy.CREATED_AT,
                 sort_order=SortOrder.DESC,
-                limit=100  # Reasonable limit for batch
-            )
+                limit=100,  # Reasonable limit for batch
+            ),
         )
 
         if response.data:
@@ -321,7 +324,9 @@ async def update_message_by_id(
 
         if record_id and cached_data:
             # FAST PATH: Use cached record ID - only 1 API call
-            log.debug(f"[BlueNexus] Fast update for message {message_id} using cached record_id")
+            log.debug(
+                f"[BlueNexus] Fast update for message {message_id} using cached record_id"
+            )
             message_data = cached_data.copy()
             message_data["content"] = form_data.content
             message_data["data"] = {
@@ -334,15 +339,16 @@ async def update_message_by_id(
             }
             message_data["updated_at"] = int(time.time_ns())
 
-            updated_record = await client.update(Collections.MESSAGES, record_id, message_data)
+            updated_record = await client.update(
+                Collections.MESSAGES, record_id, message_data
+            )
             result = updated_record.model_dump()
             _cache_message(user_id, message_id, result, record_id)
             return result
 
         # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
-            Collections.MESSAGES,
-            QueryOptions(filter={"owui_id": message_id}, limit=1)
+            Collections.MESSAGES, QueryOptions(filter={"owui_id": message_id}, limit=1)
         )
 
         if not response.data or len(response.data) == 0:
@@ -364,7 +370,9 @@ async def update_message_by_id(
         message_data["updated_at"] = int(time.time_ns())
 
         # Update in BlueNexus
-        updated_record = await client.update(Collections.MESSAGES, record.id, message_data)
+        updated_record = await client.update(
+            Collections.MESSAGES, record.id, message_data
+        )
         result = updated_record.model_dump()
         # Cache for future updates
         _cache_message(user_id, message_id, result, record.id)
@@ -389,26 +397,31 @@ async def add_reaction_to_message(
 
         if record_id and cached_data:
             # FAST PATH: Use cached record ID - only 1 API call
-            log.debug(f"[BlueNexus] Fast add reaction for message {message_id} using cached record_id")
+            log.debug(
+                f"[BlueNexus] Fast add reaction for message {message_id} using cached record_id"
+            )
             message_data = cached_data.copy()
             reactions = message_data.get("reactions", [])
-            reactions.append({
-                "id": str(uuid.uuid4()),
-                "user_id": reactor_user_id,
-                "name": name,
-                "created_at": int(time.time_ns()),
-            })
+            reactions.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "user_id": reactor_user_id,
+                    "name": name,
+                    "created_at": int(time.time_ns()),
+                }
+            )
             message_data["reactions"] = reactions
 
-            updated_record = await client.update(Collections.MESSAGES, record_id, message_data)
+            updated_record = await client.update(
+                Collections.MESSAGES, record_id, message_data
+            )
             result = updated_record.model_dump()
             _cache_message(user_id, message_id, result, record_id)
             return result
 
         # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
-            Collections.MESSAGES,
-            QueryOptions(filter={"owui_id": message_id}, limit=1)
+            Collections.MESSAGES, QueryOptions(filter={"owui_id": message_id}, limit=1)
         )
 
         if not response.data or len(response.data) == 0:
@@ -419,15 +432,19 @@ async def add_reaction_to_message(
 
         # Add reaction
         reactions = message_data.get("reactions", [])
-        reactions.append({
-            "id": str(uuid.uuid4()),
-            "user_id": reactor_user_id,
-            "name": name,
-            "created_at": int(time.time_ns()),
-        })
+        reactions.append(
+            {
+                "id": str(uuid.uuid4()),
+                "user_id": reactor_user_id,
+                "name": name,
+                "created_at": int(time.time_ns()),
+            }
+        )
         message_data["reactions"] = reactions
 
-        updated_record = await client.update(Collections.MESSAGES, record.id, message_data)
+        updated_record = await client.update(
+            Collections.MESSAGES, record.id, message_data
+        )
         result = updated_record.model_dump()
         # Cache for future updates
         _cache_message(user_id, message_id, result, record.id)
@@ -452,23 +469,27 @@ async def remove_reaction_by_id_and_user_id_and_name(
 
         if record_id and cached_data:
             # FAST PATH: Use cached record ID - only 1 API call
-            log.debug(f"[BlueNexus] Fast remove reaction for message {message_id} using cached record_id")
+            log.debug(
+                f"[BlueNexus] Fast remove reaction for message {message_id} using cached record_id"
+            )
             message_data = cached_data.copy()
             reactions = message_data.get("reactions", [])
             message_data["reactions"] = [
-                r for r in reactions
+                r
+                for r in reactions
                 if not (r.get("user_id") == reactor_user_id and r.get("name") == name)
             ]
 
-            updated_record = await client.update(Collections.MESSAGES, record_id, message_data)
+            updated_record = await client.update(
+                Collections.MESSAGES, record_id, message_data
+            )
             result = updated_record.model_dump()
             _cache_message(user_id, message_id, result, record_id)
             return True
 
         # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
-            Collections.MESSAGES,
-            QueryOptions(filter={"owui_id": message_id}, limit=1)
+            Collections.MESSAGES, QueryOptions(filter={"owui_id": message_id}, limit=1)
         )
 
         if not response.data or len(response.data) == 0:
@@ -480,11 +501,14 @@ async def remove_reaction_by_id_and_user_id_and_name(
         # Remove matching reaction
         reactions = message_data.get("reactions", [])
         message_data["reactions"] = [
-            r for r in reactions
+            r
+            for r in reactions
             if not (r.get("user_id") == reactor_user_id and r.get("name") == name)
         ]
 
-        updated_record = await client.update(Collections.MESSAGES, record.id, message_data)
+        updated_record = await client.update(
+            Collections.MESSAGES, record.id, message_data
+        )
         result = updated_record.model_dump()
         # Cache for future updates
         _cache_message(user_id, message_id, result, record.id)
@@ -507,15 +531,16 @@ async def delete_message_by_id(user_id: str, message_id: str) -> bool:
 
         if record_id:
             # FAST PATH: Use cached record ID - only 1 API call
-            log.debug(f"[BlueNexus] Fast delete for message {message_id} using cached record_id")
+            log.debug(
+                f"[BlueNexus] Fast delete for message {message_id} using cached record_id"
+            )
             await client.delete(Collections.MESSAGES, record_id)
             _invalidate_message_cache(user_id, message_id)
             return True
 
         # SLOW PATH: Need to query for record ID first - 2 API calls
         response = await client.query(
-            Collections.MESSAGES,
-            QueryOptions(filter={"owui_id": message_id}, limit=1)
+            Collections.MESSAGES, QueryOptions(filter={"owui_id": message_id}, limit=1)
         )
 
         if not response.data or len(response.data) == 0:
@@ -564,14 +589,18 @@ async def build_message_response(user_id: str, message_data: dict) -> dict:
         **message_data,
         "user": user.model_dump() if user else None,
         "reply_to_message": reply_to_message,
-        "latest_reply_at": thread_replies[0].get("created_at") if thread_replies else None,
+        "latest_reply_at": (
+            thread_replies[0].get("created_at") if thread_replies else None
+        ),
         "reply_count": len(thread_replies),
         "reactions": reactions,
     }
 
 
 # Sync wrappers for compatibility with sync code
-def insert_new_message_sync(user_id: str, form_data: MessageForm, channel_id: str) -> Optional[dict]:
+def insert_new_message_sync(
+    user_id: str, form_data: MessageForm, channel_id: str
+) -> Optional[dict]:
     """Insert a new message (sync wrapper)."""
     return _run_async(insert_new_message(user_id, form_data, channel_id))
 
@@ -592,7 +621,9 @@ def get_messages_by_parent_id_sync(
     user_id: str, channel_id: str, parent_id: str, skip: int = 0, limit: int = 50
 ) -> list[dict]:
     """Get thread replies (sync wrapper)."""
-    return _run_async(get_messages_by_parent_id(user_id, channel_id, parent_id, skip, limit))
+    return _run_async(
+        get_messages_by_parent_id(user_id, channel_id, parent_id, skip, limit)
+    )
 
 
 def get_thread_replies_by_message_id_sync(user_id: str, message_id: str) -> list[dict]:
@@ -616,12 +647,20 @@ def add_reaction_to_message_sync(
     user_id: str, message_id: str, reactor_user_id: str, name: str
 ) -> Optional[dict]:
     """Add reaction (sync wrapper)."""
-    return _run_async(add_reaction_to_message(user_id, message_id, reactor_user_id, name))
+    return _run_async(
+        add_reaction_to_message(user_id, message_id, reactor_user_id, name)
+    )
 
 
-def remove_reaction_sync(user_id: str, message_id: str, reactor_user_id: str, name: str) -> bool:
+def remove_reaction_sync(
+    user_id: str, message_id: str, reactor_user_id: str, name: str
+) -> bool:
     """Remove reaction (sync wrapper)."""
-    return _run_async(remove_reaction_by_id_and_user_id_and_name(user_id, message_id, reactor_user_id, name))
+    return _run_async(
+        remove_reaction_by_id_and_user_id_and_name(
+            user_id, message_id, reactor_user_id, name
+        )
+    )
 
 
 def delete_message_by_id_sync(user_id: str, message_id: str) -> bool:

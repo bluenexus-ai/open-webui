@@ -4,7 +4,15 @@
 	import { fly } from 'svelte/transition';
 	import { flyAndScale } from '$lib/utils/transitions';
 
-	import { config, user, tools as _tools, mobile, settings, toolServers, bluenexusMcpServers } from '$lib/stores';
+	import {
+		config,
+		user,
+		tools as _tools,
+		mobile,
+		settings,
+		toolServers,
+		bluenexusMcpServers
+	} from '$lib/stores';
 
 	import { getOAuthClientAuthorizationUrl } from '$lib/apis/configs';
 	import { getTools } from '$lib/apis/tools';
@@ -396,7 +404,10 @@
 										<div class=" truncate">{tools[toolId].name}</div>
 									</Tooltip>
 									{#if tools[toolId]?.bluenexus}
-										<span class="text-blue-500 text-xs font-medium px-1 py-0.5 bg-blue-100 dark:bg-blue-900/30 rounded">BN</span>
+										<span
+											class="text-blue-500 text-xs font-medium px-1 py-0.5 bg-blue-100 dark:bg-blue-900/30 rounded"
+											>BN</span
+										>
 									{/if}
 								</div>
 							</div>

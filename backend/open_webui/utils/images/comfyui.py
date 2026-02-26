@@ -78,7 +78,9 @@ def get_images(ws, prompt, client_id, base_url, api_key):
             log.debug(f"WebSocket message: {message.get('type')}")
             if message["type"] == "executing":
                 data = message["data"]
-                log.info(f"Executing node: {data.get('node')} for prompt: {data.get('prompt_id')}")
+                log.info(
+                    f"Executing node: {data.get('node')} for prompt: {data.get('prompt_id')}"
+                )
                 if data["node"] is None and data["prompt_id"] == prompt_id:
                     log.info("Workflow execution completed")
                     break  # Execution is done
@@ -96,7 +98,9 @@ def get_images(ws, prompt, client_id, base_url, api_key):
         raise Exception(execution_error)
 
     history_response = get_history(prompt_id, base_url, api_key)
-    log.info(f"History response keys: {history_response.keys() if history_response else 'None'}")
+    log.info(
+        f"History response keys: {history_response.keys() if history_response else 'None'}"
+    )
 
     if prompt_id not in history_response:
         log.error(f"Prompt ID {prompt_id} not found in history response")
@@ -109,7 +113,9 @@ def get_images(ws, prompt, client_id, base_url, api_key):
     outputs = history.get("outputs", {})
     for node_id in outputs:
         node_output = outputs[node_id]
-        log.info(f"Node {node_id} output keys: {node_output.keys() if node_output else 'None'}")
+        log.info(
+            f"Node {node_id} output keys: {node_output.keys() if node_output else 'None'}"
+        )
         if "images" in node_output:
             for image in node_output["images"]:
                 log.info(f"Found image: {image}")
@@ -133,10 +139,12 @@ async def comfyui_upload_image(image_file_item, base_url, api_key):
 
     _, (filename, file_bytes, mime_type) = image_file_item
 
-    log.info(f"Uploading image to ComfyUI: {filename}, mime_type: {mime_type}, url: {url}")
+    log.info(
+        f"Uploading image to ComfyUI: {filename}, mime_type: {mime_type}, url: {url}"
+    )
 
     # Read bytes from BytesIO if needed
-    if hasattr(file_bytes, 'read'):
+    if hasattr(file_bytes, "read"):
         file_bytes.seek(0)
         file_data = file_bytes.read()
     else:
@@ -205,7 +213,11 @@ async def comfyui_create_image(
                     ] = payload.prompt
             elif node.type == "negative_prompt":
                 # Use empty string if negative_prompt is None
-                neg_prompt = payload.negative_prompt if payload.negative_prompt is not None else ""
+                neg_prompt = (
+                    payload.negative_prompt
+                    if payload.negative_prompt is not None
+                    else ""
+                )
                 for node_id in node.node_ids:
                     workflow[node_id]["inputs"][
                         node.key if node.key else "text"
@@ -294,7 +306,9 @@ async def comfyui_edit_image(
     log.info(f"comfyui_edit_image called with model: {model}")
     log.info(f"Image(s) to edit: {payload.image}")
     log.info(f"Number of workflow nodes: {len(payload.workflow.nodes)}")
-    log.info(f"Workflow nodes: {[{'type': n.type, 'node_ids': n.node_ids, 'key': n.key} for n in payload.workflow.nodes]}")
+    log.info(
+        f"Workflow nodes: {[{'type': n.type, 'node_ids': n.node_ids, 'key': n.key} for n in payload.workflow.nodes]}"
+    )
 
     for node in payload.workflow.nodes:
         if node.type:
@@ -317,7 +331,11 @@ async def comfyui_edit_image(
                     ] = payload.prompt
             elif node.type == "negative_prompt":
                 # Use empty string if negative_prompt is None
-                neg_prompt = payload.negative_prompt if payload.negative_prompt is not None else ""
+                neg_prompt = (
+                    payload.negative_prompt
+                    if payload.negative_prompt is not None
+                    else ""
+                )
                 for node_id in node.node_ids:
                     workflow[node_id]["inputs"][
                         node.key if node.key else "text"

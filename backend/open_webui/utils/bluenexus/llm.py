@@ -134,8 +134,7 @@ def get_bluenexus_oauth_token_for_headers(user_id: str) -> Optional[str]:
 
     try:
         session = OAuthSessions.get_session_by_provider_and_user_id(
-            provider="bluenexus",
-            user_id=user_id
+            provider="bluenexus", user_id=user_id
         )
         if session:
             return session.token.get("access_token")

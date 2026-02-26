@@ -202,14 +202,17 @@
 		})();
 
 		const chatsPromise = (async () => {
-			console.log('[initChatList] Fetching chat list, token:', localStorage.token ? 'present' : 'MISSING');
+			console.log(
+				'[initChatList] Fetching chat list, token:',
+				localStorage.token ? 'present' : 'MISSING'
+			);
 			try {
 				const _chats = await getChatList(localStorage.token, $currentChatPage);
 				console.log('[initChatList] Got chats:', _chats?.length ?? 'null');
 				chats.set(_chats);
 			} catch (err) {
 				console.error('[initChatList] Chat list error:', err);
-				chats.set([]);  // Set empty array instead of leaving null
+				chats.set([]); // Set empty array instead of leaving null
 			}
 		})();
 

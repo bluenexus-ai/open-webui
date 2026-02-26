@@ -28,6 +28,7 @@ def _serialize_for_json(obj: Any) -> Any:
         return [_serialize_for_json(item) for item in obj]
     return obj
 
+
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.utils.bluenexus.types import (
     BlueNexusRecord,
@@ -71,7 +72,9 @@ async def cleanup_session_pool() -> int:
         except Exception as e:
             log.warning(f"[BlueNexus Client] Error closing session {session_key}: {e}")
     _session_pool.clear()
-    log.info(f"[BlueNexus Client] Session pool cleanup complete, closed {closed_count} sessions")
+    log.info(
+        f"[BlueNexus Client] Session pool cleanup complete, closed {closed_count} sessions"
+    )
     return closed_count
 
 
@@ -150,14 +153,21 @@ class BlueNexusDataClient:
         if verify_ssl is None:
             parsed = urlparse(self.base_url)
             hostname = parsed.hostname or ""
-            self.verify_ssl = hostname not in ["localhost", "127.0.0.1", "::1", "host.docker.internal"]
+            self.verify_ssl = hostname not in [
+                "localhost",
+                "127.0.0.1",
+                "::1",
+                "host.docker.internal",
+            ]
         else:
             self.verify_ssl = verify_ssl
 
         self._data_api_path = "/api/v1/data"
         self._session_key = f"{self.base_url}:{self.verify_ssl}"
 
-        log.info(f"[BlueNexus Client] Initialized with base_url={self.base_url}, verify_ssl={self.verify_ssl}")
+        log.info(
+            f"[BlueNexus Client] Initialized with base_url={self.base_url}, verify_ssl={self.verify_ssl}"
+        )
 
     def _get_ssl_context(self) -> ssl.SSLContext | bool:
         """Get SSL context based on configuration."""
@@ -185,10 +195,14 @@ class BlueNexusDataClient:
         record_path = str(record_id).lstrip("/") if record_id is not None else None
 
         if record_path:
-            return f"{self.base_url}{self._data_api_path}/{collection_path}/{record_path}"
+            return (
+                f"{self.base_url}{self._data_api_path}/{collection_path}/{record_path}"
+            )
         return f"{self.base_url}{self._data_api_path}/{collection_path}"
 
-    async def _handle_response(self, response: aiohttp.ClientResponse) -> dict[str, Any]:
+    async def _handle_response(
+        self, response: aiohttp.ClientResponse
+    ) -> dict[str, Any]:
         """
         Handle API response and raise appropriate errors.
 
@@ -232,7 +246,9 @@ class BlueNexusDataClient:
             errors = None
             if "errors" in data:
                 errors = [ValidationError(**e) for e in data["errors"]]
-            raise BlueNexusValidationError(message, errors=errors, status_code=status, details=details)
+            raise BlueNexusValidationError(
+                message, errors=errors, status_code=status, details=details
+            )
         else:
             raise BlueNexusError(message, status_code=status, details=details)
 
@@ -357,7 +373,9 @@ class BlueNexusDataClient:
             BlueNexusAuthError: If not authenticated
         """
         url = self._build_url(collection)
-        log.info(f"[BlueNexus Client] POST {url} - Creating record in collection '{collection}'")
+        log.info(
+            f"[BlueNexus Client] POST {url} - Creating record in collection '{collection}'"
+        )
 
         payload = {**data}
         if schema_uri:
@@ -390,7 +408,9 @@ class BlueNexusDataClient:
             BlueNexusAuthError: If not authenticated
         """
         url = self._build_url(collection, record_id)
-        log.info(f"[BlueNexus Client] GET {url} - Getting record '{record_id}' from '{collection}'")
+        log.info(
+            f"[BlueNexus Client] GET {url} - Getting record '{record_id}' from '{collection}'"
+        )
 
         response = await self._request("GET", url)
 
@@ -421,7 +441,9 @@ class BlueNexusDataClient:
             BlueNexusAuthError: If not authenticated
         """
         url = self._build_url(collection, record_id)
-        log.info(f"[BlueNexus Client] PUT {url} - Updating record '{record_id}' in '{collection}'")
+        log.info(
+            f"[BlueNexus Client] PUT {url} - Updating record '{record_id}' in '{collection}'"
+        )
 
         payload = {**data}
         if schema_uri:
@@ -451,7 +473,9 @@ class BlueNexusDataClient:
             BlueNexusAuthError: If not authenticated
         """
         url = self._build_url(collection, record_id)
-        log.info(f"[BlueNexus Client] DELETE {url} - Deleting record '{record_id}' from '{collection}'")
+        log.info(
+            f"[BlueNexus Client] DELETE {url} - Deleting record '{record_id}' from '{collection}'"
+        )
 
         await self._request("DELETE", url)
 
@@ -495,8 +519,16 @@ class BlueNexusDataClient:
             options = QueryOptions()
 
         # Extract enum values - use .value for enums
-        sort_by = options.sort_by.value if hasattr(options.sort_by, 'value') else options.sort_by
-        sort_order = options.sort_order.value if hasattr(options.sort_order, 'value') else options.sort_order
+        sort_by = (
+            options.sort_by.value
+            if hasattr(options.sort_by, "value")
+            else options.sort_by
+        )
+        sort_order = (
+            options.sort_order.value
+            if hasattr(options.sort_order, "value")
+            else options.sort_order
+        )
 
         params = {
             "sortBy": sort_by,
@@ -513,7 +545,9 @@ class BlueNexusDataClient:
         response = await self._request("GET", url, params=params)
 
         paginated = PaginatedResponse(**response)
-        log.info(f"[BlueNexus Client] Query returned {len(paginated.data)} records from '{collection}', total={paginated.pagination.total}")
+        log.info(
+            f"[BlueNexus Client] Query returned {len(paginated.data)} records from '{collection}', total={paginated.pagination.total}"
+        )
 
         return paginated
 
@@ -562,7 +596,9 @@ class BlueNexusDataClient:
 
             page += 1
 
-        log.info(f"[BlueNexus Client] Retrieved {len(all_records)} total records from '{collection}'")
+        log.info(
+            f"[BlueNexus Client] Retrieved {len(all_records)} total records from '{collection}'"
+        )
         return all_records
 
     async def verify(

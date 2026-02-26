@@ -38,7 +38,6 @@ from open_webui.env import SRC_LOG_LEVELS, STATIC_DIR
 from open_webui.utils.auth import get_admin_user, get_password_hash, get_verified_user
 from open_webui.utils.access_control import get_permissions, has_permission
 
-
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
 
@@ -229,9 +228,9 @@ async def update_default_user_permissions(
 
 @router.get("/user/settings", response_model=Optional[UserSettings])
 async def get_user_settings_by_session_user(user=Depends(get_verified_user)):
-    user = Users.get_user_by_id(user.id)
-    if user:
-        return user.settings
+    db_user = Users.get_user_by_id(user.id)
+    if db_user:
+        return db_user.settings
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

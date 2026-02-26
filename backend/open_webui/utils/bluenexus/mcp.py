@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 class BlueNexusMCPServer(BaseModel):
     """BlueNexus MCP Server model."""
+
     model_config = ConfigDict(extra="allow")
     slug: str
     label: str
@@ -33,6 +34,7 @@ class BlueNexusMCPServer(BaseModel):
 
 class BlueNexusMCPServersResponse(BaseModel):
     """Response model for BlueNexus MCP servers."""
+
     data: List[BlueNexusMCPServer]
 
 
@@ -48,7 +50,9 @@ async def get_bluenexus_mcp_servers(user_id: str) -> BlueNexusMCPServersResponse
         Response with list of MCP servers
     """
     if not is_bluenexus_enabled():
-        log.debug(f"BlueNexus MCP servers request skipped - BlueNexus disabled for user {user_id}")
+        log.debug(
+            f"BlueNexus MCP servers request skipped - BlueNexus disabled for user {user_id}"
+        )
         return BlueNexusMCPServersResponse(data=[])
 
     if not BLUENEXUS_API_BASE_URL.value:
@@ -67,7 +71,9 @@ async def get_bluenexus_mcp_servers(user_id: str) -> BlueNexusMCPServersResponse
 
         access_token = oauth_session.token.get("access_token")
         if not access_token:
-            log.warning(f"No access token found in BlueNexus session for user {user_id}")
+            log.warning(
+                f"No access token found in BlueNexus session for user {user_id}"
+            )
             return BlueNexusMCPServersResponse(data=[])
 
         # Fetch available MCP servers from BlueNexus API with retry logic
@@ -105,10 +111,14 @@ async def get_bluenexus_mcp_servers(user_id: str) -> BlueNexusMCPServersResponse
                             )
                             return BlueNexusMCPServersResponse(data=[])
 
-            except (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError, asyncio.TimeoutError) as conn_error:
+            except (
+                aiohttp.ClientConnectorError,
+                aiohttp.ServerDisconnectedError,
+                asyncio.TimeoutError,
+            ) as conn_error:
                 last_error = conn_error
                 if attempt < max_retries - 1:
-                    delay = retry_delay * (2 ** attempt)
+                    delay = retry_delay * (2**attempt)
                     log.warning(
                         f"BlueNexus MCP server fetch connection error (attempt {attempt + 1}/{max_retries}): {conn_error}. Retrying in {delay}s..."
                     )
@@ -126,7 +136,9 @@ async def get_bluenexus_mcp_servers(user_id: str) -> BlueNexusMCPServersResponse
         return BlueNexusMCPServersResponse(data=[])
 
 
-def get_bluenexus_mcp_oauth_token(user_id: str, server_id: str) -> Optional[Dict[str, Any]]:
+def get_bluenexus_mcp_oauth_token(
+    user_id: str, server_id: str
+) -> Optional[Dict[str, Any]]:
     """
     Get BlueNexus OAuth token for MCP server authentication.
 

@@ -81,7 +81,10 @@ from open_webui.models.users import UserModel
 from open_webui.models.functions import Functions
 from open_webui.models.models import Models
 
-from open_webui.retrieval.utils import get_sources_from_items
+from open_webui.retrieval.utils import (
+    get_sources_from_items,
+    get_all_items_from_collections,
+)
 
 
 from open_webui.utils.chat import generate_chat_completion
@@ -131,7 +134,6 @@ from open_webui.env import (
 )
 from open_webui.constants import TASKS
 
-
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
@@ -160,7 +162,9 @@ def process_tool_result(
     metadata=None,
     user=None,
 ):
-    log.info(f"[MCP] Step 7: Processing tool result for '{tool_function_name}', tool_type={tool_type}, result_type={type(tool_result).__name__}")
+    log.info(
+        f"[MCP] Step 7: Processing tool result for '{tool_function_name}', tool_type={tool_type}, result_type={type(tool_result).__name__}"
+    )
     tool_result_embeds = []
 
     if isinstance(tool_result, HTMLResponse):
@@ -244,7 +248,9 @@ def process_tool_result(
 
     if isinstance(tool_result, list):
         if tool_type == "mcp":  # MCP
-            log.info(f"[MCP] Step 7: Processing MCP result list with {len(tool_result)} items")
+            log.info(
+                f"[MCP] Step 7: Processing MCP result list with {len(tool_result)} items"
+            )
             tool_response = []
             for idx, item in enumerate(tool_result):
                 if isinstance(item, dict):
@@ -260,7 +266,9 @@ def process_tool_result(
                                 pass
                         tool_response.append(text)
                     elif item_type in ["image", "audio"]:
-                        log.info(f"[MCP] Step 7: Processing {item_type} file, mimeType={item.get('mimeType')}")
+                        log.info(
+                            f"[MCP] Step 7: Processing {item_type} file, mimeType={item.get('mimeType')}"
+                        )
                         file_url = get_file_url_from_base64(
                             request,
                             f"data:{item.get('mimeType')};base64,{item.get('data', item.get('blob', ''))}",
@@ -281,7 +289,9 @@ def process_tool_result(
                         )
                         log.info(f"[MCP] Step 7: Created file URL for {item_type}")
             tool_result = tool_response[0] if len(tool_response) == 1 else tool_response
-            log.info(f"[MCP] Step 7: Final MCP result - text_items={len(tool_response)}, files={len(tool_result_files)}")
+            log.info(
+                f"[MCP] Step 7: Final MCP result - text_items={len(tool_response)}, files={len(tool_result_files)}"
+            )
         else:  # OpenAPI
             for item in tool_result:
                 if isinstance(item, str) and item.startswith("data:"):
@@ -299,8 +309,14 @@ def process_tool_result(
     if isinstance(tool_result, dict) or isinstance(tool_result, list):
         tool_result = json.dumps(tool_result, indent=2, ensure_ascii=False)
 
-    result_preview = str(tool_result)[:200] + "..." if len(str(tool_result)) > 200 else str(tool_result)
-    log.info(f"[MCP] Step 7: Finished processing '{tool_function_name}' - result_preview={result_preview}, files={len(tool_result_files)}, embeds={len(tool_result_embeds)}")
+    result_preview = (
+        str(tool_result)[:200] + "..."
+        if len(str(tool_result)) > 200
+        else str(tool_result)
+    )
+    log.info(
+        f"[MCP] Step 7: Finished processing '{tool_function_name}' - result_preview={result_preview}, files={len(tool_result_files)}, embeds={len(tool_result_embeds)}"
+    )
 
     return tool_result, tool_result_files, tool_result_embeds
 
@@ -374,9 +390,13 @@ async def chat_completion_tools_handler(
     # - Use tools when needed
     # - Handle follow-ups naturally (e.g., "planA", "retry", "yes")
     if available_tool_names:
-        log.info(f"[Tools Handler] Using ReAct agent ({len(available_tool_names)} tools available)")
+        log.info(
+            f"[Tools Handler] Using ReAct agent ({len(available_tool_names)} tools available)"
+        )
 
-        async def generate_completion_for_react(system_prompt: str, user_prompt: str) -> str:
+        async def generate_completion_for_react(
+            system_prompt: str, user_prompt: str
+        ) -> str:
             """Generate LLM completion for ReAct agent."""
             react_payload = {
                 "model": task_model_id,
@@ -387,13 +407,17 @@ async def chat_completion_tools_handler(
                 "stream": False,
                 "metadata": {"task": "react"},
             }
-            response = await generate_chat_completion(request, form_data=react_payload, user=user)
+            response = await generate_chat_completion(
+                request, form_data=react_payload, user=user
+            )
             content = await get_content_from_response(response)
             return content or ""
 
         # Configure ReAct agent
         react_config = ReActConfig(
-            max_iterations=getattr(request.app.state.config, "REACT_MAX_ITERATIONS", 10),
+            max_iterations=getattr(
+                request.app.state.config, "REACT_MAX_ITERATIONS", 10
+            ),
             tool_timeout=getattr(request.app.state.config, "REACT_TOOL_TIMEOUT", 60.0),
             continue_on_failure=True,
         )
@@ -451,7 +475,9 @@ async def chat_completion_tools_handler(
                     body["messages"],
                 )
 
-            log.info(f"[Tools Handler] ReAct completed: status={react_result.status.value}, iterations={react_result.total_iterations}")
+            log.info(
+                f"[Tools Handler] ReAct completed: status={react_result.status.value}, iterations={react_result.total_iterations}"
+            )
             return body, {"sources": react_result.sources}
 
         except Exception as e:
@@ -595,6 +621,10 @@ async def chat_web_search_handler(
             files = form_data.get("files", [])
 
             if results.get("collection_names"):
+                web_docs = results.get("docs", [])
+                log.info(
+                    f"[Web Search] collection_names path: {len(web_docs)} docs returned from process_web_search"
+                )
                 for col_idx, collection_name in enumerate(
                     results.get("collection_names")
                 ):
@@ -605,6 +635,7 @@ async def chat_web_search_handler(
                             "type": "web_search",
                             "urls": results["filenames"],
                             "queries": queries,
+                            "docs": web_docs,
                         }
                     )
             elif results.get("docs"):
@@ -690,8 +721,7 @@ def strip_images_from_messages(messages: list) -> list:
         # Remove files with image type from the message
         if "files" in new_message:
             new_message["files"] = [
-                f for f in new_message.get("files", [])
-                if f.get("type") != "image"
+                f for f in new_message.get("files", []) if f.get("type") != "image"
             ]
             if not new_message["files"]:
                 del new_message["files"]
@@ -752,16 +782,33 @@ async def chat_image_generation_handler(
     prompt = user_message
     input_images = get_last_images(message_list)
 
+    # Check if agent data is available for image generation
+    agent_data_for_image = metadata.get("_agent_data_for_image")
+    if agent_data_for_image:
+        log.info(
+            f"[Image Generation] Using agent data for prompt ({len(agent_data_for_image)} chars)"
+        )
+
     system_message_content = ""
     if len(input_images) == 0:
         # Create image(s)
         if request.app.state.config.ENABLE_IMAGE_PROMPT_GENERATION:
             try:
+                # Prepare messages for prompt generation
+                messages_for_prompt = form_data["messages"].copy()
+
+                # If agent data is available, inject it into messages for prompt generation
+                if agent_data_for_image:
+                    messages_for_prompt = add_or_update_user_message(
+                        f"\n[Data for image generation]\n{agent_data_for_image}",
+                        messages_for_prompt,
+                    )
+
                 res = await generate_image_prompt(
                     request,
                     {
                         "model": form_data["model"],
-                        "messages": form_data["messages"],
+                        "messages": messages_for_prompt,
                     },
                     user,
                 )
@@ -792,6 +839,15 @@ async def chat_image_generation_handler(
                 user=user,
             )
 
+            # Log generated images for debugging
+            log.info(
+                f"[Image Generation] Generated {len(images)} images with prompt: {prompt[:100]}..."
+            )
+            for idx, image in enumerate(images):
+                log.debug(
+                    f"[Image Generation] Image {idx}: {image.get('url', 'NO URL')[:100]}..."
+                )
+
             await __event_emitter__(
                 {
                     "type": "status",
@@ -814,9 +870,28 @@ async def chat_image_generation_handler(
                 }
             )
 
-            system_message_content = "<context>The requested image has been created and is now being shown to the user. Let them know that it has been generated.</context>"
+            if agent_data_for_image:
+                # When agent data was used, suppress ALL text output - just show the image
+                # Replace all messages with minimal instruction to output nothing
+                log.info(
+                    f"[Image Generation] agent_data_for_image is truthy, setting _image_only_response=True"
+                )
+                form_data["messages"] = [
+                    {"role": "system", "content": "Output ONLY: ✓"},
+                    {"role": "user", "content": "Acknowledge."},
+                ]
+                system_message_content = ""  # No additional system message needed
+                metadata["_image_only_response"] = True
+                log.info(
+                    f"[Image Generation] _image_only_response is now: {metadata.get('_image_only_response')}"
+                )
+            else:
+                log.info(
+                    f"[Image Generation] agent_data_for_image is falsy: {agent_data_for_image}"
+                )
+                system_message_content = "<context>The requested image has been created and is now being shown to the user. Let them know that it has been generated.</context>"
         except Exception as e:
-            log.debug(e)
+            log.exception(e)
 
             error_message = ""
             if isinstance(e, HTTPException):
@@ -1242,10 +1317,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 request, form_data, extra_params, user
             )
 
-        if "image_generation" in features and features["image_generation"]:
-            form_data = await chat_image_generation_handler(
-                request, form_data, extra_params, user
-            )
+        # NOTE: image_generation is deferred until AFTER Universal MCP agent
+        # so that images can be generated using data retrieved by the agent.
+        # See "DEFERRED IMAGE GENERATION" section below.
 
     tool_ids = form_data.pop("tool_ids", None)
     files = form_data.pop("files", None)
@@ -1272,13 +1346,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
         # files = [*files, *[{"type": "url", "url": url, "name": url} for url in urls]]
         # Remove duplicate files based on their content
-        files = list({json.dumps(f, sort_keys=True): f for f in files}.values())
+        # Use default=str to handle non-serializable types in web search doc metadata
+        files = list(
+            {json.dumps(f, sort_keys=True, default=str): f for f in files}.values()
+        )
 
-    metadata = {
-        **metadata,
-        "tool_ids": tool_ids,
-        "files": files,
-    }
+    # Update metadata in-place to preserve reference for extra_params["__metadata__"]
+    metadata["tool_ids"] = tool_ids
+    metadata["files"] = files
     form_data["metadata"] = metadata
 
     # Server side tools
@@ -1286,7 +1361,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     # Client side tools
     direct_tool_servers = metadata.get("tool_servers", None)
 
-    log.info(f"[MCP] Chat payload received - tool_ids={tool_ids}, direct_tool_servers={direct_tool_servers is not None}")
+    log.info(
+        f"[MCP] Chat payload received - tool_ids={tool_ids}, direct_tool_servers={direct_tool_servers is not None}"
+    )
     log.debug(f"{tool_ids=}")
     log.debug(f"{direct_tool_servers=}")
 
@@ -1295,20 +1372,43 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     mcp_clients = {}
     mcp_tools_dict = {}
 
+    # Track if user explicitly selected MCP servers - if so, use local ReAct instead of Universal MCP
+    user_selected_mcp_servers = False
+
     if tool_ids:
         log.info(f"[MCP] Processing {len(tool_ids)} tool_ids: {tool_ids}")
 
+        # Check if user explicitly selected any MCP servers (BlueNexus or local)
+        bluenexus_mcp_count = sum(
+            1 for tid in tool_ids if tid.startswith("bluenexus_mcp:")
+        )
+        local_mcp_count = sum(1 for tid in tool_ids if tid.startswith("server:mcp:"))
+
+        if bluenexus_mcp_count > 0 or local_mcp_count > 0:
+            user_selected_mcp_servers = True
+            log.info(
+                f"[MCP] User explicitly selected {bluenexus_mcp_count} BlueNexus MCP + {local_mcp_count} local MCP servers - will use local ReAct agent"
+            )
+
         # Count MCP servers to load
-        mcp_server_ids = [tid for tid in tool_ids if tid.startswith("bluenexus_mcp:") or tid.startswith("server:mcp:")]
+        mcp_server_ids = [
+            tid
+            for tid in tool_ids
+            if tid.startswith("bluenexus_mcp:") or tid.startswith("server:mcp:")
+        ]
         for tool_id in tool_ids:
             # Handle BlueNexus MCP servers (user-specific, fetched from BlueNexus API)
             if tool_id.startswith("bluenexus_mcp:"):
                 try:
-                    server_slug = tool_id[len("bluenexus_mcp:"):]
+                    server_slug = tool_id[len("bluenexus_mcp:") :]
                     log.info(f"[BlueNexus MCP] Processing server slug: {server_slug}")
 
                     # Fetch user's BlueNexus MCP servers
-                    from open_webui.utils.bluenexus.mcp import get_bluenexus_mcp_servers, get_bluenexus_mcp_oauth_token
+                    from open_webui.utils.bluenexus.mcp import (
+                        get_bluenexus_mcp_servers,
+                        get_bluenexus_mcp_oauth_token,
+                    )
+
                     bn_servers_response = await get_bluenexus_mcp_servers(user.id)
                     bn_servers = bn_servers_response.data if bn_servers_response else []
 
@@ -1320,19 +1420,29 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             break
 
                     if not mcp_server:
-                        log.error(f"[BlueNexus MCP] Server not found for slug: {server_slug}")
+                        log.error(
+                            f"[BlueNexus MCP] Server not found for slug: {server_slug}"
+                        )
                         continue
 
-                    log.info(f"[BlueNexus MCP] Found server: {mcp_server.label} at {mcp_server.url}")
+                    log.info(
+                        f"[BlueNexus MCP] Found server: {mcp_server.label} at {mcp_server.url}"
+                    )
 
                     # Get BlueNexus OAuth token
                     headers = {}
-                    oauth_token = get_bluenexus_mcp_oauth_token(user.id, f"bluenexus:{server_slug}")
+                    oauth_token = get_bluenexus_mcp_oauth_token(
+                        user.id, f"bluenexus:{server_slug}"
+                    )
                     if oauth_token:
                         log.info("[BlueNexus MCP] OAuth token found")
-                        headers["Authorization"] = f"Bearer {oauth_token.get('access_token', '')}"
+                        headers["Authorization"] = (
+                            f"Bearer {oauth_token.get('access_token', '')}"
+                        )
                     else:
-                        log.warning("[BlueNexus MCP] No OAuth token found - connection may fail")
+                        log.warning(
+                            "[BlueNexus MCP] No OAuth token found - connection may fail"
+                        )
 
                     # Connect to MCP server with retry logic
                     mcp_url = mcp_server.url
@@ -1345,16 +1455,29 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         """Check if an error (including ExceptionGroup) is connection-related."""
                         error_str = str(error)
                         # Check the error string
-                        if any(keyword in error_str for keyword in ["ConnectError", "Connection", "connect", "ConnectionReset"]):
+                        if any(
+                            keyword in error_str
+                            for keyword in [
+                                "ConnectError",
+                                "Connection",
+                                "connect",
+                                "ConnectionReset",
+                            ]
+                        ):
                             return True
                         # Check for ExceptionGroup/BaseExceptionGroup
-                        if isinstance(error, BaseException) and hasattr(error, 'exceptions'):
+                        if isinstance(error, BaseException) and hasattr(
+                            error, "exceptions"
+                        ):
                             # It's an ExceptionGroup - check nested exceptions
                             for exc in error.exceptions:
                                 if is_connection_error(exc):
                                     return True
                         # Check the exception type name
-                        if "Connect" in type(error).__name__ or "Connection" in type(error).__name__:
+                        if (
+                            "Connect" in type(error).__name__
+                            or "Connection" in type(error).__name__
+                        ):
                             return True
                         return False
 
@@ -1373,14 +1496,16 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                                 headers=headers if headers else None,
                             )
                             connected = True
-                            log.info(f"[BlueNexus MCP] Connected successfully to {mcp_url}")
+                            log.info(
+                                f"[BlueNexus MCP] Connected successfully to {mcp_url}"
+                            )
                             break
                         except BaseException as conn_error:
                             last_error = conn_error
                             # Check if it's a connection error that's worth retrying
                             if is_connection_error(conn_error):
                                 if attempt < max_retries - 1:
-                                    delay = retry_delay * (2 ** attempt)
+                                    delay = retry_delay * (2**attempt)
                                     log.warning(
                                         f"[BlueNexus MCP] Connection error (attempt {attempt + 1}/{max_retries}): {type(conn_error).__name__}. Retrying in {delay}s..."
                                     )
@@ -1394,19 +1519,30 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                                 raise
 
                     if not connected:
-                        raise last_error if last_error else Exception("MCP connection failed")
+                        raise (
+                            last_error
+                            if last_error
+                            else Exception("MCP connection failed")
+                        )
 
                     # List and register tools with heartbeat to prevent timeout
 
                     # Create task for list_tool_specs
-                    list_tools_task = asyncio.create_task(mcp_clients[server_slug].list_tool_specs())
+                    list_tools_task = asyncio.create_task(
+                        mcp_clients[server_slug].list_tool_specs()
+                    )
 
                     # Send heartbeat while waiting for tools
-                    heartbeat_interval = 0.5  # seconds - shorter interval for faster keepalive
+                    heartbeat_interval = (
+                        0.5  # seconds - shorter interval for faster keepalive
+                    )
                     tool_specs = None
                     while not list_tools_task.done():
                         try:
-                            tool_specs = await asyncio.wait_for(asyncio.shield(list_tools_task), timeout=heartbeat_interval)
+                            tool_specs = await asyncio.wait_for(
+                                asyncio.shield(list_tools_task),
+                                timeout=heartbeat_interval,
+                            )
                             break
                         except asyncio.TimeoutError:
                             # Task not done yet, continue waiting silently
@@ -1415,7 +1551,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     # Get result if not already obtained
                     if tool_specs is None:
                         tool_specs = await list_tools_task
-                    log.info(f"[BlueNexus MCP] Retrieved {len(tool_specs) if tool_specs else 0} tool specs")
+                    log.info(
+                        f"[BlueNexus MCP] Retrieved {len(tool_specs) if tool_specs else 0} tool specs"
+                    )
 
                     for tool_spec in tool_specs:
                         tool_name = tool_spec.get("name", "unknown")
@@ -1423,16 +1561,22 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
                         def make_tool_function(client, function_name, srv_slug):
                             async def tool_function(**kwargs):
-                                log.info(f"[BlueNexus MCP] Calling tool '{function_name}' on server '{srv_slug}'")
+                                log.info(
+                                    f"[BlueNexus MCP] Calling tool '{function_name}' on server '{srv_slug}'"
+                                )
                                 try:
                                     result = await client.call_tool(
                                         function_name,
                                         function_args=kwargs,
                                     )
-                                    log.info(f"[BlueNexus MCP] Tool '{function_name}' returned successfully")
+                                    log.info(
+                                        f"[BlueNexus MCP] Tool '{function_name}' returned successfully"
+                                    )
                                     return result
                                 except Exception as e:
-                                    log.error(f"[BlueNexus MCP] Tool '{function_name}' failed: {e}")
+                                    log.error(
+                                        f"[BlueNexus MCP] Tool '{function_name}' failed: {e}"
+                                    )
                                     raise
 
                             return tool_function
@@ -1452,12 +1596,19 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             "direct": False,
                         }
 
-                    log.info(f"[BlueNexus MCP] Registered {len(tool_specs) if tool_specs else 0} tools from {server_slug}")
+                    log.info(
+                        f"[BlueNexus MCP] Registered {len(tool_specs) if tool_specs else 0} tools from {server_slug}"
+                    )
 
                 except Exception as e:
-                    log.error(f"[BlueNexus MCP] Failed to process server {tool_id}: {e}")
+                    log.error(
+                        f"[BlueNexus MCP] Failed to process server {tool_id}: {e}"
+                    )
                     import traceback
-                    log.error(f"[BlueNexus MCP] Full traceback:\n{traceback.format_exc()}")
+
+                    log.error(
+                        f"[BlueNexus MCP] Full traceback:\n{traceback.format_exc()}"
+                    )
                     if event_emitter:
                         await event_emitter(
                             {
@@ -1475,7 +1626,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             elif tool_id.startswith("server:mcp:"):
                 try:
                     server_id = tool_id[len("server:mcp:") :]
-                    log.info(f"[MCP] Step 1: Finding MCP server config for server_id: {server_id}")
+                    log.info(
+                        f"[MCP] Step 1: Finding MCP server config for server_id: {server_id}"
+                    )
 
                     mcp_server_connection = None
                     available_mcp_servers = []
@@ -1483,7 +1636,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         server_connection
                     ) in request.app.state.config.TOOL_SERVER_CONNECTIONS:
                         if server_connection.get("type", "") == "mcp":
-                            available_mcp_servers.append(server_connection.get("info", {}).get("id"))
+                            available_mcp_servers.append(
+                                server_connection.get("info", {}).get("id")
+                            )
                         if (
                             server_connection.get("type", "") == "mcp"
                             and server_connection.get("info", {}).get("id") == server_id
@@ -1492,20 +1647,28 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             break
 
                     if not mcp_server_connection:
-                        log.error(f"[MCP] Server config NOT FOUND for server_id: {server_id}. Available MCP servers: {available_mcp_servers}")
+                        log.error(
+                            f"[MCP] Server config NOT FOUND for server_id: {server_id}. Available MCP servers: {available_mcp_servers}"
+                        )
                         continue
 
-                    log.info(f"[MCP] Server config FOUND: url={mcp_server_connection.get('url')}, auth_type={mcp_server_connection.get('auth_type')}, config={mcp_server_connection.get('config', {})}")
+                    log.info(
+                        f"[MCP] Server config FOUND: url={mcp_server_connection.get('url')}, auth_type={mcp_server_connection.get('auth_type')}, config={mcp_server_connection.get('config', {})}"
+                    )
 
                     auth_type = mcp_server_connection.get("auth_type", "")
 
-                    log.info(f"[MCP] Step 2: Preparing auth headers for auth_type: {auth_type}")
+                    log.info(
+                        f"[MCP] Step 2: Preparing auth headers for auth_type: {auth_type}"
+                    )
                     headers = {}
                     if auth_type == "bearer":
                         headers["Authorization"] = (
                             f"Bearer {mcp_server_connection.get('key', '')}"
                         )
-                        log.info(f"[MCP] Auth: Using bearer token (key length: {len(mcp_server_connection.get('key', ''))})")
+                        log.info(
+                            f"[MCP] Auth: Using bearer token (key length: {len(mcp_server_connection.get('key', ''))})"
+                        )
                     elif auth_type == "none":
                         # No authentication
                         log.info("[MCP] Auth: No authentication required")
@@ -1526,11 +1689,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                         # Try to get BlueNexus OAuth token if applicable
                         oauth_token = None
                         try:
-                            from open_webui.utils.bluenexus.mcp import get_bluenexus_mcp_oauth_token
-                            oauth_token = get_bluenexus_mcp_oauth_token(user.id, server_id)
+                            from open_webui.utils.bluenexus.mcp import (
+                                get_bluenexus_mcp_oauth_token,
+                            )
+
+                            oauth_token = get_bluenexus_mcp_oauth_token(
+                                user.id, server_id
+                            )
                             if oauth_token:
                                 # Do not log access_token; log only that the token was found and expiration.
-                                log.info("[MCP] Auth: BlueNexus OAuth token session FOUND.")
+                                log.info(
+                                    "[MCP] Auth: BlueNexus OAuth token session FOUND."
+                                )
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
@@ -1542,18 +1712,24 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             oauth_token = extra_params.get("__oauth_token__", None)
                             if oauth_token:
                                 # Do not log access_token; indicate token was found.
-                                log.info(f"[MCP] Auth: Using system_oauth token from extra_params.")
+                                log.info(
+                                    f"[MCP] Auth: Using system_oauth token from extra_params."
+                                )
                                 headers["Authorization"] = (
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
                             else:
-                                log.warning("[MCP] Auth: No OAuth token found in extra_params")
+                                log.warning(
+                                    "[MCP] Auth: No OAuth token found in extra_params"
+                                )
                     elif auth_type == "oauth_2.1":
                         try:
                             splits = server_id.split(":")
                             server_id = splits[-1] if len(splits) > 1 else server_id
 
-                            log.info(f"[MCP] Auth: oauth_2.1 - getting token for mcp:{server_id}")
+                            log.info(
+                                f"[MCP] Auth: oauth_2.1 - getting token for mcp:{server_id}"
+                            )
                             oauth_token = await request.app.state.oauth_client_manager.get_oauth_token(
                                 user.id, f"mcp:{server_id}"
                             )
@@ -1567,14 +1743,20 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                                     f"Bearer {oauth_token.get('access_token', '')}"
                                 )
                             else:
-                                log.warning(f"[MCP] Auth: oauth_2.1 - no token returned for mcp:{server_id}")
+                                log.warning(
+                                    f"[MCP] Auth: oauth_2.1 - no token returned for mcp:{server_id}"
+                                )
                         except Exception as e:
-                            log.error(f"[MCP] Auth: oauth_2.1 - error getting OAuth token: {e}")
+                            log.error(
+                                f"[MCP] Auth: oauth_2.1 - error getting OAuth token: {e}"
+                            )
                             oauth_token = None
 
                     mcp_url = mcp_server_connection.get("url", "")
                     log.info(f"[MCP] Step 3: Connecting to MCP server at {mcp_url}")
-                    log.info(f"[MCP] Connection headers: {list(headers.keys()) if headers else 'None'}")
+                    log.info(
+                        f"[MCP] Connection headers: {list(headers.keys()) if headers else 'None'}"
+                    )
 
                     mcp_clients[server_id] = MCPClient()
                     await mcp_clients[server_id].connect(
@@ -1583,26 +1765,38 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     )
                     log.info(f"[MCP] Step 3: Connection SUCCESSFUL to {mcp_url}")
 
-                    log.info(f"[MCP] Step 4: Listing tool specs from server {server_id}")
+                    log.info(
+                        f"[MCP] Step 4: Listing tool specs from server {server_id}"
+                    )
                     tool_specs = await mcp_clients[server_id].list_tool_specs()
-                    log.info(f"[MCP] Step 4: Retrieved {len(tool_specs) if tool_specs else 0} tool specs")
+                    log.info(
+                        f"[MCP] Step 4: Retrieved {len(tool_specs) if tool_specs else 0} tool specs"
+                    )
                     for tool_spec in tool_specs:
                         tool_name = tool_spec.get("name", "unknown")
                         full_tool_name = f"{server_id}_{tool_name}"
-                        log.debug(f"[MCP] Registering tool: {full_tool_name}, description: {tool_spec.get('description', 'N/A')[:100]}")
+                        log.debug(
+                            f"[MCP] Registering tool: {full_tool_name}, description: {tool_spec.get('description', 'N/A')[:100]}"
+                        )
 
                         def make_tool_function(client, function_name, srv_id):
                             async def tool_function(**kwargs):
-                                log.info(f"[MCP] Step 6: Calling tool '{function_name}' on server '{srv_id}' with args: {list(kwargs.keys())}")
+                                log.info(
+                                    f"[MCP] Step 6: Calling tool '{function_name}' on server '{srv_id}' with args: {list(kwargs.keys())}"
+                                )
                                 try:
                                     result = await client.call_tool(
                                         function_name,
                                         function_args=kwargs,
                                     )
-                                    log.info(f"[MCP] Step 6: Tool '{function_name}' returned result type: {type(result).__name__}, length: {len(result) if isinstance(result, (list, dict, str)) else 'N/A'}")
+                                    log.info(
+                                        f"[MCP] Step 6: Tool '{function_name}' returned result type: {type(result).__name__}, length: {len(result) if isinstance(result, (list, dict, str)) else 'N/A'}"
+                                    )
                                     return result
                                 except Exception as e:
-                                    log.error(f"[MCP] Step 6: Tool '{function_name}' FAILED with error: {e}")
+                                    log.error(
+                                        f"[MCP] Step 6: Tool '{function_name}' FAILED with error: {e}"
+                                    )
                                     raise
 
                             return tool_function
@@ -1622,13 +1816,20 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                             "direct": False,
                         }
 
-                    tool_names = [f"{server_id}_{t.get('name')}" for t in (tool_specs or [])]
-                    log.info(f"[MCP] Registered {len(tool_specs) if tool_specs else 0} tools from server {server_id}: {tool_names}")
+                    tool_names = [
+                        f"{server_id}_{t.get('name')}" for t in (tool_specs or [])
+                    ]
+                    log.info(
+                        f"[MCP] Registered {len(tool_specs) if tool_specs else 0} tools from server {server_id}: {tool_names}"
+                    )
 
                 except Exception as e:
-                    log.error(f"[MCP] Connection FAILED for server {server_id}: {type(e).__name__}: {e}")
+                    log.error(
+                        f"[MCP] Connection FAILED for server {server_id}: {type(e).__name__}: {e}"
+                    )
                     # Log the full traceback for debugging
                     import traceback
+
                     log.error(f"[MCP] Full traceback:\n{traceback.format_exc()}")
                     if event_emitter:
                         await event_emitter(
@@ -1655,7 +1856,9 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             },
         )
         if mcp_tools_dict:
-            log.info(f"[MCP] Merging {len(mcp_tools_dict)} MCP tools into tools_dict (existing: {len(tools_dict)})")
+            log.info(
+                f"[MCP] Merging {len(mcp_tools_dict)} MCP tools into tools_dict (existing: {len(tools_dict)})"
+            )
             tools_dict = {**tools_dict, **mcp_tools_dict}
 
             # Send final summary message for MCP loading
@@ -1686,14 +1889,240 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         metadata["mcp_clients"] = mcp_clients
         log.info(f"[MCP] Stored {len(mcp_clients)} MCP clients in metadata")
 
-    if tools_dict:
+    # =========================================================================
+    # UNIVERSAL MCP AGENT - Replaces local ReACT agent
+    # When BlueNexus Universal MCP is available AND user hasn't explicitly
+    # selected specific MCP servers, delegate all tool execution to BlueNexus.
+    # This provides access to all connected MCP providers through a single agent.
+    #
+    # If user explicitly selects MCP servers in the UI, use local ReAct agent
+    # with those specific tools instead, giving user more control.
+    # =========================================================================
+    from open_webui.utils.bluenexus.universal_mcp import (
+        is_universal_mcp_available,
+        call_universal_mcp_agent,
+    )
+
+    # Use Universal MCP only if:
+    # 1. Universal MCP is available (user authenticated with BlueNexus)
+    # 2. User did NOT explicitly select specific MCP servers
+    use_universal_mcp = (
+        is_universal_mcp_available(user.id) and not user_selected_mcp_servers
+    )
+
+    if user_selected_mcp_servers:
+        log.info(
+            "[MCP] User selected specific MCP servers - using local ReAct agent instead of Universal MCP"
+        )
+
+    if use_universal_mcp:
+        log.info("[Universal MCP] Using BlueNexus Universal MCP agent")
+
+        # Get user query
+        user_query = get_last_user_message(form_data["messages"]) or ""
+
+        # Get conversation history (exclude current message)
+        messages = form_data.get("messages", [])
+        conversation_history = messages[:-1] if len(messages) > 1 else []
+
+        # Check if image generation is enabled - if so, tell agent to only retrieve data
+        image_gen_enabled = bool(features and features.get("image_generation"))
+
+        # Extract web search context by querying the vector DB directly
+        # This runs BEFORE the agent so it has the actual content
+        web_search_context = None
+        files = metadata.get("files", [])
+        if files:
+            web_search_parts = []
+            for file_item in files:
+                if file_item.get("type") == "web_search":
+                    docs = file_item.get("docs", [])
+                    urls = file_item.get("urls", [])
+                    queries_list = file_item.get("queries", [])
+                    collection_name = file_item.get("collection_name")
+
+                    if docs:
+                        # Bypass embedding mode - docs are already available
+                        log.info(
+                            f"[Universal MCP] Using {len(docs)} docs from bypass mode"
+                        )
+                        for doc in docs:
+                            if isinstance(doc, dict):
+                                content = doc.get(
+                                    "content",
+                                    doc.get("page_content", doc.get("text", "")),
+                                )
+                                doc_metadata = doc.get("metadata", {})
+                                source = doc_metadata.get(
+                                    "source", doc_metadata.get("url", "")
+                                )
+                                title = doc_metadata.get("title", "")
+                                if content:
+                                    header = f"Source: {source}" if source else ""
+                                    if title:
+                                        header = (
+                                            f"{title}\n{header}" if header else title
+                                        )
+                                    if header:
+                                        web_search_parts.append(f"{header}\n{content}")
+                                    else:
+                                        web_search_parts.append(content)
+                            elif isinstance(doc, str):
+                                web_search_parts.append(doc)
+
+                    elif collection_name:
+                        # Embedding mode - query vector DB to get the content
+                        log.info(
+                            f"[Universal MCP] Querying vector DB for web search collection: {collection_name}"
+                        )
+                        try:
+                            loop = asyncio.get_running_loop()
+                            query_result = await loop.run_in_executor(
+                                None,
+                                lambda cn=collection_name: get_all_items_from_collections(
+                                    [cn]
+                                ),
+                            )
+                            if query_result and "documents" in query_result:
+                                doc_lists = query_result.get("documents", [])
+                                meta_lists = query_result.get("metadatas", [])
+                                for doc_list, meta_list in zip(
+                                    doc_lists, meta_lists or [[]]
+                                ):
+                                    for idx, doc_text in enumerate(doc_list):
+                                        if doc_text:
+                                            doc_meta = (
+                                                meta_list[idx]
+                                                if idx < len(meta_list) and meta_list
+                                                else {}
+                                            )
+                                            source = (doc_meta or {}).get("source", "")
+                                            title = (doc_meta or {}).get("title", "")
+                                            header = (
+                                                f"Source: {source}" if source else ""
+                                            )
+                                            if title:
+                                                header = (
+                                                    f"{title}\n{header}"
+                                                    if header
+                                                    else title
+                                                )
+                                            if header:
+                                                web_search_parts.append(
+                                                    f"{header}\n{doc_text}"
+                                                )
+                                            else:
+                                                web_search_parts.append(doc_text)
+                                log.info(
+                                    f"[Universal MCP] Retrieved {len(web_search_parts)} chunks from vector DB"
+                                )
+                        except Exception as e:
+                            log.exception(
+                                f"[Universal MCP] Error querying vector DB for web search: {e}"
+                            )
+
+                    # Fallback to URL listing
+                    if not web_search_parts and urls:
+                        log.warning(
+                            "[Universal MCP] No content retrieved, falling back to URL listing"
+                        )
+                        web_search_parts.append(
+                            f"Web search was performed for: {', '.join(queries_list)}\n"
+                            f"Sources found: {', '.join(urls[:5])}"
+                        )
+
+            if web_search_parts:
+                web_search_context = "\n\n---\n\n".join(web_search_parts)
+                # Limit context size to avoid overwhelming the agent prompt
+                max_context_chars = 50000
+                if len(web_search_context) > max_context_chars:
+                    web_search_context = (
+                        web_search_context[:max_context_chars]
+                        + "\n\n[Content truncated due to size]"
+                    )
+                log.info(
+                    f"[Universal MCP] Extracted web search context: {len(web_search_context)} chars from {len(web_search_parts)} sources"
+                )
+
+        # Call Universal MCP agent
+        universal_result = await call_universal_mcp_agent(
+            user_id=user.id,
+            prompt=user_query,
+            conversation_history=conversation_history,
+            event_emitter=event_emitter,
+            image_generation_enabled=image_gen_enabled,
+            web_search_context=web_search_context,
+        )
+
+        if universal_result.success and universal_result.response:
+            if image_gen_enabled:
+                # Validate that agent returned actual data, not questions
+                response_lower = universal_result.response.lower()
+                is_question = (
+                    "?" in universal_result.response
+                    or "would you like" in response_lower
+                    or "what metric" in response_lower
+                    or "which date" in response_lower
+                    or "let me know" in response_lower
+                    or "i need a few details" in response_lower
+                )
+
+                log.info(
+                    f"[Universal MCP] is_question={is_question}, response preview: {universal_result.response[:200] if universal_result.response else 'None'}..."
+                )
+                if is_question:
+                    # Agent asked questions instead of fetching data - don't use for image
+                    log.warning(
+                        "[Universal MCP] Agent returned questions instead of data, skipping image generation"
+                    )
+                    # Clear the image generation flag so it doesn't run
+                    if features:
+                        features["image_generation"] = False
+                else:
+                    # For image generation: store data in metadata, don't show text
+                    metadata["_agent_data_for_image"] = universal_result.response
+                    log.info(
+                        f"[Universal MCP] Agent data stored for image generation, metadata id={id(metadata)}"
+                    )
+            else:
+                # Normal mode: store agent result for system message injection (after RAG)
+                metadata["_direct_agent_response"] = universal_result.response
+                log.info("[Universal MCP] Agent completed successfully")
+
+            # Remove web_search files from metadata so chat_completion_files_handler
+            # doesn't redundantly re-query the same vector DB collections
+            if metadata.get("files"):
+                metadata["files"] = [
+                    f for f in metadata["files"] if f.get("type") != "web_search"
+                ]
+        elif universal_result.error:
+            log.error(f"[Universal MCP] Agent failed: {universal_result.error}")
+            # Emit error status
+            if event_emitter:
+                await event_emitter(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "error",
+                            "description": f"BlueNexus Agent unavailable: {universal_result.error[:100]}",
+                            "done": True,
+                        },
+                    }
+                )
+
+    elif tools_dict:
+        # Use local ReAct agent when:
+        # 1. User explicitly selected MCP servers (wants specific tools)
+        # 2. Universal MCP is not available (not authenticated with BlueNexus)
         mcp_tool_count = sum(1 for t in tools_dict.values() if t.get("type") == "mcp")
-        log.info(f"[MCP] Step 5: Passing {len(tools_dict)} tools to LLM ({mcp_tool_count} MCP tools)")
+        log.info(
+            f"[MCP] Using local tools ({len(tools_dict)} tools, {mcp_tool_count} MCP)"
+        )
         log.debug(f"[MCP] All tool names: {list(tools_dict.keys())}")
 
         if metadata.get("params", {}).get("function_calling") == "native":
             # If the function calling is native, then call the tools function calling handler
-            log.info("[MCP] Step 5: Using NATIVE function calling mode")
+            log.info("[MCP] Using NATIVE function calling mode")
             metadata["tools"] = tools_dict
             form_data["tools"] = [
                 {"type": "function", "function": tool.get("spec", {})}
@@ -1709,6 +2138,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             except Exception as e:
                 log.exception(e)
 
+    # =========================================================================
+    # DEFERRED IMAGE GENERATION - Runs AFTER Universal MCP Agent
+    # This allows image generation to use data retrieved by the agent.
+    # =========================================================================
+    if features and "image_generation" in features and features["image_generation"]:
+        form_data = await chat_image_generation_handler(
+            request, form_data, extra_params, user
+        )
+
     try:
         form_data, flags = await chat_completion_files_handler(
             request, form_data, extra_params, user
@@ -1718,7 +2156,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         log.exception(e)
 
     # If context is not empty, insert it into the messages
-    if len(sources) > 0:
+    # Skip RAG context injection if image-only response (messages were replaced with minimal content)
+    if len(sources) > 0 and not metadata.get("_image_only_response"):
         context_string = ""
         citation_idx_map = {}
 
@@ -1807,9 +2246,13 @@ async def process_chat_response(
                 messages_map = chat.get("history", {}).get("messages", {})
             else:
                 if is_bluenexus_data_storage_enabled():
-                    messages_map = await bluenexus_get_messages_map(user.id, metadata["chat_id"])
+                    messages_map = await bluenexus_get_messages_map(
+                        user.id, metadata["chat_id"]
+                    )
                 else:
-                    messages_map = Chats.get_messages_map_by_chat_id(metadata["chat_id"])
+                    messages_map = Chats.get_messages_map_by_chat_id(
+                        metadata["chat_id"]
+                    )
             message = messages_map.get(metadata["message_id"]) if messages_map else None
 
             message_list = get_message_list(messages_map, metadata["message_id"])
@@ -2036,14 +2479,21 @@ async def process_chat_response(
                     if generated_title is not None or generated_tags is not None:
                         if is_bluenexus_data_storage_enabled():
                             await bluenexus_update_title_and_tags(
-                                user.id, metadata["chat_id"], generated_title, generated_tags
+                                user.id,
+                                metadata["chat_id"],
+                                generated_title,
+                                generated_tags,
                             )
                         else:
                             # Use PostgreSQL for title/tags update
                             if generated_title is not None:
-                                Chats.update_chat_title_by_id(metadata["chat_id"], generated_title)
+                                Chats.update_chat_title_by_id(
+                                    metadata["chat_id"], generated_title
+                                )
                             if generated_tags is not None:
-                                Chats.update_chat_tags_by_id(metadata["chat_id"], generated_tags, user)
+                                Chats.update_chat_tags_by_id(
+                                    metadata["chat_id"], generated_tags, user
+                                )
 
     event_emitter = None
     event_caller = None
@@ -2119,7 +2569,9 @@ async def process_chat_response(
                                 metadata["chat_id"],
                                 metadata["message_id"],
                                 {
-                                    "selectedModelId": response_data["selected_model_id"],
+                                    "selectedModelId": response_data[
+                                        "selected_model_id"
+                                    ],
                                 },
                             )
                         else:
@@ -2142,7 +2594,9 @@ async def process_chat_response(
                             )
 
                             if is_bluenexus_data_storage_enabled():
-                                title = await bluenexus_get_title(user.id, metadata["chat_id"])
+                                title = await bluenexus_get_title(
+                                    user.id, metadata["chat_id"]
+                                )
                             else:
                                 title = Chats.get_chat_title_by_id(metadata["chat_id"])
 
@@ -2646,15 +3100,20 @@ async def process_chat_response(
                     user.id, metadata["chat_id"], metadata["message_id"]
                 )
             else:
-                message = Chats.get_message_by_id_and_message_id(metadata["chat_id"], metadata["message_id"])
+                message = Chats.get_message_by_id_and_message_id(
+                    metadata["chat_id"], metadata["message_id"]
+                )
 
             # Create batcher for streaming message updates (reduces API calls)
             message_batcher = None
-            if ENABLE_REALTIME_CHAT_SAVE and not metadata.get("chat_id", "").startswith("local:"):
+            if ENABLE_REALTIME_CHAT_SAVE and not metadata.get("chat_id", "").startswith(
+                "local:"
+            ):
                 message_batcher = MessageUpdateBatcher(
-                    user.id, metadata["chat_id"],
+                    user.id,
+                    metadata["chat_id"],
                     flush_interval=2.0,  # Flush every 2 seconds
-                    max_pending=10  # Or after 10 pending updates
+                    max_pending=10,  # Or after 10 pending updates
                 )
                 await message_batcher.__aenter__()
 
@@ -3036,7 +3495,11 @@ async def process_chat_response(
                                                     Chats.upsert_message_to_chat_by_id_and_message_id(
                                                         metadata["chat_id"],
                                                         metadata["message_id"],
-                                                        {"content": serialize_content_blocks(content_blocks)},
+                                                        {
+                                                            "content": serialize_content_blocks(
+                                                                content_blocks
+                                                            )
+                                                        },
                                                     )
                                         else:
                                             data = {
@@ -3136,7 +3599,9 @@ async def process_chat_response(
                         tool_function_name = tool_call_data.get("function", {}).get(
                             "name", ""
                         )
-                        tool_args = tool_call_data.get("function", {}).get("arguments", "{}")
+                        tool_args = tool_call_data.get("function", {}).get(
+                            "arguments", "{}"
+                        )
 
                         tool_function_params = {}
                         try:
@@ -3160,8 +3625,8 @@ async def process_chat_response(
                         log.debug(
                             f"Parsed args from {tool_args} to {tool_function_params}"
                         )
-                        tool_call_data.setdefault("function", {})["arguments"] = json.dumps(
-                            tool_function_params
+                        tool_call_data.setdefault("function", {})["arguments"] = (
+                            json.dumps(tool_function_params)
                         )
 
                         tool_result = None
@@ -3251,19 +3716,29 @@ async def process_chat_response(
                         }
 
                     # Execute all tool calls in parallel using asyncio.gather
-                    log.info(f"[Native Tools] Executing {len(response_tool_calls)} tool calls in parallel")
-                    tool_tasks = [execute_native_tool_call(tc) for tc in response_tool_calls]
-                    parallel_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
+                    log.info(
+                        f"[Native Tools] Executing {len(response_tool_calls)} tool calls in parallel"
+                    )
+                    tool_tasks = [
+                        execute_native_tool_call(tc) for tc in response_tool_calls
+                    ]
+                    parallel_results = await asyncio.gather(
+                        *tool_tasks, return_exceptions=True
+                    )
 
                     # Process results, handling any exceptions
                     results = []
                     for i, result in enumerate(parallel_results):
                         if isinstance(result, Exception):
                             log.error(f"[Native Tools] Tool call {i} failed: {result}")
-                            results.append({
-                                "tool_call_id": response_tool_calls[i].get("id", ""),
-                                "content": f"Error: {str(result)}",
-                            })
+                            results.append(
+                                {
+                                    "tool_call_id": response_tool_calls[i].get(
+                                        "id", ""
+                                    ),
+                                    "content": f"Error: {str(result)}",
+                                }
+                            )
                         else:
                             results.append(result)
 
@@ -3337,8 +3812,7 @@ async def process_chat_response(
                             if content_blocks[-1]["attributes"].get("type") == "code":
                                 code = content_blocks[-1]["content"]
                                 if CODE_INTERPRETER_BLOCKED_MODULES:
-                                    blocking_code = textwrap.dedent(
-                                        f"""
+                                    blocking_code = textwrap.dedent(f"""
                                         import builtins
 
                                         BLOCKED_MODULES = {CODE_INTERPRETER_BLOCKED_MODULES}
@@ -3354,8 +3828,7 @@ async def process_chat_response(
                                             return _real_import(name, globals, locals, fromlist, level)
 
                                         builtins.__import__ = restricted_import
-                                    """
-                                    )
+                                    """)
                                     code = blocking_code + "\n" + code
 
                                 if (
